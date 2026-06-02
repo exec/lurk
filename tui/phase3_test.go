@@ -125,6 +125,25 @@ func TestChatHistoryDivider(t *testing.T) {
 	}
 }
 
+// TestLiveMessageMarksUnread guards the scoping of the chathistory unread skip
+// in routeText: a normal (non-batched) message to a non-active channel must
+// still bump the unread counter. (The complementary "history does NOT mark
+// unread" case can't be constructed here — Event.batchType is unexported to the
+// tui package — but it is the same BatchType() guard, and BatchType plumbing is
+// covered end-to-end by client.TestBatchTypeResolution.)
+func TestLiveMessageMarksUnread(t *testing.T) {
+	m := newTestModel() // active = server buffer (index 0)
+	m = routeEvent(m, evt(t, ":bob!b@h PRIVMSG #chan :live message"))
+
+	b := m.buffer("#chan")
+	if b == nil {
+		t.Fatal("#chan buffer was not opened")
+	}
+	if b.Unread != 1 {
+		t.Errorf("unread = %d after a live background message, want 1", b.Unread)
+	}
+}
+
 func linesText(lines []string) []string {
 	out := make([]string, len(lines))
 	for i, l := range lines {

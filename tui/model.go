@@ -325,24 +325,6 @@ func asciiLower(s string) string {
 	return string(b)
 }
 
-// containsFold reports whether sub occurs in s under ASCII case folding. It is
-// used for highlight detection; like equalFold it deliberately avoids Unicode
-// folding since IRC casemapping is server-defined.
-func containsFold(s, sub string) bool {
-	if len(sub) == 0 {
-		return true
-	}
-	if len(sub) > len(s) {
-		return false
-	}
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if equalFold(s[i:i+len(sub)], sub) {
-			return true
-		}
-	}
-	return false
-}
-
 // Compile-time assertion that model satisfies the Bubble Tea v2 Model
 // interface (Init/Update/View live in app.go).
 var _ tea.Model = model{}

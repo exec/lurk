@@ -113,22 +113,24 @@ func routeText(m model, ev client.Event) model {
 	}
 
 	var b *Buffer
-	var idx int
 	if isChannel(target) {
-		b, idx = m.ensureBuffer(target, BufferChannel)
+		b, _ = m.ensureBuffer(target, BufferChannel)
 	} else if equalFold(target, self) {
 		// A message to us: the conversation buffer is the sender.
-		b, idx = m.ensureBuffer(ev.Nick(), BufferPM)
+		b, _ = m.ensureBuffer(ev.Nick(), BufferPM)
 	} else {
 		// A message we sent (echo-message) or otherwise targeted elsewhere.
-		b, idx = m.ensureBuffer(target, BufferPM)
+		b, _ = m.ensureBuffer(target, BufferPM)
 	}
 
 	// A message from a user ends any "typing…" indication they had in this buffer.
 	m = m.clearTyping(typingBufferKey(target, ev.Nick(), self), ev.Nick())
 
+	// appendLine is the single place that records unread/highlight for non-active
+	// buffers (and skips replayed chathistory backlog), so there is no separate
+	// activity bump here — a prior duplicate caused background messages to count
+	// toward unread twice.
 	m = appendLine(m, b, ev)
-	m = markActivity(m, idx, mentionsSelf(ev.Text(), self))
 	return m
 }
 
@@ -176,34 +178,10 @@ func routeMembership(m model, ev client.Event) model {
 	return appendLine(m, m.buffers[0], ev)
 }
 
-// markActivity bumps the unread counter (and highlight flag) of the buffer at
-// idx when it is not the active buffer. The active buffer is considered read.
-func markActivity(m model, idx int, highlight bool) model {
-	if idx == m.active || idx < 0 || idx >= len(m.buffers) {
-		return m
-	}
-	b := m.buffers[idx]
-	b.Unread++
-	if highlight {
-		b.Highlight = true
-	}
-	return m
-}
-
 // pluralEvents formats the dropped-events overflow notice.
 func pluralEvents(n int) string {
 	if n == 1 {
 		return "lost 1 event (UI fell behind)"
 	}
 	return fmt.Sprintf("lost %d events (UI fell behind)", n)
-}
-
-// mentionsSelf reports whether text contains the nick as a highlight mention.
-// The check is a case-insensitive substring for now; the view layer may apply a
-// stricter word-boundary rule when it formats the line.
-func mentionsSelf(text, nick string) bool {
-	if nick == "" || text == "" {
-		return false
-	}
-	return containsFold(text, nick)
 }

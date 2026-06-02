@@ -363,13 +363,18 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 	b.addLine(row)
 
 	active := b == m.activeBuffer()
-	if !active {
+	switch {
+	case active:
+		b.refresh()
+	case ev.BatchType() == "chathistory":
+		// Replayed backlog into a background buffer is rendered but is not "new
+		// activity": it must not inflate unread or raise a highlight (your own
+		// nick may appear in your history).
+	default:
 		b.Unread++
 		if highlight {
 			b.Highlight = true
 		}
-	} else {
-		b.refresh()
 	}
 	return m
 }
