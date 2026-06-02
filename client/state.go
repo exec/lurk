@@ -72,6 +72,21 @@ type state struct {
 
 	// channels maps folded channel name -> channelState.
 	channels map[string]*channelState
+
+	// batches maps an open BATCH reference tag to its metadata. Entries are added
+	// on "BATCH +ref ..." and removed on "BATCH -ref"; events carrying an
+	// @batch=ref tag are resolved against this map at dispatch time so the UI can
+	// group/label them (e.g. chathistory playback). Unknown refs are tolerated.
+	batches map[string]batchInfo
+}
+
+// batchInfo records the type and parameters of an open BATCH (e.g. type
+// "chathistory" with the target channel as its first parameter).
+type batchInfo struct {
+	// Type is the batch type token (e.g. "chathistory", "netjoin").
+	Type string
+	// Params are the remaining batch parameters after the type.
+	Params []string
 }
 
 // newState returns an empty state defaulting to the RFC1459 case mapping (the
@@ -80,7 +95,26 @@ func newState() *state {
 	return &state{
 		fold:     isupport.CaseRFC1459,
 		channels: make(map[string]*channelState),
+		batches:  make(map[string]batchInfo),
 	}
+}
+
+// openBatch records an opening "BATCH +ref <type> [params...]". ref is the
+// reference tag without its leading '+'.
+func (s *state) openBatch(ref, batchType string, params []string) {
+	s.batches[ref] = batchInfo{Type: batchType, Params: append([]string(nil), params...)}
+}
+
+// closeBatch forgets the batch referenced by ref (from a "BATCH -ref"). Unknown
+// refs are tolerated.
+func (s *state) closeBatch(ref string) {
+	delete(s.batches, ref)
+}
+
+// batchTypeFor returns the type of the open batch named by ref, or "" if no such
+// batch is open.
+func (s *state) batchTypeFor(ref string) string {
+	return s.batches[ref].Type
 }
 
 // mergeISupport folds a batch of 005 tokens into the feature set and refreshes
