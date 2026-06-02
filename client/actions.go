@@ -1,6 +1,7 @@
 package client
 
 import (
+	"strconv"
 	"strings"
 
 	"lurk/irc"
@@ -106,6 +107,38 @@ func (c *Client) ChannelMode(channel, modes string, args ...string) error {
 	params = append(params, channel, modes)
 	params = append(params, args...)
 	return c.write(irc.MODE, params...)
+}
+
+// ChatHistoryLatest requests the most recent history for target via the
+// draft/chathistory extension: "CHATHISTORY LATEST <target> * <limit>". The '*'
+// selector means "from the latest message backwards"; limit caps the number of
+// messages returned. The server answers with a "chathistory" BATCH of past
+// PRIVMSG/NOTICE lines (each carrying an @time tag). A non-positive limit is
+// treated as 1, the protocol minimum.
+func (c *Client) ChatHistoryLatest(target string, limit int) error {
+	if limit < 1 {
+		limit = 1
+	}
+	return c.write(irc.CHATHISTORY, "LATEST", target, "*", strconv.Itoa(limit))
+}
+
+// SendTagged sends a command with client-only message tags. Tag keys keep their
+// leading '+' (e.g. "+typing"); values are escaped by Message.Serialize. It is
+// the tagged counterpart of the internal write path and underpins typing
+// notifications and other client-tag features.
+func (c *Client) SendTagged(tags map[string]string, command string, params ...string) error {
+	return c.WriteMessage(&irc.Message{Tags: irc.Tags(tags), Command: command, Params: params})
+}
+
+// Typing sends a typing notification for target (a channel or nick) using the
+// "+typing" client tag on a TAGMSG. state is one of "active", "paused", or
+// "done". It is a no-op (returning nil) unless the message-tags capability is
+// enabled, since the tag would otherwise be stripped by the server.
+func (c *Client) Typing(target, state string) error {
+	if !c.CapEnabled("message-tags") {
+		return nil
+	}
+	return c.SendTagged(map[string]string{"+typing": state}, irc.TAGMSG, target)
 }
 
 // SelfPrefixes returns the membership prefix symbols (e.g. "@", "~@", "") the

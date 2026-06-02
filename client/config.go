@@ -92,9 +92,7 @@ type Config struct {
 }
 
 // DefaultCaps is the set of capabilities Lurk requests when Config.Caps is nil.
-// These are negotiated cleanly in Cycle 1; deep handling of batch/
-// labeled-response/history is a later concern. sasl is always added when SASL
-// is configured.
+// sasl is always added when SASL is configured.
 var DefaultCaps = []string{
 	"cap-notify",
 	"server-time",
@@ -107,6 +105,8 @@ var DefaultCaps = []string{
 	"account-tag",
 	"setname",
 	"userhost-in-names",
+	"batch",
+	"draft/chathistory",
 }
 
 // withDefaults returns a copy of the config with empty fields filled in.

@@ -364,6 +364,18 @@ func registerHandlers(c *client.Client, channel string) {
 		fmt.Printf("-%s- %s\n", ev.Nick(), ev.Text())
 	})
 
+	// Standard replies (FAIL/WARN/NOTE): "<TYPE> <COMMAND> <code> [ctx] :<desc>".
+	stdReply := func(ev *client.Event) {
+		ctx := ""
+		if n := len(ev.Message.Params); n > 3 {
+			ctx = " " + strings.Join(ev.Message.Params[2:n-1], " ")
+		}
+		fmt.Printf("! %s %s %s%s: %s\n", ev.Command(), ev.Param(0), ev.Param(1), ctx, ev.Text())
+	}
+	c.On(irc.FAIL, stdReply)
+	c.On(irc.WARN, stdReply)
+	c.On(irc.NOTE, stdReply)
+
 	// Print the member list once NAMES completes for our channel.
 	c.On(irc.RPL_ENDOFNAMES, func(ev *client.Event) {
 		ch := ev.Param(1)

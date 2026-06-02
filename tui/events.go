@@ -72,6 +72,23 @@ func routeEvent(m model, ev client.Event) model {
 		return routeText(m, ev)
 	case irc.JOIN, irc.PART, irc.QUIT, irc.NICK, irc.MODE, irc.TOPIC, irc.KICK:
 		return routeMembership(m, ev)
+	case irc.ACCOUNT, irc.AWAY, irc.CHGHOST, irc.SETNAME:
+		// Pure metadata notifications: the client has already folded these into
+		// member state (account/away/host), and the nicklist reflects them live.
+		// Rendering a line per toggle would be noise, so they are intentionally
+		// not written to any buffer.
+		return m
+	case irc.TAGMSG:
+		// Client-tag-only messages (e.g. +typing): no body to render. Typing state
+		// is tracked separately and surfaced in the status bar.
+		return routeTagmsg(m, ev)
+	case irc.FAIL, irc.WARN, irc.NOTE:
+		// Standard replies render where the user is looking (the command that
+		// triggered them was issued from the active buffer).
+		b := m.activeBuffer()
+		b.addLine(defaultTheme.formatStandardReply(ev))
+		b.refresh()
+		return m
 	case irc.RPL_AWAY, irc.RPL_WHOISUSER, irc.RPL_WHOISSERVER,
 		irc.RPL_WHOISOPERATOR, irc.RPL_WHOISIDLE, irc.RPL_ENDOFWHOIS,
 		irc.RPL_WHOISCHANNELS, irc.RPL_WHOISACCOUNT, irc.RPL_WHOISACTUALLY,
@@ -96,20 +113,56 @@ func routeText(m model, ev client.Event) model {
 	}
 
 	var b *Buffer
-	var idx int
 	if isChannel(target) {
-		b, idx = m.ensureBuffer(target, BufferChannel)
+		b, _ = m.ensureBuffer(target, BufferChannel)
 	} else if equalFold(target, self) {
 		// A message to us: the conversation buffer is the sender.
-		b, idx = m.ensureBuffer(ev.Nick(), BufferPM)
+		b, _ = m.ensureBuffer(ev.Nick(), BufferPM)
 	} else {
 		// A message we sent (echo-message) or otherwise targeted elsewhere.
-		b, idx = m.ensureBuffer(target, BufferPM)
+		b, _ = m.ensureBuffer(target, BufferPM)
 	}
 
+	// A message from a user ends any "typing…" indication they had in this buffer.
+	m = m.clearTyping(typingBufferKey(target, ev.Nick(), self), ev.Nick())
+
+	// appendLine is the single place that records unread/highlight for non-active
+	// buffers (and skips replayed chathistory backlog), so there is no separate
+	// activity bump here — a prior duplicate caused background messages to count
+	// toward unread twice.
 	m = appendLine(m, b, ev)
-	m = markActivity(m, idx, mentionsSelf(ev.Text(), self))
 	return m
+}
+
+// routeTagmsg applies a TAGMSG carrying the +typing client tag to the model's
+// typing state. "active" (or "paused") marks the sender typing in the relevant
+// buffer; "done" clears it. TAGMSGs without a +typing tag are ignored (there is
+// nothing to display).
+func routeTagmsg(m model, ev client.Event) model {
+	state := ev.Message.Tags.Get("+typing")
+	if state == "" {
+		return m
+	}
+	self := ""
+	if m.cli != nil {
+		self = m.cli.Nick()
+	}
+	key := typingBufferKey(ev.Param(0), ev.Nick(), self)
+	if state == "active" {
+		return m.noteTyping(key, ev.Nick())
+	}
+	// "paused" and "done" both stop showing the indicator.
+	return m.clearTyping(key, ev.Nick())
+}
+
+// typingBufferKey returns the ASCII-folded key of the buffer a typing/message
+// event belongs to: the channel target for channel traffic, or the sender's
+// nick for a message addressed to us (a PM, whose buffer is the peer).
+func typingBufferKey(target, sender, self string) string {
+	if isChannel(target) || !equalFold(target, self) {
+		return asciiLower(target)
+	}
+	return asciiLower(sender)
 }
 
 // routeMembership routes JOIN/PART/QUIT/NICK/TOPIC/etc. to a channel buffer
@@ -125,34 +178,10 @@ func routeMembership(m model, ev client.Event) model {
 	return appendLine(m, m.buffers[0], ev)
 }
 
-// markActivity bumps the unread counter (and highlight flag) of the buffer at
-// idx when it is not the active buffer. The active buffer is considered read.
-func markActivity(m model, idx int, highlight bool) model {
-	if idx == m.active || idx < 0 || idx >= len(m.buffers) {
-		return m
-	}
-	b := m.buffers[idx]
-	b.Unread++
-	if highlight {
-		b.Highlight = true
-	}
-	return m
-}
-
 // pluralEvents formats the dropped-events overflow notice.
 func pluralEvents(n int) string {
 	if n == 1 {
 		return "lost 1 event (UI fell behind)"
 	}
 	return fmt.Sprintf("lost %d events (UI fell behind)", n)
-}
-
-// mentionsSelf reports whether text contains the nick as a highlight mention.
-// The check is a case-insensitive substring for now; the view layer may apply a
-// stricter word-boundary rule when it formats the line.
-func mentionsSelf(text, nick string) bool {
-	if nick == "" || text == "" {
-		return false
-	}
-	return containsFold(text, nick)
 }

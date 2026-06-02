@@ -225,21 +225,43 @@ func renderNicklist(m model, w, h int) string {
 	rows := []string{title}
 	focused := m.focus == focusNicks
 	for i, mem := range members {
-		sym := ""
-		if mem.Prefixes != "" {
-			sym = string(mem.Prefixes[0])
-		}
-		if focused && i == m.nickSel {
-			// Selected row: a reverse-video bar (unstyled nick so it stays legible).
-			rows = append(rows, lipgloss.NewStyle().Reverse(true).Render(truncate(sym+mem.Nick, w)))
-			continue
-		}
+		selected := focused && i == m.nickSel
 		isSelf := equalFold(mem.Nick, self)
-		nickStyled := lipgloss.NewStyle().Foreground(t.nickColor(mem.Nick, isSelf)).Render(mem.Nick)
-		rows = append(rows, truncate(sym+nickStyled, w))
+		rows = append(rows, t.nickRow(mem, w, selected, isSelf))
 	}
 	body := strings.Join(rows, "\n")
 	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(body)
+}
+
+// nickRow formats a single nicklist row for mem within column width w. Away
+// members render faint, logged-in members get a subtle trailing "·" badge, and
+// the selected row (when the nicklist is focused) is shown as a reverse-video
+// bar. The result never exceeds w display cells: the nick is truncated first,
+// reserving a column for the badge so the styled output fits.
+func (t theme) nickRow(mem client.Member, w int, selected, isSelf bool) string {
+	sym := ""
+	if mem.Prefixes != "" {
+		sym = string(mem.Prefixes[0])
+	}
+	badge := ""
+	if mem.Account != "" {
+		badge = "·"
+	}
+	if selected {
+		// Reverse-video bar with an unstyled label so it stays legible.
+		return lipgloss.NewStyle().Reverse(true).Render(truncate(sym+mem.Nick+badge, w))
+	}
+	nickText := truncate(sym+mem.Nick, w-lipgloss.Width(badge))
+	var styled string
+	if mem.Away {
+		styled = t.nicklistAway.Render(nickText)
+	} else {
+		styled = lipgloss.NewStyle().Foreground(t.nickColor(mem.Nick, isSelf)).Render(nickText)
+	}
+	if badge != "" {
+		styled += t.nicklistAcct.Render(badge)
+	}
+	return styled
 }
 
 // renderStatus renders the bottom status bar with network/nick/active-buffer
@@ -252,7 +274,24 @@ func renderStatus(m model) string {
 	}
 	b := m.activeBuffer()
 	scrolled := b.vpReady && !b.vp.AtBottom()
-	return defaultTheme.statusLine(network, nick, b.Title, scrolled, m.width)
+	typing := typingNote(m.typingNicks(asciiLower(b.Title)))
+	return defaultTheme.statusLine(network, nick, b.Title, scrolled, typing, m.width)
+}
+
+// typingNote renders the "X is typing…" status segment for the given typers, or
+// "" when nobody is typing. Two names are joined with "and"; more collapse to
+// "N people".
+func typingNote(nicks []string) string {
+	switch len(nicks) {
+	case 0:
+		return ""
+	case 1:
+		return nicks[0] + " is typing…"
+	case 2:
+		return nicks[0] + " and " + nicks[1] + " are typing…"
+	default:
+		return fmt.Sprintf("%d people are typing…", len(nicks))
+	}
 }
 
 // verticalRule draws a 1-cell-wide vertical separator h rows tall, used between
@@ -315,17 +354,27 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 	if m.cli != nil {
 		self = m.cli.Nick()
 	}
+	// Mark the start of a chathistory backlog with a one-time divider so the user
+	// can tell replayed history from live traffic.
+	if ev.BatchType() == "chathistory" {
+		b.markHistory(defaultTheme)
+	}
 	row, highlight := defaultTheme.formatLine(ev, self)
 	b.addLine(row)
 
 	active := b == m.activeBuffer()
-	if !active {
+	switch {
+	case active:
+		b.refresh()
+	case ev.BatchType() == "chathistory":
+		// Replayed backlog into a background buffer is rendered but is not "new
+		// activity": it must not inflate unread or raise a highlight (your own
+		// nick may appear in your history).
+	default:
 		b.Unread++
 		if highlight {
 			b.Highlight = true
 		}
-	} else {
-		b.refresh()
 	}
 	return m
 }

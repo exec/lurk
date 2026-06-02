@@ -25,6 +25,17 @@ const (
 	TOPIC        = "TOPIC"
 	BATCH        = "BATCH"
 	TAGMSG       = "TAGMSG"
+	ACCOUNT      = "ACCOUNT"
+	AWAY         = "AWAY"
+	CHGHOST      = "CHGHOST"
+	SETNAME      = "SETNAME"
+	CHATHISTORY  = "CHATHISTORY"
+
+	// Standard replies (the standard-replies extension): a server may send any of
+	// these as "FAIL/WARN/NOTE <COMMAND> <code> [context...] :<description>".
+	FAIL = "FAIL"
+	WARN = "WARN"
+	NOTE = "NOTE"
 )
 
 // CAP subcommands, carried as the first/second parameter of a CAP message.

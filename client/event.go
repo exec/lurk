@@ -26,6 +26,12 @@ type Event struct {
 	// blocking the client read loop. Such an event carries no Message (it is nil);
 	// consumers should check Dropped before dereferencing Message. See Events.
 	Dropped int
+
+	// batchType is the type of the open BATCH this event belongs to (resolved
+	// from its @batch tag at dispatch time), or "" if the event is not part of a
+	// batch. Read via BatchType(); captured at dispatch because the batch may be
+	// closed (and forgotten) before a consumer inspects the event.
+	batchType string
 }
 
 // Convenience accessors mirroring irc.Message so handlers can read common
@@ -106,6 +112,13 @@ func (e *Event) Time() time.Time {
 		}
 	}
 	return e.recvTime
+}
+
+// BatchType returns the type of the BATCH this event is part of (e.g.
+// "chathistory"), resolved from the event's @batch tag against the batches open
+// when it was dispatched. It returns "" when the event is not part of any batch.
+func (e *Event) BatchType() string {
+	return e.batchType
 }
 
 // Handler is the signature for both raw and semantic event handlers. It is

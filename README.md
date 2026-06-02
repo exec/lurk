@@ -14,6 +14,12 @@ full-screen terminal UI.
   full-screen client: buffer sidebar, scrollback, nicklist, status bar, input
   editor with history and tab-completion, slash commands, and an interactive
   nicklist with a per-user context menu (message, whois, op/voice/kick).
+- **IRCv3 features** — capability negotiation plus live handling of
+  `away-notify`, `account-notify`/`extended-join`, and `chghost` (away users are
+  dimmed and logged-in users badged in the nicklist); `batch`; `draft/chathistory`
+  (recent backlog is fetched automatically on join and shown under a history
+  divider); `+typing` notifications ("X is typing…" in the status bar, debounced
+  outbound); and `standard-replies` (`FAIL`/`WARN`/`NOTE`) rendered readably.
 
 ## Install
 
