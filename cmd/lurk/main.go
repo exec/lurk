@@ -1,0 +1,408 @@
+// Command lurk is a small smoke-test client for the lurk IRC library: it
+// connects to a server, negotiates capabilities (and optionally authenticates
+// with SASL), joins a channel, prints the messages it sees, and reads lines
+// from stdin so the user can chat interactively.
+//
+// Configuration comes from flags, each of which falls back to an environment
+// variable (LURK_SERVER, LURK_NICK, ...) so it is convenient to run from a
+// shell or a container without leaking secrets onto the command line.
+//
+// Example:
+//
+//	lurk -server irc.libera.chat:6697 -tls -nick lurkbot -channel '#lurk-test'
+//	LURK_SASL_PASS=secret lurk -server ... -sasl PLAIN -sasl-user lurkbot ...
+//
+// Interactive input (stdin):
+//
+//	A plain line is sent as a PRIVMSG to the current channel (the -channel arg,
+//	updated by /join). Lines beginning with '/' are commands: /join, /part,
+//	/msg, /nick, /names, /quit, /raw. A line starting with '//' sends a literal
+//	message that begins with a single '/'. Ctrl-D (EOF) or Ctrl-C quits cleanly.
+package main
+
+import (
+	"bufio"
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"lurk/client"
+	"lurk/irc"
+	"lurk/tui"
+)
+
+func main() {
+	log.SetFlags(log.Ltime)
+
+	cfg, channel, plain := parseConfig()
+	if cfg.Nick == "" {
+		log.Fatal("lurk: a nickname is required (-nick or LURK_NICK)")
+	}
+	if cfg.Server == "" {
+		log.Fatal("lurk: a server is required (-server or LURK_SERVER)")
+	}
+
+	c := client.New(cfg)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	regCtx, regCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer regCancel()
+
+	if plain {
+		runPlain(ctx, cancel, regCtx, c, channel)
+		return
+	}
+	runTUI(ctx, regCtx, c, channel)
+}
+
+// runTUI connects the client and hands control to the Bubble Tea interface. The
+// TUI consumes the client's event stream (no print handlers are registered);
+// tui.Run owns the program lifecycle and returns when the user quits or the
+// connection ends, after which we tear the client down cleanly.
+func runTUI(ctx, regCtx context.Context, c *client.Client, channel string) {
+	if err := c.Connect(regCtx); err != nil {
+		log.Fatalf("lurk: connect: %v", err)
+	}
+	if channel != "" {
+		// Joining before the program starts lets the initial JOIN/NAMES events
+		// flow through the buffered event stream and open the buffer on screen.
+		if err := c.Join(channel); err != nil {
+			log.Printf("join %s: %v", channel, err)
+		}
+	}
+
+	err := tui.Run(ctx, c)
+
+	// tui.Run has restored the primary screen by now; tear down the connection.
+	_ = c.Quit("lurk signing off")
+	_ = c.Close()
+	if err != nil {
+		log.Printf("lurk: %v", err)
+	}
+}
+
+// runPlain is the original line-mode client: print handlers + a stdin REPL. It
+// is selected with -plain (or LURK_PLAIN) for scripting and for terminals where
+// the full TUI is undesirable.
+func runPlain(ctx context.Context, cancel context.CancelFunc, regCtx context.Context, c *client.Client, channel string) {
+	registerHandlers(c, channel)
+
+	if err := c.Connect(regCtx); err != nil {
+		log.Fatalf("lurk: connect: %v", err)
+	}
+	log.Printf("registered as %s on %s", c.Nick(), orUnknown(c.Network()))
+
+	ui := &repl{client: c, current: channel}
+	if channel != "" {
+		if err := c.Join(channel); err != nil {
+			log.Printf("join %s: %v", channel, err)
+		}
+	}
+
+	// Read user input from stdin in the background. EOF (Ctrl-D) cancels the
+	// signal context so the shutdown path below runs exactly once, the same as
+	// SIGINT. The loop does not touch c.Wait(), so it can never block shutdown.
+	go func() {
+		ui.run(os.Stdin)
+		cancel() // stdin closed: trigger the same clean teardown as a signal
+	}()
+
+	// Tear the connection down cleanly when the signal context is cancelled
+	// (SIGINT/SIGTERM or stdin EOF). Quit, give it a moment to flush, then close.
+	go func() {
+		<-ctx.Done()
+		_ = c.Quit("lurk signing off")
+		time.Sleep(200 * time.Millisecond)
+		_ = c.Close()
+	}()
+
+	if err := c.Wait(); err != nil {
+		log.Printf("disconnected: %v", err)
+	} else {
+		log.Print("disconnected")
+	}
+}
+
+// repl is the interactive stdin input loop. It tracks a "current channel" (the
+// default target for plain message lines), which /join updates. It is safe for
+// the input goroutine to mutate current while handlers read it via Current.
+type repl struct {
+	client *client.Client
+
+	mu      sync.Mutex
+	current string
+}
+
+// Current returns the active default target channel.
+func (r *repl) Current() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.current
+}
+
+// setCurrent updates the active default target channel.
+func (r *repl) setCurrent(ch string) {
+	r.mu.Lock()
+	r.current = ch
+	r.mu.Unlock()
+}
+
+// run reads lines from in until EOF, dispatching each to a slash-command
+// handler or sending it as a message to the current channel. It returns when
+// the input stream closes (Ctrl-D) or errors.
+func (r *repl) run(in *os.File) {
+	sc := bufio.NewScanner(in)
+	// Allow long lines (pasted text); IRC will still bound what actually sends.
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" {
+			continue
+		}
+		// "//..." is a literal message starting with a single '/'.
+		if strings.HasPrefix(line, "//") {
+			r.sendMessage(line[1:])
+			continue
+		}
+		if strings.HasPrefix(line, "/") {
+			r.command(line)
+			continue
+		}
+		r.sendMessage(line)
+	}
+}
+
+// sendMessage sends text to the current channel as a PRIVMSG. When the server's
+// echo-message capability is NOT enabled, it locally echoes the line so the user
+// sees their own message (with echo-message, the server echoes it back through
+// the HandleMessage printer instead, so we stay quiet to avoid a double print).
+func (r *repl) sendMessage(text string) {
+	target := r.Current()
+	if target == "" {
+		fmt.Println("*** no current channel; use /join <#chan> or /msg <target> <text>")
+		return
+	}
+	if err := r.client.Privmsg(target, text); err != nil {
+		fmt.Printf("*** send failed: %v\n", err)
+		return
+	}
+	if !r.client.CapEnabled("echo-message") {
+		fmt.Printf("<%s/%s> %s\n", target, r.client.Nick(), text)
+	}
+}
+
+// command parses and dispatches a slash command line.
+func (r *repl) command(line string) {
+	// Split into the command word and the remainder (args), preserving spaces in
+	// the remainder for message bodies.
+	cmd, rest, _ := strings.Cut(line[1:], " ")
+	rest = strings.TrimSpace(rest)
+
+	switch strings.ToLower(cmd) {
+	case "join", "j":
+		if rest == "" {
+			fmt.Println("*** usage: /join <#channel>")
+			return
+		}
+		ch := strings.Fields(rest)[0]
+		if err := r.client.Join(ch); err != nil {
+			fmt.Printf("*** join failed: %v\n", err)
+			return
+		}
+		r.setCurrent(ch)
+		fmt.Printf("*** current channel is now %s\n", ch)
+
+	case "part", "leave":
+		ch := rest
+		if ch == "" {
+			ch = r.Current()
+		}
+		if ch == "" {
+			fmt.Println("*** usage: /part [<#channel>]")
+			return
+		}
+		if err := r.client.Part(ch); err != nil {
+			fmt.Printf("*** part failed: %v\n", err)
+			return
+		}
+		if ch == r.Current() {
+			r.setCurrent("")
+		}
+
+	case "msg", "m":
+		target, body, ok := strings.Cut(rest, " ")
+		if !ok || strings.TrimSpace(body) == "" {
+			fmt.Println("*** usage: /msg <target> <text>")
+			return
+		}
+		if err := r.client.Privmsg(target, body); err != nil {
+			fmt.Printf("*** msg failed: %v\n", err)
+			return
+		}
+		if !r.client.CapEnabled("echo-message") {
+			fmt.Printf("<%s/%s> %s\n", target, r.client.Nick(), body)
+		}
+
+	case "nick":
+		if rest == "" {
+			fmt.Println("*** usage: /nick <newnick>")
+			return
+		}
+		if err := r.client.SetNick(strings.Fields(rest)[0]); err != nil {
+			fmt.Printf("*** nick failed: %v\n", err)
+		}
+
+	case "names":
+		ch := rest
+		if ch == "" {
+			ch = r.Current()
+		}
+		if ch == "" {
+			fmt.Println("*** usage: /names [<#channel>]")
+			return
+		}
+		if err := r.client.Names(ch); err != nil {
+			fmt.Printf("*** names failed: %v\n", err)
+		}
+
+	case "raw":
+		if rest == "" {
+			fmt.Println("*** usage: /raw <protocol line>")
+			return
+		}
+		if err := r.client.SendRaw(rest); err != nil {
+			fmt.Printf("*** raw failed: %v\n", err)
+		}
+
+	case "quit", "q":
+		// Send QUIT; the run loop will end and main's c.Wait() returns.
+		_ = r.client.Quit(rest)
+
+	default:
+		fmt.Printf("*** unknown command /%s — try: /join /part /msg /nick /names /quit /raw (// for a literal /message)\n", cmd)
+	}
+}
+
+// parseConfig builds a client.Config from flags backed by environment
+// variables, and returns the channel to join.
+func parseConfig() (client.Config, string, bool) {
+	var (
+		server   = flag.String("server", env("LURK_SERVER", ""), "server host:port (env LURK_SERVER)")
+		nick     = flag.String("nick", env("LURK_NICK", "lurk"), "nickname (env LURK_NICK)")
+		user     = flag.String("user", env("LURK_USER", ""), "username/ident, defaults to nick (env LURK_USER)")
+		realname = flag.String("realname", env("LURK_REALNAME", "lurk IRC client"), "realname (env LURK_REALNAME)")
+		pass     = flag.String("pass", env("LURK_PASS", ""), "server password (env LURK_PASS)")
+		useTLS   = flag.Bool("tls", envBool("LURK_TLS", false), "connect with TLS (env LURK_TLS)")
+		insecure = flag.Bool("insecure", envBool("LURK_INSECURE", false), "skip TLS certificate verification (env LURK_INSECURE)")
+		channel  = flag.String("channel", env("LURK_CHANNEL", ""), "channel to join (env LURK_CHANNEL)")
+		plain    = flag.Bool("plain", envBool("LURK_PLAIN", false), "use the plain line-mode client instead of the full-screen TUI (env LURK_PLAIN)")
+
+		saslMech = flag.String("sasl", env("LURK_SASL", ""), "SASL mechanism: PLAIN or EXTERNAL (env LURK_SASL)")
+		saslUser = flag.String("sasl-user", env("LURK_SASL_USER", ""), "SASL username (env LURK_SASL_USER)")
+		saslPass = flag.String("sasl-pass", env("LURK_SASL_PASS", ""), "SASL password (env LURK_SASL_PASS)")
+	)
+	flag.Parse()
+
+	cfg := client.Config{
+		Nick:               *nick,
+		User:               *user,
+		Realname:           *realname,
+		Pass:               *pass,
+		Server:             *server,
+		TLS:                *useTLS,
+		InsecureSkipVerify: *insecure,
+		SASL: client.SASLConfig{
+			Mechanism: strings.ToUpper(*saslMech),
+			Username:  *saslUser,
+			Password:  *saslPass,
+		},
+		// Request the library defaults plus echo-message: in an interactive UI
+		// it lets the server confirm our own PRIVMSGs (printed via HandleMessage),
+		// so the REPL suppresses its local echo when it is negotiated.
+		Caps: append(append([]string(nil), client.DefaultCaps...), "echo-message"),
+	}
+	return cfg, *channel, *plain
+}
+
+// registerHandlers wires the printing handlers used by the smoke test.
+func registerHandlers(c *client.Client, channel string) {
+	c.HandleConnected(func(ev *client.Event) {
+		fmt.Printf("*** connected (welcome: %s)\n", ev.Text())
+	})
+
+	c.HandleMessage(func(ev *client.Event) {
+		target := ev.Param(0)
+		if target == c.Nick() {
+			// A private message to us; show the sender as the context.
+			target = ev.Nick()
+		}
+		fmt.Printf("<%s/%s> %s\n", target, ev.Nick(), ev.Text())
+	})
+
+	c.HandleJoin(func(ev *client.Event) {
+		fmt.Printf("--> %s joined %s\n", ev.Nick(), ev.Param(0))
+	})
+	c.HandlePart(func(ev *client.Event) {
+		fmt.Printf("<-- %s left %s (%s)\n", ev.Nick(), ev.Param(0), ev.Text())
+	})
+	c.HandleQuit(func(ev *client.Event) {
+		fmt.Printf("<-- %s quit (%s)\n", ev.Nick(), ev.Text())
+	})
+	c.HandleNick(func(ev *client.Event) {
+		fmt.Printf("*** %s is now known as %s\n", ev.Nick(), ev.Param(0))
+	})
+
+	c.On(irc.NOTICE, func(ev *client.Event) {
+		fmt.Printf("-%s- %s\n", ev.Nick(), ev.Text())
+	})
+
+	// Print the member list once NAMES completes for our channel.
+	c.On(irc.RPL_ENDOFNAMES, func(ev *client.Event) {
+		ch := ev.Param(1)
+		members := c.Members(ch)
+		names := make([]string, 0, len(members))
+		for _, m := range members {
+			names = append(names, m.Prefixes+m.Nick)
+		}
+		fmt.Printf("*** %s members (%d): %s\n", ch, len(names), strings.Join(names, " "))
+	})
+}
+
+// env returns the value of key, or def if unset/empty.
+func env(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return def
+}
+
+// envBool reports a boolean environment variable, treating "1", "true", "yes",
+// and "on" (case-insensitive) as true.
+func envBool(key string, def bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// orUnknown returns s, or "(unknown network)" when empty.
+func orUnknown(s string) string {
+	if s == "" {
+		return "(unknown network)"
+	}
+	return s
+}

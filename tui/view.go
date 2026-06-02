@@ -1,0 +1,370 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"lurk/client"
+)
+
+// view.go owns the on-screen composition: the classic IRC layout of a buffer
+// sidebar, the message scrollback (a bubbles/viewport), an optional channel
+// nicklist, a status bar, and the input pane — assembled with Lip Gloss
+// Join{Horizontal,Vertical}. All sizes derive from the model's width/height,
+// recomputed in layout() on every resize and buffer switch.
+//
+// Layout (target from docs/TUI-RESEARCH.md §4):
+//
+//	┌──────────┬─────────────────────────────┬────────┐
+//	│ buffers  │  message scrollback         │ nicks  │
+//	│ (sidebar)│  (viewport)                 │ (chan) │
+//	├──────────┴─────────────────────────────┴────────┤
+//	│ statusbar: net/nick/buf                          │
+//	├──────────────────────────────────────────────────┤
+//	│ > input                                          │
+//	└──────────────────────────────────────────────────┘
+
+// Pane sizing constants. These are the reserved columns/rows the layout carves
+// out before handing the remainder to the message viewport.
+const (
+	sidebarWidth  = 18 // buffer-list column
+	nicklistWidth = 16 // member-list column (channels only)
+	statusHeight  = 1  // status bar rows
+	inputHeight   = 1  // input pane rows (coordinated with tui-input)
+
+	// minBodyWidth is the floor for the message pane; below this we drop the
+	// nicklist and then the sidebar so the message text never collapses.
+	minBodyWidth = 20
+)
+
+// layout recomputes every pane size from the model's current dimensions and the
+// active buffer, then re-fills the active buffer's viewport. It is called from
+// tui-core on the first WindowSizeMsg, on every resize, and after a buffer
+// switch (so the newly focused buffer's viewport is sized and stuck to bottom).
+//
+// It returns the model by value to fit the Elm update style; the buffers it
+// mutates are pointers, so the viewport state persists across calls.
+func layout(m model) model {
+	if m.width <= 0 || m.height <= 0 {
+		return m
+	}
+
+	bodyW, _ := paneWidths(m.width, m.activeBuffer().Kind == BufferChannel)
+	bodyH := m.height - statusHeight - inputHeight
+	if bodyH < 1 {
+		bodyH = 1
+	}
+
+	// Size the editor to the full terminal width so long input lines scroll
+	// horizontally within the bottom row rather than wrapping.
+	m.input.SetWidth(m.width)
+
+	// Size the active buffer's viewport. Inactive buffers are sized lazily when
+	// they become active (their lines are retained), which keeps resize O(1)
+	// rather than O(buffers).
+	b := m.activeBuffer()
+	if !b.vpReady {
+		b.vp = viewport.New(viewport.WithWidth(bodyW), viewport.WithHeight(bodyH))
+		b.vp.SoftWrap = true
+		b.vpReady = true
+		b.contentWidth = bodyW
+		b.refresh()
+		b.vp.GotoBottom()
+	} else if b.vp.Width() != bodyW || b.vp.Height() != bodyH {
+		stick := b.vp.AtBottom()
+		b.vp.SetWidth(bodyW)
+		b.vp.SetHeight(bodyH)
+		b.contentWidth = bodyW
+		b.refresh()
+		if stick {
+			b.vp.GotoBottom()
+		}
+	}
+	return m
+}
+
+// paneWidths splits the terminal width into (body, columns), reserving the
+// sidebar and (for channels) the nicklist. On narrow terminals it sheds the
+// nicklist first, then the sidebar, so the message body keeps at least
+// minBodyWidth columns. The returned showCols flags tell render which columns
+// to draw.
+func paneWidths(total int, channel bool) (body int, showCols struct{ sidebar, nicklist bool }) {
+	showCols.sidebar = true
+	showCols.nicklist = channel
+
+	cols := sidebarWidth + 1 // sidebar + its separator
+	if showCols.nicklist {
+		cols += nicklistWidth + 1
+	}
+	body = total - cols
+
+	if body < minBodyWidth && showCols.nicklist {
+		// Drop the nicklist.
+		showCols.nicklist = false
+		cols = sidebarWidth + 1
+		body = total - cols
+	}
+	if body < minBodyWidth && showCols.sidebar {
+		// Drop the sidebar too.
+		showCols.sidebar = false
+		body = total
+	}
+	if body < 1 {
+		body = 1
+	}
+	return body, showCols
+}
+
+// render composes the full frame as a tea.View. It reads (never mutates) the
+// model; the only state changes are the cursor placement Bubble Tea needs. The
+// active buffer's viewport is assumed sized by a prior layout() call.
+func render(m model) tea.View {
+	bodyKind := m.activeBuffer().Kind
+	bodyW, show := paneWidths(m.width, bodyKind == BufferChannel)
+	bodyH := m.height - statusHeight - inputHeight
+	if bodyH < 1 {
+		bodyH = 1
+	}
+
+	body := renderBody(m, bodyW, bodyH)
+
+	// Assemble the top region: [sidebar | body | nicklist].
+	cols := []string{}
+	if show.sidebar {
+		cols = append(cols, renderSidebar(m, sidebarWidth, bodyH), verticalRule(bodyH))
+	}
+	cols = append(cols, body)
+	if show.nicklist {
+		cols = append(cols, verticalRule(bodyH), renderNicklist(m, nicklistWidth, bodyH))
+	}
+	top := lipgloss.JoinHorizontal(lipgloss.Top, cols...)
+
+	status := renderStatus(m)
+	input := renderInput(m)
+
+	frame := lipgloss.JoinVertical(lipgloss.Left, top, status, input)
+
+	v := tea.NewView(frame)
+	// Place the hardware cursor at the input caret. The input pane is the last
+	// row; its prompt offset is the editor's cursor position within that row.
+	if cur := inputCursor(m); cur != nil {
+		v.Cursor = cur
+	}
+	return v
+}
+
+// renderBody returns the active buffer's scrollback viewport, padded to the
+// pane height so it always fills its region (an empty buffer would otherwise be
+// shorter than bodyH and misalign the JoinHorizontal).
+func renderBody(m model, w, h int) string {
+	b := m.activeBuffer()
+	var content string
+	if b.vpReady {
+		content = b.vp.View()
+	}
+	// Pad/truncate to exactly h rows and w cols so the columns line up.
+	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(content)
+}
+
+// renderSidebar renders the buffer list with per-buffer activity markers: a
+// highlight ("!") buffer in the highlight style, an unread ("•") buffer bold,
+// the active buffer reverse-highlighted. The layout mirrors senpai's vertical
+// buffer list (reference/senpai/ui/buffers.go DrawVerticalBufferList).
+func renderSidebar(m model, w, h int) string {
+	t := defaultTheme
+	var rows []string
+	for i, b := range m.buffers {
+		marker := " "
+		st := t.sidebarItem
+		switch {
+		case b.Highlight:
+			marker = markHigh
+			st = t.sidebarHigh
+		case b.Unread > 0:
+			marker = markUnread
+			st = t.sidebarUnread
+		}
+		label := b.Title
+		if b.Kind == BufferServer && label == "" {
+			label = "(server)"
+		}
+		line := fmt.Sprintf("%s %s", marker, label)
+		if i == m.active {
+			st = t.sidebarActive
+			line = fmt.Sprintf("%s %s", marker, label)
+		}
+		rows = append(rows, st.Width(w).Render(truncate(line, w)))
+	}
+	body := strings.Join(rows, "\n")
+	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(body)
+}
+
+// renderNicklist renders the channel member list, sorted with ops/voiced first
+// (by prefix) then alphabetically, each colored by its hashed nick color and
+// prefixed with its highest membership symbol. Reads members live from the
+// client.
+func renderNicklist(m model, w, h int) string {
+	// When a context menu is open it takes over the column (nickmenu.go).
+	if m.menuOpen {
+		return renderNickMenu(m, w, h)
+	}
+
+	t := defaultTheme
+	members := sortedMembers(m) // shared order so selection indices line up
+
+	self := ""
+	if m.cli != nil {
+		self = m.cli.Nick()
+	}
+
+	title := t.nicklistTtl.Render(fmt.Sprintf("Users (%d)", len(members)))
+	rows := []string{title}
+	focused := m.focus == focusNicks
+	for i, mem := range members {
+		sym := ""
+		if mem.Prefixes != "" {
+			sym = string(mem.Prefixes[0])
+		}
+		if focused && i == m.nickSel {
+			// Selected row: a reverse-video bar (unstyled nick so it stays legible).
+			rows = append(rows, lipgloss.NewStyle().Reverse(true).Render(truncate(sym+mem.Nick, w)))
+			continue
+		}
+		isSelf := equalFold(mem.Nick, self)
+		nickStyled := lipgloss.NewStyle().Foreground(t.nickColor(mem.Nick, isSelf)).Render(mem.Nick)
+		rows = append(rows, truncate(sym+nickStyled, w))
+	}
+	body := strings.Join(rows, "\n")
+	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(body)
+}
+
+// renderStatus renders the bottom status bar with network/nick/active-buffer
+// and a scroll indicator when the viewport is scrolled up.
+func renderStatus(m model) string {
+	network, nick := "", ""
+	if m.cli != nil {
+		network = m.cli.Network()
+		nick = m.cli.Nick()
+	}
+	b := m.activeBuffer()
+	scrolled := b.vpReady && !b.vp.AtBottom()
+	return defaultTheme.statusLine(network, nick, b.Title, scrolled, m.width)
+}
+
+// verticalRule draws a 1-cell-wide vertical separator h rows tall, used between
+// the panes in the top region.
+func verticalRule(h int) string {
+	rule := defaultTheme.verticalRule.Render("│")
+	rows := make([]string, h)
+	for i := range rows {
+		rows[i] = rule
+	}
+	return strings.Join(rows, "\n")
+}
+
+// truncate shortens s to at most w display columns, appending an ellipsis when
+// it overflows. It measures with lipgloss.Width so ANSI styling does not count
+// toward the width.
+func truncate(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	// Trim rune-by-rune until it fits, leaving room for the ellipsis. This is
+	// O(n) in the rune count, fine for sidebar/nick rows.
+	runes := []rune(stripANSI(s))
+	for len(runes) > 0 && lipgloss.Width(string(runes))+1 > w {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes) + "…"
+}
+
+// prefixRank maps a member's highest prefix symbol to a sort rank (lower =
+// higher privilege). Unknown/empty prefixes sort last. The ordering matches the
+// conventional ~&@%+ hierarchy; servers advertise their own via PREFIX, but for
+// the nicklist sort this fixed order is a reasonable default.
+func prefixRank(prefixes string) int {
+	if prefixes == "" {
+		return len(prefixOrder)
+	}
+	for i, p := range prefixOrder {
+		if rune(prefixes[0]) == p {
+			return i
+		}
+	}
+	return len(prefixOrder)
+}
+
+// prefixOrder is the conventional membership-prefix privilege order, highest
+// first: owner, admin, op, halfop, voice.
+var prefixOrder = []rune{'~', '&', '@', '%', '+'}
+
+// appendLine formats a client event into a scrollback row for buffer b, updates
+// b's unread/highlight counters when b is not focused, and refreshes the
+// viewport if b is active. It is the seam tui-core's routeEvent calls for every
+// inbound event; the view layer owns all formatting (see the message to
+// tui-core agreeing the raw-Event signature).
+func appendLine(m model, b *Buffer, ev client.Event) model {
+	self := ""
+	if m.cli != nil {
+		self = m.cli.Nick()
+	}
+	row, highlight := defaultTheme.formatLine(ev, self)
+	b.addLine(row)
+
+	active := b == m.activeBuffer()
+	if !active {
+		b.Unread++
+		if highlight {
+			b.Highlight = true
+		}
+	} else {
+		b.refresh()
+	}
+	return m
+}
+
+// appendInfo appends a local informational line (command output, error, status)
+// to buffer b. Unlike appendLine it is not tied to a protocol event and never
+// raises unread/highlight.
+func appendInfo(m model, b *Buffer, text string) model {
+	b.addLine(defaultTheme.formatInfo(text))
+	if b == m.activeBuffer() {
+		b.refresh()
+	} else {
+		b.Unread++
+	}
+	return m
+}
+
+// echoSelf appends a locally-echoed copy of an outbound PRIVMSG to the target
+// buffer, used when the server has not negotiated echo-message so the user sees
+// their own message immediately. It ensures the target buffer exists, formats
+// the line as a self message, and switches focus is left to the caller.
+func echoSelf(m model, target, text string) model {
+	kind := BufferPM
+	if isChannel(target) {
+		kind = BufferChannel
+	}
+	b, _ := m.ensureBuffer(target, kind)
+	b.addLine(defaultTheme.formatSelfMessage(currentNick(m), text))
+	if b == m.activeBuffer() {
+		b.refresh()
+	}
+	return m
+}
+
+// currentNick returns the client's nick, or a placeholder when there is no
+// client (tests). Centralized so the self-echo formatting has a single source.
+func currentNick(m model) string {
+	if m.cli != nil {
+		return m.cli.Nick()
+	}
+	return "me"
+}

@@ -1,0 +1,9 @@
+# Local read-only reference copy of Ergo's source (see CREDITS.md).
+# Consulted during development; not part of Lurk and not redistributed.
+/reference/
+
+# Go build artifacts
+/lurk
+/cmd/lurk/lurk
+*.test
+*.out
