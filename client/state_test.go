@@ -89,7 +89,7 @@ func TestStateModeFounderPrefix(t *testing.T) {
 	s.self = "me"
 	// Client joins; tracking adds self with no prefix.
 	s.addChannel("#new")
-	s.channel("#new").addMember(s.foldKey, "me", "")
+	s.channel("#new").addMember(s.foldKey, "me", "", "", "")
 
 	// Server grants founder.
 	s.applyModeChange("#new", "+q", []string{"me"})
@@ -129,7 +129,7 @@ func TestStateCaseFoldingKeysChannelsAndNicks(t *testing.T) {
 	if cs == nil {
 		t.Fatal("channel lookup #CHAN failed")
 	}
-	cs.addMember(s.foldKey, "Nick[X]", "@")
+	cs.addMember(s.foldKey, "Nick[X]", "@", "", "")
 	if _, ok := cs.members[s.foldKey("nick{x}")]; !ok {
 		t.Error("rfc1459 nick folding not applied to member key")
 	}

@@ -72,6 +72,12 @@ func routeEvent(m model, ev client.Event) model {
 		return routeText(m, ev)
 	case irc.JOIN, irc.PART, irc.QUIT, irc.NICK, irc.MODE, irc.TOPIC, irc.KICK:
 		return routeMembership(m, ev)
+	case irc.ACCOUNT, irc.AWAY, irc.CHGHOST, irc.SETNAME:
+		// Pure metadata notifications: the client has already folded these into
+		// member state (account/away/host), and the nicklist reflects them live.
+		// Rendering a line per toggle would be noise, so they are intentionally
+		// not written to any buffer.
+		return m
 	case irc.RPL_AWAY, irc.RPL_WHOISUSER, irc.RPL_WHOISSERVER,
 		irc.RPL_WHOISOPERATOR, irc.RPL_WHOISIDLE, irc.RPL_ENDOFWHOIS,
 		irc.RPL_WHOISCHANNELS, irc.RPL_WHOISACCOUNT, irc.RPL_WHOISACTUALLY,

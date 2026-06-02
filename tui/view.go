@@ -225,21 +225,43 @@ func renderNicklist(m model, w, h int) string {
 	rows := []string{title}
 	focused := m.focus == focusNicks
 	for i, mem := range members {
-		sym := ""
-		if mem.Prefixes != "" {
-			sym = string(mem.Prefixes[0])
-		}
-		if focused && i == m.nickSel {
-			// Selected row: a reverse-video bar (unstyled nick so it stays legible).
-			rows = append(rows, lipgloss.NewStyle().Reverse(true).Render(truncate(sym+mem.Nick, w)))
-			continue
-		}
+		selected := focused && i == m.nickSel
 		isSelf := equalFold(mem.Nick, self)
-		nickStyled := lipgloss.NewStyle().Foreground(t.nickColor(mem.Nick, isSelf)).Render(mem.Nick)
-		rows = append(rows, truncate(sym+nickStyled, w))
+		rows = append(rows, t.nickRow(mem, w, selected, isSelf))
 	}
 	body := strings.Join(rows, "\n")
 	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(body)
+}
+
+// nickRow formats a single nicklist row for mem within column width w. Away
+// members render faint, logged-in members get a subtle trailing "·" badge, and
+// the selected row (when the nicklist is focused) is shown as a reverse-video
+// bar. The result never exceeds w display cells: the nick is truncated first,
+// reserving a column for the badge so the styled output fits.
+func (t theme) nickRow(mem client.Member, w int, selected, isSelf bool) string {
+	sym := ""
+	if mem.Prefixes != "" {
+		sym = string(mem.Prefixes[0])
+	}
+	badge := ""
+	if mem.Account != "" {
+		badge = "·"
+	}
+	if selected {
+		// Reverse-video bar with an unstyled label so it stays legible.
+		return lipgloss.NewStyle().Reverse(true).Render(truncate(sym+mem.Nick+badge, w))
+	}
+	nickText := truncate(sym+mem.Nick, w-lipgloss.Width(badge))
+	var styled string
+	if mem.Away {
+		styled = t.nicklistAway.Render(nickText)
+	} else {
+		styled = lipgloss.NewStyle().Foreground(t.nickColor(mem.Nick, isSelf)).Render(nickText)
+	}
+	if badge != "" {
+		styled += t.nicklistAcct.Render(badge)
+	}
+	return styled
 }
 
 // renderStatus renders the bottom status bar with network/nick/active-buffer

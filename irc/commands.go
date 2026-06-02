@@ -25,6 +25,10 @@ const (
 	TOPIC        = "TOPIC"
 	BATCH        = "BATCH"
 	TAGMSG       = "TAGMSG"
+	ACCOUNT      = "ACCOUNT"
+	AWAY         = "AWAY"
+	CHGHOST      = "CHGHOST"
+	SETNAME      = "SETNAME"
 )
 
 // CAP subcommands, carried as the first/second parameter of a CAP message.

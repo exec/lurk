@@ -203,6 +203,12 @@ func (c *Client) track(m *irc.Message) {
 		c.st.removeEverywhere(m.Nick())
 	case irc.NICK:
 		c.trackNick(m)
+	case irc.ACCOUNT:
+		c.trackAccount(m)
+	case irc.AWAY:
+		c.trackAway(m)
+	case irc.CHGHOST:
+		c.trackChghost(m)
 	case irc.RPL_NAMREPLY:
 		c.trackNamReply(m)
 	case irc.MODE:
@@ -249,17 +255,28 @@ func (c *Client) trackTopicWhoTime(m *irc.Message) {
 }
 
 // trackJoin records a JOIN. When the joiner is the client itself, the channel
-// is added to the joined set; otherwise the joiner is added as a member.
+// is added to the joined set; otherwise the joiner is added as a member. The
+// joiner's ident/host come from the source mask, and under extended-join the
+// account is the first parameter ("*" meaning not logged in).
 func (c *Client) trackJoin(m *irc.Message) {
 	joiner := m.Nick()
+	user, host := m.User(), m.Host()
 	self := c.st.foldKey(joiner) == c.st.foldKey(c.st.self)
+	// extended-join: ":nick!user@host JOIN <channel> <account> :<realname>".
+	// Param(0) is the channel; Param(1), when present, is the account.
+	account := normalizeAccount(m.Param(1))
 	for _, ch := range joinTargets(m) {
 		if ch == "" {
 			continue
 		}
 		cs := c.st.addChannel(ch)
 		if !self {
-			cs.addMember(c.st.foldKey, joiner, "")
+			cs.addMember(c.st.foldKey, joiner, "", user, host)
+			if account != "" {
+				if mem := cs.members[c.st.foldKey(joiner)]; mem != nil {
+					mem.Account = account
+				}
+			}
 		}
 	}
 }
@@ -286,6 +303,40 @@ func (c *Client) trackPart(m *irc.Message) {
 // trackNick records a NICK change across every channel the user shares.
 func (c *Client) trackNick(m *irc.Message) {
 	c.st.renameEverywhere(m.Nick(), m.Param(0))
+}
+
+// trackAccount records an account-notify ":nick!user@host ACCOUNT <account>"
+// message, updating the nick's Account in every channel it shares. An account of
+// "*" (or empty) means the user logged out.
+func (c *Client) trackAccount(m *irc.Message) {
+	account := normalizeAccount(m.Param(0))
+	c.st.updateMemberEverywhere(c.st.foldKey(m.Nick()), func(mem *Member) {
+		mem.Account = account
+	})
+}
+
+// trackAway records an away-notify message: ":nick!user@host AWAY :<message>"
+// marks the nick away, while ":nick!user@host AWAY" with no parameter marks them
+// back. The away text itself is not stored on the member (whois carries it).
+func (c *Client) trackAway(m *irc.Message) {
+	away := len(m.Params) > 0
+	c.st.updateMemberEverywhere(c.st.foldKey(m.Nick()), func(mem *Member) {
+		mem.Away = away
+	})
+}
+
+// trackChghost records a chghost ":nick!user@host CHGHOST <newuser> <newhost>"
+// message, updating the nick's User/Host in every channel it shares.
+func (c *Client) trackChghost(m *irc.Message) {
+	newUser, newHost := m.Param(0), m.Param(1)
+	c.st.updateMemberEverywhere(c.st.foldKey(m.Nick()), func(mem *Member) {
+		if newUser != "" {
+			mem.User = newUser
+		}
+		if newHost != "" {
+			mem.Host = newHost
+		}
+	})
 }
 
 // trackNamReply records the members from a RPL_NAMREPLY (353). The params are

@@ -20,6 +20,23 @@ type Member struct {
 	// Prefixes are the membership prefix symbols held by the member, ordered
 	// highest-privilege first per the server's PREFIX advertisement (e.g. "@+").
 	Prefixes string
+
+	// User is the member's ident/username, when known (learned from
+	// userhost-in-names, extended-join, or chghost). Empty if unknown.
+	User string
+
+	// Host is the member's hostname, when known (same sources as User). Empty if
+	// unknown.
+	Host string
+
+	// Account is the member's services account name (from account-notify or the
+	// extended-join account param). Empty if the member is not logged in or it is
+	// unknown.
+	Account string
+
+	// Away reports whether the member is currently marked away (tracked via
+	// away-notify). False if present/unknown.
+	Away bool
 }
 
 // channelState tracks one joined channel: its display name, members, and topic.
@@ -100,17 +117,26 @@ func (s *state) removeChannel(name string) {
 	delete(s.channels, s.foldKey(name))
 }
 
-// addMember adds or updates a member of a channel with the given prefixes.
-func (cs *channelState) addMember(fold func(string) string, nick, prefixes string) {
+// addMember adds or updates a member of a channel with the given prefixes and,
+// when known, ident/host. Empty user/host arguments leave any previously learned
+// values intact, and re-seeing an existing member preserves metadata learned
+// elsewhere (e.g. an Account from extended-join survives a later NAMES sweep).
+func (cs *channelState) addMember(fold func(string) string, nick, prefixes, user, host string) {
 	key := fold(nick)
 	if m, ok := cs.members[key]; ok {
 		m.Nick = nick
 		if prefixes != "" {
 			m.Prefixes = prefixes
 		}
+		if user != "" {
+			m.User = user
+		}
+		if host != "" {
+			m.Host = host
+		}
 		return
 	}
-	cs.members[key] = &Member{Nick: nick, Prefixes: prefixes}
+	cs.members[key] = &Member{Nick: nick, Prefixes: prefixes, User: user, Host: host}
 }
 
 // removeMember drops a member from a channel.
@@ -140,18 +166,31 @@ func (s *state) applyNamReply(channel, names string) {
 	cs := s.addChannel(channel)
 	symbols := s.feat.PrefixSymbols()
 	for _, raw := range strings.Fields(names) {
-		nick, prefixes := splitPrefixes(raw, symbols)
+		mask, prefixes := splitPrefixes(raw, symbols)
 		// Under the userhost-in-names capability, each entry is a full
 		// nick!user@host mask rather than a bare nick. A nick can contain
-		// neither '!' nor '@', so truncating at the first '!' yields the nick.
-		if bang := strings.IndexByte(nick, '!'); bang >= 0 {
-			nick = nick[:bang]
-		}
+		// neither '!' nor '@', so splitting at those bytes yields the parts.
+		nick, user, host := splitMask(mask)
 		if nick == "" {
 			continue
 		}
-		cs.addMember(s.foldKey, nick, prefixes)
+		cs.addMember(s.foldKey, nick, prefixes, user, host)
 	}
+}
+
+// splitMask splits a nick!user@host mask into its parts. A bare nick (no '!' or
+// '@') returns ("nick", "", ""); userhost-in-names entries return all three.
+func splitMask(mask string) (nick, user, host string) {
+	nick = mask
+	if at := strings.IndexByte(nick, '@'); at >= 0 {
+		host = nick[at+1:]
+		nick = nick[:at]
+	}
+	if bang := strings.IndexByte(nick, '!'); bang >= 0 {
+		user = nick[bang+1:]
+		nick = nick[:bang]
+	}
+	return nick, user, host
 }
 
 // splitPrefixes separates leading membership prefix symbols from a nick in a
@@ -290,6 +329,27 @@ func (s *state) removeEverywhere(nick string) {
 	for _, cs := range s.channels {
 		cs.removeMember(s.foldKey, nick)
 	}
+}
+
+// updateMemberEverywhere applies mutate to the member identity foldedNick in
+// every channel they're known to be in. It is used for the non-channel-scoped
+// notifications (account-notify, away-notify, chghost) which name a nick but no
+// channel. foldedNick must already be folded with s.foldKey.
+func (s *state) updateMemberEverywhere(foldedNick string, mutate func(*Member)) {
+	for _, cs := range s.channels {
+		if m, ok := cs.members[foldedNick]; ok {
+			mutate(m)
+		}
+	}
+}
+
+// normalizeAccount maps the wire representations of "not logged in" (the "*"
+// placeholder, or an empty field) to the empty string used by Member.Account.
+func normalizeAccount(account string) string {
+	if account == "*" {
+		return ""
+	}
+	return account
 }
 
 // joinTargets returns the channel name(s) from a JOIN message. JOIN can carry a

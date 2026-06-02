@@ -58,6 +58,8 @@ type theme struct {
 	nicklist     lipgloss.Style
 	nicklistOp   lipgloss.Style // ops/voiced get a tint via prefix
 	nicklistTtl  lipgloss.Style // the "Users (n)" title row
+	nicklistAway lipgloss.Style // away members rendered faint
+	nicklistAcct lipgloss.Style // the "logged-in" badge marker
 	verticalRule lipgloss.Style // 1-cell separator between panes
 
 	// nickPalette is the set of colors nick hashing selects from.
@@ -121,6 +123,8 @@ func newTheme() theme {
 		nicklist:     lipgloss.NewStyle().Foreground(brightGray),
 		nicklistOp:   lipgloss.NewStyle().Foreground(lipgloss.Color("203")),
 		nicklistTtl:  lipgloss.NewStyle().Foreground(gray).Bold(true),
+		nicklistAway: lipgloss.NewStyle().Foreground(gray).Faint(true),
+		nicklistAcct: lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
 		verticalRule: lipgloss.NewStyle().Foreground(lipgloss.Color("237")),
 
 		nickPalette: palette,
