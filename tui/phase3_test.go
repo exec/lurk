@@ -144,6 +144,19 @@ func TestLiveMessageMarksUnread(t *testing.T) {
 	}
 }
 
+// TestBatchMarkersNotRendered verifies BATCH open/close control messages do not
+// dump raw lines into the server buffer (their grouping is applied to the inner
+// messages via Event.BatchType instead).
+func TestBatchMarkersNotRendered(t *testing.T) {
+	m := newTestModel()
+	before := len(m.buffers[0].lines)
+	m = routeEvent(m, evt(t, ":srv BATCH +xyz chathistory #c"))
+	m = routeEvent(m, evt(t, ":srv BATCH -xyz"))
+	if got := len(m.buffers[0].lines); got != before {
+		t.Errorf("BATCH markers wrote %d server-buffer lines, want 0", got-before)
+	}
+}
+
 func linesText(lines []string) []string {
 	out := make([]string, len(lines))
 	for i, l := range lines {

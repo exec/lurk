@@ -78,6 +78,12 @@ func routeEvent(m model, ev client.Event) model {
 		// Rendering a line per toggle would be noise, so they are intentionally
 		// not written to any buffer.
 		return m
+	case irc.BATCH:
+		// Batch open/close markers are control messages with no body to show; the
+		// batch's effect is already applied to the inner messages via
+		// Event.BatchType(). Rendering them would dump "BATCH +ref …" noise into
+		// the server buffer on every chathistory fetch.
+		return m
 	case irc.TAGMSG:
 		// Client-tag-only messages (e.g. +typing): no body to render. Typing state
 		// is tracked separately and surfaced in the status bar.

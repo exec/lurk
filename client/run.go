@@ -239,6 +239,8 @@ func (c *Client) track(m *irc.Message) {
 		c.trackPart(m)
 	case irc.QUIT:
 		c.st.removeEverywhere(m.Nick())
+	case irc.KICK:
+		c.trackKick(m)
 	case irc.NICK:
 		c.trackNick(m)
 	case irc.ACCOUNT:
@@ -336,6 +338,27 @@ func (c *Client) trackPart(m *irc.Message) {
 		}
 		if cs := c.st.channel(ch); cs != nil {
 			cs.removeMember(c.st.foldKey, parter)
+		}
+	}
+}
+
+// trackKick records a KICK (":kicker!u@h KICK <channel> <user>[,<user>...]
+// [:reason]"). When the client itself is the target the channel is forgotten;
+// otherwise each kicked user is dropped from the channel's members. Multiple
+// targets in one channel (a comma list) are all handled.
+func (c *Client) trackKick(m *irc.Message) {
+	channel := m.Param(0)
+	cs := c.st.channel(channel)
+	for _, nick := range strings.Split(m.Param(1), ",") {
+		if nick == "" {
+			continue
+		}
+		if c.st.foldKey(nick) == c.st.foldKey(c.st.self) {
+			c.st.removeChannel(channel)
+			return
+		}
+		if cs != nil {
+			cs.removeMember(c.st.foldKey, nick)
 		}
 	}
 }
