@@ -77,6 +77,10 @@ type Buffer struct {
 	// contentWidth is the width lines were last wrapped to. When the pane
 	// resizes, content is re-wrapped and pushed into the viewport.
 	contentWidth int
+
+	// gotHistory is set once a chathistory backlog line has been rendered into
+	// this buffer, so the "── history ──" divider is drawn only once.
+	gotHistory bool
 }
 
 // newBuffer creates a channel or PM buffer for name. The server buffer is built
@@ -116,6 +120,17 @@ func isChannel(name string) bool {
 // addLine appends a pre-formatted row to the scrollback, enforcing the
 // scrollback cap. It does not touch the viewport; layout/refresh push lines into
 // the viewport so sizing stays centralized.
+// markHistory draws the one-time "── history ──" divider that separates
+// replayed chathistory backlog from live traffic. Subsequent calls are no-ops,
+// so a multi-line history batch yields a single divider.
+func (b *Buffer) markHistory(t theme) {
+	if b.gotHistory {
+		return
+	}
+	b.addLine(t.dim.Render("── history ──"))
+	b.gotHistory = true
+}
+
 func (b *Buffer) addLine(s string) {
 	b.lines = append(b.lines, s)
 	if len(b.lines) > scrollbackLimit {

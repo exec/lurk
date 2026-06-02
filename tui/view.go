@@ -274,7 +274,24 @@ func renderStatus(m model) string {
 	}
 	b := m.activeBuffer()
 	scrolled := b.vpReady && !b.vp.AtBottom()
-	return defaultTheme.statusLine(network, nick, b.Title, scrolled, m.width)
+	typing := typingNote(m.typingNicks(asciiLower(b.Title)))
+	return defaultTheme.statusLine(network, nick, b.Title, scrolled, typing, m.width)
+}
+
+// typingNote renders the "X is typing…" status segment for the given typers, or
+// "" when nobody is typing. Two names are joined with "and"; more collapse to
+// "N people".
+func typingNote(nicks []string) string {
+	switch len(nicks) {
+	case 0:
+		return ""
+	case 1:
+		return nicks[0] + " is typing…"
+	case 2:
+		return nicks[0] + " and " + nicks[1] + " are typing…"
+	default:
+		return fmt.Sprintf("%d people are typing…", len(nicks))
+	}
 }
 
 // verticalRule draws a 1-cell-wide vertical separator h rows tall, used between
@@ -336,6 +353,11 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 	self := ""
 	if m.cli != nil {
 		self = m.cli.Nick()
+	}
+	// Mark the start of a chathistory backlog with a one-time divider so the user
+	// can tell replayed history from live traffic.
+	if ev.BatchType() == "chathistory" {
+		b.markHistory(defaultTheme)
 	}
 	row, highlight := defaultTheme.formatLine(ev, self)
 	b.addLine(row)

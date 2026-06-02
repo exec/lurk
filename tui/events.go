@@ -78,6 +78,17 @@ func routeEvent(m model, ev client.Event) model {
 		// Rendering a line per toggle would be noise, so they are intentionally
 		// not written to any buffer.
 		return m
+	case irc.TAGMSG:
+		// Client-tag-only messages (e.g. +typing): no body to render. Typing state
+		// is tracked separately and surfaced in the status bar.
+		return routeTagmsg(m, ev)
+	case irc.FAIL, irc.WARN, irc.NOTE:
+		// Standard replies render where the user is looking (the command that
+		// triggered them was issued from the active buffer).
+		b := m.activeBuffer()
+		b.addLine(defaultTheme.formatStandardReply(ev))
+		b.refresh()
+		return m
 	case irc.RPL_AWAY, irc.RPL_WHOISUSER, irc.RPL_WHOISSERVER,
 		irc.RPL_WHOISOPERATOR, irc.RPL_WHOISIDLE, irc.RPL_ENDOFWHOIS,
 		irc.RPL_WHOISCHANNELS, irc.RPL_WHOISACCOUNT, irc.RPL_WHOISACTUALLY,
@@ -113,9 +124,43 @@ func routeText(m model, ev client.Event) model {
 		b, idx = m.ensureBuffer(target, BufferPM)
 	}
 
+	// A message from a user ends any "typing…" indication they had in this buffer.
+	m = m.clearTyping(typingBufferKey(target, ev.Nick(), self), ev.Nick())
+
 	m = appendLine(m, b, ev)
 	m = markActivity(m, idx, mentionsSelf(ev.Text(), self))
 	return m
+}
+
+// routeTagmsg applies a TAGMSG carrying the +typing client tag to the model's
+// typing state. "active" (or "paused") marks the sender typing in the relevant
+// buffer; "done" clears it. TAGMSGs without a +typing tag are ignored (there is
+// nothing to display).
+func routeTagmsg(m model, ev client.Event) model {
+	state := ev.Message.Tags.Get("+typing")
+	if state == "" {
+		return m
+	}
+	self := ""
+	if m.cli != nil {
+		self = m.cli.Nick()
+	}
+	key := typingBufferKey(ev.Param(0), ev.Nick(), self)
+	if state == "active" {
+		return m.noteTyping(key, ev.Nick())
+	}
+	// "paused" and "done" both stop showing the indicator.
+	return m.clearTyping(key, ev.Nick())
+}
+
+// typingBufferKey returns the ASCII-folded key of the buffer a typing/message
+// event belongs to: the channel target for channel traffic, or the sender's
+// nick for a message addressed to us (a PM, whose buffer is the peer).
+func typingBufferKey(target, sender, self string) string {
+	if isChannel(target) || !equalFold(target, self) {
+		return asciiLower(target)
+	}
+	return asciiLower(sender)
 }
 
 // routeMembership routes JOIN/PART/QUIT/NICK/TOPIC/etc. to a channel buffer

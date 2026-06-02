@@ -224,6 +224,45 @@ func (t theme) applyHighlight(line, body, self string, isSelf bool) (string, boo
 	return t.highlight.Render(stripANSI(line)), true
 }
 
+// formatStandardReply renders a standard-replies line (FAIL/WARN/NOTE) in a
+// readable form, e.g. "! FAIL JOIN ACCOUNT_REQUIRED: You must register…". The
+// wire form is "<TYPE> <COMMAND> <code> [context...] :<description>": Param(0)
+// is the command the reply concerns, Param(1) the machine-readable code, any
+// middle params are extra context, and the trailing param is the human text.
+// FAIL is styled most severely, NOTE least.
+func (t theme) formatStandardReply(ev client.Event) string {
+	ts := t.timestamp.Render(ev.Time().Local().Format("15:04"))
+
+	kind := ev.Command() // FAIL, WARN, or NOTE
+	cmd := ev.Param(0)
+	code := ev.Param(1)
+	desc := ev.Text()
+
+	// Context params sit between the code (index 1) and the trailing description.
+	var context string
+	if n := len(ev.Message.Params); n > 3 {
+		context = " " + strings.Join(ev.Message.Params[2:n-1], " ")
+	}
+
+	var marker string
+	var style lipgloss.Style
+	switch kind {
+	case "FAIL":
+		marker, style = "✗", lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+	case "WARN":
+		marker, style = "⚠", t.notice
+	default: // NOTE
+		marker, style = "ℹ", t.info
+	}
+
+	head := strings.TrimSpace(kind + " " + cmd + " " + code + context)
+	body := head
+	if desc != "" && desc != code {
+		body += ": " + desc
+	}
+	return fmt.Sprintf("%s %s", ts, style.Render(marker+" "+body))
+}
+
 // formatInfo renders a local informational line (command output / error).
 func (t theme) formatInfo(text string) string {
 	ts := t.timestamp.Render(time.Now().Format("15:04"))
@@ -243,7 +282,7 @@ func (t theme) formatSelfMessage(self, text string) string {
 
 // statusLine renders the bottom status bar: network, current nick, active
 // buffer, and a scroll indicator. width pads it to the full terminal width.
-func (t theme) statusLine(network, nick, buffer string, scrolled bool, width int) string {
+func (t theme) statusLine(network, nick, buffer string, scrolled bool, typing string, width int) string {
 	if network == "" {
 		network = "(connecting)"
 	}
@@ -254,6 +293,9 @@ func (t theme) statusLine(network, nick, buffer string, scrolled bool, width int
 		seg("net", network),
 		seg("nick", nick),
 		seg("buf", buffer),
+	}
+	if typing != "" {
+		parts = append(parts, t.info.Render(typing))
 	}
 	if scrolled {
 		parts = append(parts, t.statusKey.Render("[scrolled]"))

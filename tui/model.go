@@ -21,6 +21,8 @@
 package tui
 
 import (
+	"time"
+
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -94,7 +96,28 @@ type model struct {
 	menuOpen bool
 	menuNick string
 	menuSel  int
+
+	// typing tracks remote typing notifications (the +typing client tag),
+	// keyed by the ASCII-folded buffer the typer is composing in (a channel name
+	// or, for a PM, the peer's nick). Entries expire after typingTTL or when the
+	// typer sends a message / a "done" notification. The status bar shows the
+	// active buffer's typers.
+	typing map[string][]typingEntry
+
+	// lastTypingSent is when we last emitted our own "active" +typing tag, used
+	// to throttle outbound typing notifications (see maybeSendTyping).
+	lastTypingSent time.Time
 }
+
+// typingEntry is one remote user composing in a buffer, with the moment its
+// "typing…" indication should expire absent a refresh.
+type typingEntry struct {
+	nick   string
+	expiry time.Time
+}
+
+// typingTTL is how long a "X is typing…" indication lingers without a refresh.
+const typingTTL = 6 * time.Second
 
 // newModel builds the initial model for a connected client. cli may be nil for
 // tests; sub is typically cli.Events(). It seeds the always-present server
@@ -108,8 +131,61 @@ func newModel(cli *client.Client, sub <-chan client.Event) model {
 		keys:    defaultKeymap(),
 		help:    help.New(),
 		input:   newInput(),
+		typing:  make(map[string][]typingEntry),
 	}
 	return m
+}
+
+// noteTyping records that nick is composing in the buffer keyed by key,
+// (re)setting its expiry to typingTTL from now. Returns the mutated model so it
+// composes in the value-semantics Update flow.
+func (m model) noteTyping(key, nick string) model {
+	if m.typing == nil {
+		m.typing = make(map[string][]typingEntry)
+	}
+	entries := m.typing[key]
+	now := time.Now()
+	for i := range entries {
+		if equalFold(entries[i].nick, nick) {
+			entries[i].expiry = now.Add(typingTTL)
+			m.typing[key] = entries
+			return m
+		}
+	}
+	m.typing[key] = append(entries, typingEntry{nick: nick, expiry: now.Add(typingTTL)})
+	return m
+}
+
+// clearTyping drops nick's typing indication from the buffer keyed by key (on a
+// "done"/"paused" notice or once they send a message).
+func (m model) clearTyping(key, nick string) model {
+	entries := m.typing[key]
+	out := entries[:0]
+	for _, e := range entries {
+		if !equalFold(e.nick, nick) {
+			out = append(out, e)
+		}
+	}
+	if len(out) == 0 {
+		delete(m.typing, key)
+	} else {
+		m.typing[key] = out
+	}
+	return m
+}
+
+// typingNicks returns the still-current typers in the buffer keyed by key,
+// dropping any whose indication has expired. Expired entries are not pruned from
+// the map here (render is read-only); they are overwritten on the next notice.
+func (m model) typingNicks(key string) []string {
+	now := time.Now()
+	var nicks []string
+	for _, e := range m.typing[key] {
+		if e.expiry.After(now) {
+			nicks = append(nicks, e.nick)
+		}
+	}
+	return nicks
 }
 
 // serverBufferTitle picks a label for the status buffer: the network name if
@@ -235,6 +311,18 @@ func equalFold(a, b string) bool {
 		}
 	}
 	return true
+}
+
+// asciiLower returns s lowercased over ASCII A-Z, the canonical map key for
+// case-insensitive buffer/nick lookups under the server's ascii casemapping.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if 'A' <= b[i] && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 // containsFold reports whether sub occurs in s under ASCII case folding. It is

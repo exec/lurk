@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -120,9 +122,41 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Editor / command handling lives in tui-input. It returns a possibly
 	// mutated model, an action for the core to apply, and a Cmd.
+	before := m.input.Value()
 	m, act, cmd := handleInput(m, msg)
 	m = applyAction(m, act)
+	m = m.maybeSendTyping(before, act)
 	return m, cmd
+}
+
+// typingThrottle is the minimum gap between successive outbound "active" typing
+// notifications, so editing a line emits at most one tag every few seconds.
+const typingThrottle = 3 * time.Second
+
+// maybeSendTyping emits our own +typing notifications as the user edits the
+// input of a channel/PM buffer: a throttled "active" while the (non-command)
+// line grows or changes, and a "done" when a message is sent. It is a no-op
+// without a client, on the server buffer, or while composing a slash command.
+func (m model) maybeSendTyping(before string, act action) model {
+	if m.cli == nil || m.activeBuffer().Kind == BufferServer {
+		return m
+	}
+	target := m.activeBuffer().Title
+	if act.kind == actionSend {
+		_ = m.cli.Typing(target, "done")
+		m.lastTypingSent = time.Time{}
+		return m
+	}
+	after := m.input.Value()
+	if after == before || after == "" || strings.HasPrefix(after, "/") {
+		return m
+	}
+	now := time.Now()
+	if now.Sub(m.lastTypingSent) >= typingThrottle {
+		_ = m.cli.Typing(target, "active")
+		m.lastTypingSent = now
+	}
+	return m
 }
 
 // applyAction performs the control action the input layer asked for. Keeping
