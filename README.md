@@ -1,7 +1,6 @@
-# lurk
-
-A modern **IRCv3 client** written in Go — a clean protocol library plus a
-full-screen terminal UI.
+<p align="center">
+  <img src="assets/lurk.png" alt="lurk" width="480">
+</p>
 
 ## Status
 
