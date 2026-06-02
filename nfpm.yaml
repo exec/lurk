@@ -1,0 +1,23 @@
+# nfpm configuration for building lurk .deb and .rpm packages.
+# Driven by scripts/package.sh, which sets PKG_ARCH / PKG_VERSION / PKG_BIN per
+# target and invokes `nfpm package`. See https://nfpm.goreleaser.com.
+name: lurk
+arch: ${PKG_ARCH} # amd64 | arm64 (nfpm maps to x86_64/aarch64 for rpm)
+platform: linux
+version: ${PKG_VERSION}
+section: net
+priority: optional
+maintainer: exec <execxd@icloud.com>
+description: |
+  Modern IRCv3 client with a terminal UI.
+  lurk is a full-screen terminal IRC client (and protocol library) built on
+  Bubble Tea, supporting TLS, SASL, capability negotiation, message tags,
+  server-time, chathistory backlog, typing notifications and more.
+vendor: lurk
+homepage: https://github.com/exec/lurk
+license: MIT
+contents:
+  - src: ${PKG_BIN}
+    dst: /usr/bin/lurk
+    file_info:
+      mode: 0755

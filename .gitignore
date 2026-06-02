@@ -7,3 +7,6 @@
 /cmd/lurk/lurk
 *.test
 *.out
+
+# Release artifacts produced by scripts/package.sh
+/dist/

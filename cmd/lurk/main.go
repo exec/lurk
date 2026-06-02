@@ -38,6 +38,10 @@ import (
 	"lurk/tui"
 )
 
+// version is the build version, overridden at release time via
+// -ldflags "-X main.version=<v>". It defaults to "dev" for local builds.
+var version = "dev"
+
 func main() {
 	log.SetFlags(log.Ltime)
 
@@ -305,11 +309,17 @@ func parseConfig() (client.Config, string, bool) {
 		channel  = flag.String("channel", env("LURK_CHANNEL", ""), "channel to join (env LURK_CHANNEL)")
 		plain    = flag.Bool("plain", envBool("LURK_PLAIN", false), "use the plain line-mode client instead of the full-screen TUI (env LURK_PLAIN)")
 
-		saslMech = flag.String("sasl", env("LURK_SASL", ""), "SASL mechanism: PLAIN or EXTERNAL (env LURK_SASL)")
-		saslUser = flag.String("sasl-user", env("LURK_SASL_USER", ""), "SASL username (env LURK_SASL_USER)")
-		saslPass = flag.String("sasl-pass", env("LURK_SASL_PASS", ""), "SASL password (env LURK_SASL_PASS)")
+		saslMech    = flag.String("sasl", env("LURK_SASL", ""), "SASL mechanism: PLAIN or EXTERNAL (env LURK_SASL)")
+		saslUser    = flag.String("sasl-user", env("LURK_SASL_USER", ""), "SASL username (env LURK_SASL_USER)")
+		saslPass    = flag.String("sasl-pass", env("LURK_SASL_PASS", ""), "SASL password (env LURK_SASL_PASS)")
+		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("lurk", version)
+		os.Exit(0)
+	}
 
 	cfg := client.Config{
 		Nick:               *nick,
