@@ -468,3 +468,19 @@ func sortedCopy(s []string) []string {
 	}
 	return c
 }
+
+// TestCapNewFloodBounded verifies that a hostile stream of distinct CAP NEW names
+// after registration cannot grow the advertised set without bound.
+func TestCapNewFloodBounded(t *testing.T) {
+	n := NewNegotiator([]string{"sasl"})
+	n.registered = true
+	n.state = StateDone
+
+	// Flood well past the cap with distinct, unwanted cap names.
+	for i := 0; i < maxAvailableCaps+500; i++ {
+		_, _ = n.Receive(capMsg("*", "NEW", "x-flood-"+strconv.Itoa(i)))
+	}
+	if got := len(n.Available()); got > maxAvailableCaps {
+		t.Errorf("available grew past cap: %d > %d", got, maxAvailableCaps)
+	}
+}

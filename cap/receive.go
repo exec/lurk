@@ -271,6 +271,11 @@ func (n *Negotiator) onNew(m *irc.Message) ([]string, error) {
 	caps, _ := capsAndMore(m)
 	var toReq []string
 	parseCapList(caps, func(name, value string, _ bool) {
+		if _, known := n.available[name]; !known && len(n.available) >= maxAvailableCaps {
+			// Advertised set is at its bound; ignore further novel names so a
+			// CAP NEW flood cannot grow it without limit post-registration.
+			return
+		}
 		n.available[name] = value
 		if _, want := n.wantedSet[name]; !want {
 			return

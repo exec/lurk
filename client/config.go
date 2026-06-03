@@ -78,6 +78,15 @@ type Config struct {
 	// knowingly (testing, self-signed certs).
 	InsecureSkipVerify bool
 
+	// AllowInsecureAuth permits sending credentials (a SASL PLAIN password or a
+	// PASS server password) over a plaintext, non-TLS connection. It defaults to
+	// false: Connect refuses such a configuration rather than leaking the secret
+	// in the clear, since SASL PLAIN is base64-encoded, not encrypted. Set this
+	// only when the plaintext link is otherwise trusted (a localhost bouncer, a
+	// test). It governs the Connect (dialing) path only; a caller supplying its
+	// own transport via ConnectConn is responsible for that transport's security.
+	AllowInsecureAuth bool
+
 	// SASL configures SASL authentication. The zero value disables it.
 	SASL SASLConfig
 

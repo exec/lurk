@@ -49,6 +49,9 @@ func TestLiveServer(t *testing.T) {
 	}
 	if saslUser != "" && saslPass != "" {
 		cfg.SASL = SASLConfig{Mechanism: "PLAIN", Username: saslUser, Password: saslPass}
+		// The lab server may be plaintext (LURK_TEST_TLS unset); the operator
+		// running the live test is knowingly opting into insecure auth there.
+		cfg.AllowInsecureAuth = true
 	}
 
 	c := New(cfg)

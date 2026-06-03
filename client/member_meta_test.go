@@ -65,6 +65,7 @@ func TestNamReplyCapturesUserHost(t *testing.T) {
 func TestExtendedJoinCapturesAccount(t *testing.T) {
 	c := newTrackClient("CHANTYPES=#")
 	c.st.self = "me"
+	feedTrack(t, c, ":me!m@h JOIN #c") // our own join establishes the channel first
 
 	// Logged-in joiner: account "acct".
 	feedTrack(t, c, ":bob!b@host JOIN #c acct :Bob Realname")
@@ -87,6 +88,8 @@ func TestExtendedJoinCapturesAccount(t *testing.T) {
 func TestAccountNotifyUpdatesEverywhere(t *testing.T) {
 	c := newTrackClient("CHANTYPES=#")
 	c.st.self = "me"
+	feedTrack(t, c, ":me!m@h JOIN #a") // establish the channels via our own joins
+	feedTrack(t, c, ":me!m@h JOIN #b")
 	feedTrack(t, c, ":bob!b@h JOIN #a * :Bob")
 	feedTrack(t, c, ":bob!b@h JOIN #b * :Bob")
 
@@ -109,6 +112,7 @@ func TestAccountNotifyUpdatesEverywhere(t *testing.T) {
 func TestAwayNotifyTogglesAway(t *testing.T) {
 	c := newTrackClient("CHANTYPES=#")
 	c.st.self = "me"
+	feedTrack(t, c, ":me!m@h JOIN #c") // our own join establishes the channel first
 	feedTrack(t, c, ":bob!b@h JOIN #c * :Bob")
 
 	feedTrack(t, c, ":bob!b@h AWAY :stepping out")
@@ -125,6 +129,8 @@ func TestAwayNotifyTogglesAway(t *testing.T) {
 func TestChghostUpdatesUserHost(t *testing.T) {
 	c := newTrackClient("CHANTYPES=#")
 	c.st.self = "me"
+	feedTrack(t, c, ":me!m@h JOIN #a") // establish the channels via our own joins
+	feedTrack(t, c, ":me!m@h JOIN #b")
 	feedTrack(t, c, ":bob!b@h JOIN #a * :Bob")
 	feedTrack(t, c, ":bob!b@h JOIN #b * :Bob")
 
@@ -140,6 +146,7 @@ func TestChghostUpdatesUserHost(t *testing.T) {
 func TestMetadataPreservedAcrossNamReply(t *testing.T) {
 	c := newTrackClient("PREFIX=(ov)@+", "CHANTYPES=#")
 	c.st.self = "me"
+	feedTrack(t, c, ":me!m@h JOIN #c") // our own join establishes the channel first
 	// Learn an account via extended-join.
 	feedTrack(t, c, ":bob!b@h JOIN #c acct :Bob")
 	// A later NAMES sweep (without account info) must not wipe the account.

@@ -192,6 +192,17 @@ func (c *Client) Connect(ctx context.Context) error {
 	if c.cfg.Server == "" {
 		return errors.New("client: Config.Server is required")
 	}
+	// Refuse to send credentials in the clear: SASL PLAIN is base64-encoded, not
+	// encrypted, and PASS is sent verbatim, so either over a non-TLS link exposes
+	// the secret to the network. AllowInsecureAuth is the deliberate opt-out.
+	if !c.cfg.TLS && !c.cfg.AllowInsecureAuth {
+		if c.cfg.SASL.Mechanism == "PLAIN" {
+			return errors.New("client: refusing to send SASL PLAIN credentials over a plaintext connection; enable Config.TLS or set Config.AllowInsecureAuth")
+		}
+		if c.cfg.Pass != "" {
+			return errors.New("client: refusing to send a PASS password over a plaintext connection; enable Config.TLS or set Config.AllowInsecureAuth")
+		}
+	}
 	co, err := conn.Dial(ctx, "tcp", c.cfg.Server, conn.Options{
 		TLS:                c.cfg.TLS,
 		InsecureSkipVerify: c.cfg.InsecureSkipVerify,

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"strconv"
 	"testing"
 
 	"lurk/irc"
@@ -188,6 +189,24 @@ func TestStateModeArgAlignment(t *testing.T) {
 	s.applyModeChange("#c", "-l-o", []string{"bob"})
 	if got := s.channel("#c").members[s.foldKey("bob")].Prefixes; got != "" {
 		t.Errorf("after -l-o, bob prefixes = %q, want empty", got)
+	}
+}
+
+// TestStateOpenBatchCap verifies that a flood of never-closed BATCH opens cannot
+// grow the batches map without bound, while updates to an already-open ref still
+// take effect.
+func TestStateOpenBatchCap(t *testing.T) {
+	s := newState()
+	for i := 0; i < maxOpenBatches+50; i++ {
+		s.openBatch("ref"+strconv.Itoa(i), "chathistory", nil)
+	}
+	if len(s.batches) > maxOpenBatches {
+		t.Errorf("batches grew past cap: %d > %d", len(s.batches), maxOpenBatches)
+	}
+	// An already-open ref (added before the cap was reached) can still be updated.
+	s.openBatch("ref0", "netjoin", nil)
+	if got := s.batchTypeFor("ref0"); got != "netjoin" {
+		t.Errorf("update to existing batch ref0 = %q, want netjoin", got)
 	}
 }
 

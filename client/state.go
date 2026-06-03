@@ -99,9 +99,21 @@ func newState() *state {
 	}
 }
 
+// maxOpenBatches caps the number of concurrently-open BATCH references tracked.
+// A well-behaved server keeps only a handful open at once; the cap bounds memory
+// against a hostile or buggy server that opens batches ("BATCH +ref ...") without
+// ever closing them, which would otherwise grow s.batches without limit for the
+// life of the connection.
+const maxOpenBatches = 256
+
 // openBatch records an opening "BATCH +ref <type> [params...]". ref is the
-// reference tag without its leading '+'.
+// reference tag without its leading '+'. New references are refused once
+// maxOpenBatches are already open (updates to an existing ref still apply), so an
+// unbounded stream of never-closed batches cannot exhaust memory.
 func (s *state) openBatch(ref, batchType string, params []string) {
+	if _, exists := s.batches[ref]; !exists && len(s.batches) >= maxOpenBatches {
+		return
+	}
 	s.batches[ref] = batchInfo{Type: batchType, Params: append([]string(nil), params...)}
 }
 

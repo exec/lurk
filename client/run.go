@@ -311,13 +311,24 @@ func (c *Client) trackJoin(m *irc.Message) {
 		if ch == "" {
 			continue
 		}
-		cs := c.st.addChannel(ch)
-		if !self {
-			cs.addMember(c.st.foldKey, joiner, "", user, host)
-			if account != "" {
-				if mem := cs.members[c.st.foldKey(joiner)]; mem != nil {
-					mem.Account = account
-				}
+		if self {
+			// Our own JOIN: start (or confirm) tracking for the channel.
+			c.st.addChannel(ch)
+			continue
+		}
+		// Someone else's JOIN. A conformant server only sends these for channels
+		// we are already in, so add the joiner as a member of an existing channel
+		// — but do NOT create channel state for an unknown channel, which would
+		// let a hostile server fabricate phantom memberships and grow the channel
+		// map without bound.
+		cs := c.st.channel(ch)
+		if cs == nil {
+			continue
+		}
+		cs.addMember(c.st.foldKey, joiner, "", user, host)
+		if account != "" {
+			if mem := cs.members[c.st.foldKey(joiner)]; mem != nil {
+				mem.Account = account
 			}
 		}
 	}

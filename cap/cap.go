@@ -50,6 +50,12 @@ var capEndLine = irc.CAP + " " + irc.CAP_END
 // cap values, and implicit cap-notify).
 var capLSLine = irc.CAP + " " + irc.CAP_LS + " 302"
 
+// maxAvailableCaps caps how many distinct advertised capabilities are retained.
+// Real servers advertise a few dozen; the bound guards against a hostile server
+// growing the available set without limit via a flood of distinct CAP NEW names
+// after registration (when no handshake timeout is in play).
+const maxAvailableCaps = 1024
+
 // State is the high-level phase of capability negotiation.
 type State int
 
