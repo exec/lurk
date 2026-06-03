@@ -219,9 +219,16 @@ func dialNoSASL(t *testing.T, caps []string) (*Client, *mockServer, func()) {
 	}()
 
 	cleanup := func() {
+		// Wait for the server script to finish writing its welcome burst before
+		// closing the client. ConnectConn returns as soon as 001 is processed, but
+		// the script goroutine may still be mid-write on the 005/376 lines over the
+		// synchronous net.Pipe; closing the client end first would make those writes
+		// fail with "closed pipe" and spuriously fail the test during teardown.
+		// scriptDone is always eventually closed (the goroutine defers it, even on a
+		// failed expect), so this cannot deadlock.
+		<-scriptDone
 		c.Close()
 		srv.close()
-		<-scriptDone
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
