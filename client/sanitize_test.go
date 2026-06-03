@@ -24,6 +24,12 @@ func TestSanitizeTerminal(t *testing.T) {
 		{"backspace", "ab\x08c", "abc"},
 		{"tab to space", "a\tb", "a b"},
 		{"irc color codes", "\x03" + "04red\x0f", "04red"},
+		// Bidirectional formatting controls (Trojan Source, CVE-2021-42574) are
+		// invisible but reorder displayed text; they must be dropped.
+		{"rlo override", "user‮gniteehc", "usergniteehc"},
+		{"isolate spoof", "⁦alice⁩ ⁨", "alice "},
+		{"lrm/rlm/alm marks", "a‎b‏c؜d", "abcd"},
+		{"natural rtl kept", "مرحبا 🌍", "مرحبا 🌍"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

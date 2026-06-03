@@ -484,3 +484,40 @@ func TestCapNewFloodBounded(t *testing.T) {
 		t.Errorf("available grew past cap: %d > %d", got, maxAvailableCaps)
 	}
 }
+
+// TestCapLSFloodBounded verifies that a hostile server cannot grow the advertised
+// set without bound during the initial handshake by streaming an endless run of
+// multiline "CAP * LS *" continuations with distinct cap names. The bound that
+// already guards CAP NEW must apply equally to CAP LS.
+func TestCapLSFloodBounded(t *testing.T) {
+	n := NewNegotiator([]string{"sasl"})
+	n.Start()
+
+	// Many continuation lines (trailing "*" keeps the multiline LS open), each
+	// carrying a fresh batch of distinct, unwanted cap names.
+	for i := 0; i < maxAvailableCaps+500; i++ {
+		if _, err := feed(n, capMsg("*", "LS", "*", "x-flood-"+strconv.Itoa(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(n.Available()); got > maxAvailableCaps {
+		t.Errorf("available grew past cap during CAP LS: %d > %d", got, maxAvailableCaps)
+	}
+}
+
+// TestCapAckFloodBounded verifies that a hostile server cannot grow the enabled
+// set without bound by streaming a flood of (unsolicited) distinct names in CAP
+// ACK lines.
+func TestCapAckFloodBounded(t *testing.T) {
+	n := NewNegotiator([]string{"sasl"})
+	n.Start()
+
+	for i := 0; i < maxAvailableCaps+500; i++ {
+		if _, err := feed(n, capMsg("*", "ACK", "x-flood-"+strconv.Itoa(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(n.Enabled()); got > maxAvailableCaps {
+		t.Errorf("enabled grew past cap during CAP ACK: %d > %d", got, maxAvailableCaps)
+	}
+}
