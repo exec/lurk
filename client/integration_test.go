@@ -120,9 +120,15 @@ func TestFullHandshake(t *testing.T) {
 	// Always tear down and wait for the script goroutine so a failing assertion
 	// can never log after the test returns.
 	defer func() {
+		// Wait for the server script to finish before closing the client. The
+		// script goroutine may still be mid-write on its final burst over the
+		// synchronous net.Pipe; closing the client end first would make that write
+		// fail with "closed pipe" and spuriously fail the test during teardown.
+		// Every script goroutine here ends by sending (never an expect), so it
+		// completes on its own and this cannot deadlock.
+		<-scriptDone
 		c.Close()
 		srv.close()
-		<-scriptDone
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -324,9 +330,15 @@ func TestRegistrationNoSASL(t *testing.T) {
 		)
 	}()
 	defer func() {
+		// Wait for the server script to finish before closing the client. The
+		// script goroutine may still be mid-write on its final burst over the
+		// synchronous net.Pipe; closing the client end first would make that write
+		// fail with "closed pipe" and spuriously fail the test during teardown.
+		// Every script goroutine here ends by sending (never an expect), so it
+		// completes on its own and this cannot deadlock.
+		<-scriptDone
 		c.Close()
 		srv.close()
-		<-scriptDone
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -381,9 +393,15 @@ func TestSASLExternal(t *testing.T) {
 		srv.send(":server 001 certuser :Welcome certuser")
 	}()
 	defer func() {
+		// Wait for the server script to finish before closing the client. The
+		// script goroutine may still be mid-write on its final burst over the
+		// synchronous net.Pipe; closing the client end first would make that write
+		// fail with "closed pipe" and spuriously fail the test during teardown.
+		// Every script goroutine here ends by sending (never an expect), so it
+		// completes on its own and this cannot deadlock.
+		<-scriptDone
 		c.Close()
 		srv.close()
-		<-scriptDone
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -425,9 +443,15 @@ func TestSASLFailureAbortsRegistration(t *testing.T) {
 		srv.send(":server 904 bot :SASL authentication failed")
 	}()
 	defer func() {
+		// Wait for the server script to finish before closing the client. The
+		// script goroutine may still be mid-write on its final burst over the
+		// synchronous net.Pipe; closing the client end first would make that write
+		// fail with "closed pipe" and spuriously fail the test during teardown.
+		// Every script goroutine here ends by sending (never an expect), so it
+		// completes on its own and this cannot deadlock.
+		<-scriptDone
 		c.Close()
 		srv.close()
-		<-scriptDone
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
