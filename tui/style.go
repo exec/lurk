@@ -415,43 +415,14 @@ func isNickChar(b byte) bool {
 }
 
 // sanitize neutralizes terminal control sequences in attacker-controlled display
-// text before it is stored in scrollback and written to the terminal. IRC
-// message bodies, nicks, topics, and reasons are all peer-supplied, and the wire
-// parser only rejects NUL/CR/LF (which would break framing) — so ESC (0x1b) and
-// the other C0/C1 control bytes that introduce ANSI/OSC/DCS sequences still reach
-// the renderer. Left unsanitized, a hostile peer could rewrite the window title,
-// drive the clipboard (OSC 52), move the cursor to forge UI, or emit query
-// sequences whose replies are injected back into the input.
-//
-// sanitize drops every Unicode control character — the C0 range (0x00–0x1F), DEL
-// (0x7F), and the C1 range (0x80–0x9F), which some terminals treat as single-byte
-// CSI/OSC introducers — so no ESC survives to begin a sequence; a horizontal tab
-// is mapped to a single space to preserve word separation. Printable Unicode
-// (emoji, non-Latin scripts) passes through untouched. CTCP framing (\x01) must
-// be parsed off before sanitizing, since it too is a control byte.
-//
-// It must be applied to raw text *before* Lip Gloss styling, never after, or it
-// would strip the renderer's own SGR escapes.
+// text before it is stored in scrollback and written to the terminal. It is a
+// thin alias for client.SanitizeTerminal, the single shared implementation used
+// by both Lurk front-ends (this TUI and the -plain line client); see that
+// function for the rationale and exact behavior. It must be applied to raw text
+// *before* Lip Gloss styling, never after, or it would strip the renderer's own
+// SGR escapes.
 func sanitize(s string) string {
-	if strings.IndexFunc(s, isUnsafeControl) < 0 {
-		return s // fast path: nothing to strip
-	}
-	return strings.Map(func(r rune) rune {
-		if r == '\t' {
-			return ' '
-		}
-		if isUnsafeControl(r) {
-			return -1 // drop
-		}
-		return r
-	}, s)
-}
-
-// isUnsafeControl reports whether r is a control character that must not reach
-// the terminal verbatim: a C0 control or DEL, or a C1 control. Tab is included
-// (sanitize maps it to a space before this is consulted as a drop predicate).
-func isUnsafeControl(r rune) bool {
-	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+	return client.SanitizeTerminal(s)
 }
 
 // stripANSI removes ANSI escape sequences from s. Its primary use is re-rendering

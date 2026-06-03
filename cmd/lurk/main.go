@@ -199,7 +199,8 @@ func (r *repl) sendMessage(text string) {
 		return
 	}
 	if !r.client.CapEnabled("echo-message") {
-		fmt.Printf("<%s/%s> %s\n", target, r.client.Nick(), text)
+		// Sanitize the echo too: pasted text may carry escape sequences.
+		fmt.Printf("<%s/%s> %s\n", client.SanitizeTerminal(target), r.client.Nick(), client.SanitizeTerminal(text))
 	}
 }
 
@@ -252,7 +253,7 @@ func (r *repl) command(line string) {
 			return
 		}
 		if !r.client.CapEnabled("echo-message") {
-			fmt.Printf("<%s/%s> %s\n", target, r.client.Nick(), body)
+			fmt.Printf("<%s/%s> %s\n", client.SanitizeTerminal(target), r.client.Nick(), client.SanitizeTerminal(body))
 		}
 
 	case "nick":
@@ -291,7 +292,7 @@ func (r *repl) command(line string) {
 		_ = r.client.Quit(rest)
 
 	default:
-		fmt.Printf("*** unknown command /%s — try: /join /part /msg /nick /names /quit /raw (// for a literal /message)\n", cmd)
+		fmt.Printf("*** unknown command /%s — try: /join /part /msg /nick /names /quit /raw (// for a literal /message)\n", client.SanitizeTerminal(cmd))
 	}
 }
 
@@ -343,9 +344,19 @@ func parseConfig() (client.Config, string, bool) {
 }
 
 // registerHandlers wires the printing handlers used by the smoke test.
+//
+// Every interpolated field below is server- or peer-controlled (nicks, message
+// bodies, channel names, reasons), and these handlers write straight to the
+// terminal — so each such field is run through client.SanitizeTerminal first.
+// Without it a hostile peer could embed ANSI/OSC escape sequences in, say, a
+// PRIVMSG or a part reason and drive the user's terminal (clipboard, title,
+// cursor-forged output). The TUI front-end sanitizes the same way; the format
+// strings themselves are constant, so only the arguments need wrapping.
 func registerHandlers(c *client.Client, channel string) {
+	san := client.SanitizeTerminal
+
 	c.HandleConnected(func(ev *client.Event) {
-		fmt.Printf("*** connected (welcome: %s)\n", ev.Text())
+		fmt.Printf("*** connected (welcome: %s)\n", san(ev.Text()))
 	})
 
 	c.HandleMessage(func(ev *client.Event) {
@@ -354,33 +365,33 @@ func registerHandlers(c *client.Client, channel string) {
 			// A private message to us; show the sender as the context.
 			target = ev.Nick()
 		}
-		fmt.Printf("<%s/%s> %s\n", target, ev.Nick(), ev.Text())
+		fmt.Printf("<%s/%s> %s\n", san(target), san(ev.Nick()), san(ev.Text()))
 	})
 
 	c.HandleJoin(func(ev *client.Event) {
-		fmt.Printf("--> %s joined %s\n", ev.Nick(), ev.Param(0))
+		fmt.Printf("--> %s joined %s\n", san(ev.Nick()), san(ev.Param(0)))
 	})
 	c.HandlePart(func(ev *client.Event) {
-		fmt.Printf("<-- %s left %s (%s)\n", ev.Nick(), ev.Param(0), ev.Text())
+		fmt.Printf("<-- %s left %s (%s)\n", san(ev.Nick()), san(ev.Param(0)), san(ev.Text()))
 	})
 	c.HandleQuit(func(ev *client.Event) {
-		fmt.Printf("<-- %s quit (%s)\n", ev.Nick(), ev.Text())
+		fmt.Printf("<-- %s quit (%s)\n", san(ev.Nick()), san(ev.Text()))
 	})
 	c.HandleNick(func(ev *client.Event) {
-		fmt.Printf("*** %s is now known as %s\n", ev.Nick(), ev.Param(0))
+		fmt.Printf("*** %s is now known as %s\n", san(ev.Nick()), san(ev.Param(0)))
 	})
 
 	c.On(irc.NOTICE, func(ev *client.Event) {
-		fmt.Printf("-%s- %s\n", ev.Nick(), ev.Text())
+		fmt.Printf("-%s- %s\n", san(ev.Nick()), san(ev.Text()))
 	})
 
 	// Standard replies (FAIL/WARN/NOTE): "<TYPE> <COMMAND> <code> [ctx] :<desc>".
 	stdReply := func(ev *client.Event) {
 		ctx := ""
 		if n := len(ev.Message.Params); n > 3 {
-			ctx = " " + strings.Join(ev.Message.Params[2:n-1], " ")
+			ctx = " " + san(strings.Join(ev.Message.Params[2:n-1], " "))
 		}
-		fmt.Printf("! %s %s %s%s: %s\n", ev.Command(), ev.Param(0), ev.Param(1), ctx, ev.Text())
+		fmt.Printf("! %s %s %s%s: %s\n", ev.Command(), san(ev.Param(0)), san(ev.Param(1)), ctx, san(ev.Text()))
 	}
 	c.On(irc.FAIL, stdReply)
 	c.On(irc.WARN, stdReply)
@@ -392,9 +403,9 @@ func registerHandlers(c *client.Client, channel string) {
 		members := c.Members(ch)
 		names := make([]string, 0, len(members))
 		for _, m := range members {
-			names = append(names, m.Prefixes+m.Nick)
+			names = append(names, san(m.Prefixes+m.Nick))
 		}
-		fmt.Printf("*** %s members (%d): %s\n", ch, len(names), strings.Join(names, " "))
+		fmt.Printf("*** %s members (%d): %s\n", san(ch), len(names), strings.Join(names, " "))
 	})
 }
 

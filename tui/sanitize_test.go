@@ -35,7 +35,7 @@ func TestSanitizeStripsControlBytes(t *testing.T) {
 			}
 			// The result must never carry an ESC or other unsafe control rune.
 			for _, r := range sanitize(c.in) {
-				if r != ' ' && isUnsafeControl(r) {
+				if r != ' ' && (r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)) {
 					t.Errorf("sanitize(%q) leaked control rune %#x", c.in, r)
 				}
 			}
