@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WiX source for the lurk Windows installer (.msi), built with msitools' wixl
+  (cross-platform) locally and reused in CI. Parameterized via wixl -D:
+    Version    the product version (e.g. 0.1.0)
+    ExeSource  path to the built lurk.exe
+  Installs lurk.exe to "Program Files\lurk" and adds that directory to the
+  system PATH so `lurk` works from any shell. Per-machine, 64-bit.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Name="lurk"
+           Id="*"
+           UpgradeCode="07514363-D415-4722-808B-7E3FDF71C7B6"
+           Language="1033"
+           Codepage="1252"
+           Version="$(var.Version)"
+           Manufacturer="exec">
+    <Package InstallerVersion="200"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Comments="lurk - a modern IRCv3 client" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of lurk is already installed." />
+    <Media Id="1" Cabinet="lurk.cab" EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="lurk">
+          <Component Id="MainExecutable" Guid="75C5B842-89E2-4693-923A-97195369EB45" Win64="yes">
+            <File Id="lurkExe" Name="lurk.exe" Source="$(var.ExeSource)" KeyPath="yes" />
+            <Environment Id="UpdatePath"
+                         Name="PATH"
+                         Value="[INSTALLDIR]"
+                         Permanent="no"
+                         Part="last"
+                         Action="set"
+                         System="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="Complete" Title="lurk" Level="1">
+      <ComponentRef Id="MainExecutable" />
+    </Feature>
+  </Product>
+</Wix>

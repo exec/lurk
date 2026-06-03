@@ -86,10 +86,15 @@ cp README.md LICENSE "$wstage/"
 (cd "$wstage" && zip -q "$DIST/lurk_${VERSION}_windows_amd64.zip" lurk.exe README.md LICENSE)
 rm -rf "$wstage"
 
-# Windows .msi is intentionally not built here: a proper, code-signed MSI is best
-# produced on a Windows CI runner with WiX (see docs/PACKAGING.md). The .zip above
-# is the supported Windows artifact (works with Scoop/winget/manual install).
-echo "==> Windows .msi: see docs/PACKAGING.md (built in CI with WiX, not locally)" >&2
+if command -v wixl >/dev/null 2>&1; then
+	echo "==> Windows .msi (wixl)"
+	"$ROOT/scripts/build-msi.sh" "$VERSION" "$WIN_AMD64" "$DIST" >/dev/null
+else
+	echo "==> skip .msi (wixl not installed — brew install msitools / apt-get install wixl)" >&2
+fi
+
+# Windows .msix is built only in CI on a Windows runner (makeappx, from the
+# Windows SDK). See .github/workflows/release.yml and docs/PACKAGING.md.
 
 echo "==> SHA256SUMS"
 (cd "$DIST" && shasum -a 256 lurk_* >SHA256SUMS)

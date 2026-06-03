@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest for lurk, packaged as a full-trust Win32 console app. Built in CI
+  on a Windows runner with makeappx (Windows SDK); see release.yml. __VERSION__
+  is replaced with a 4-part version (e.g. 0.1.0.0) at build time. The resulting
+  .msix is UNSIGNED — sideloading/installing requires signing, done separately.
+-->
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities">
+
+  <Identity Name="exec.lurk"
+            Publisher="CN=exec"
+            Version="__VERSION__"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>lurk</DisplayName>
+    <PublisherDisplayName>exec</PublisherDisplayName>
+    <Description>A modern IRCv3 client with a terminal UI.</Description>
+    <Logo>assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="lurk" Executable="lurk.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="lurk"
+                          Description="A modern IRCv3 client with a terminal UI."
+                          BackgroundColor="transparent"
+                          Square150x150Logo="assets\Square150x150Logo.png"
+                          Square44x44Logo="assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

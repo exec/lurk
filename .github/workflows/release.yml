@@ -1,0 +1,165 @@
+name: release
+
+# Builds the full set of lurk release artifacts and publishes them to a GitHub
+# release. Triggered by pushing a v* tag, or manually (workflow_dispatch) with a
+# version. Each artifact is produced on the runner that can build it:
+#   - Linux runner:  binaries, .deb, .rpm, Windows .zip, Windows .msi (wixl)
+#   - macOS runner:  universal binary + .pkg (pkgbuild/lipo)
+#   - Windows runner: .msix (makeappx; unsigned — sign separately)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 0.1.0)"
+        required: true
+        default: "0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+  unix:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install nfpm and wixl
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y wixl
+      - name: Build packages (binaries, deb, rpm, zip, msi)
+        run: bash scripts/package.sh "${{ needs.version.outputs.version }}"
+      - name: Drop per-job checksums (release job regenerates a combined file)
+        run: rm -f dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unix
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build universal binary and .pkg
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            GOOS=darwin GOARCH=$arch CGO_ENABLED=0 \
+              go build -trimpath -ldflags "-s -w -X main.version=$V" \
+              -o "dist/lurk_${V}_darwin_$arch" ./cmd/lurk
+          done
+          lipo -create -output "dist/lurk_${V}_darwin_universal" \
+            "dist/lurk_${V}_darwin_amd64" "dist/lurk_${V}_darwin_arm64"
+          root="$(mktemp -d)"; mkdir -p "$root/usr/local/bin"
+          cp "dist/lurk_${V}_darwin_universal" "$root/usr/local/bin/lurk"
+          chmod 0755 "$root/usr/local/bin/lurk"
+          pkgbuild --root "$root" --identifier com.github.exec.lurk \
+            --version "$V" --install-location / "dist/lurk_${V}_macos.pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/lurk_*_macos.pkg
+            dist/lurk_*_darwin_universal
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    # Best-effort: an unsigned MSIX can't be installed without signing, and
+    # makeappx authoring is finicky — never block the release on it.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build lurk.exe
+        shell: bash
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -trimpath -ldflags "-s -w -X main.version=$V" \
+            -o dist/lurk.exe ./cmd/lurk
+      - name: Build .msix (makeappx, unsigned)
+        shell: pwsh
+        run: |
+          $V = "${{ needs.version.outputs.version }}"
+          $ver4 = "$V.0"
+          $layout = "msix-layout"
+          New-Item -ItemType Directory -Force -Path "$layout/assets" | Out-Null
+          Copy-Item dist/lurk.exe "$layout/lurk.exe"
+          (Get-Content packaging/windows/AppxManifest.xml) -replace '__VERSION__', $ver4 |
+            Set-Content "$layout/AppxManifest.xml"
+          # makeappx doesn't enforce logo dimensions for an unsigned dev package,
+          # so the single project PNG stands in for each required asset.
+          Copy-Item assets/lurk.png "$layout/assets/StoreLogo.png"
+          Copy-Item assets/lurk.png "$layout/assets/Square150x150Logo.png"
+          Copy-Item assets/lurk.png "$layout/assets/Square44x44Logo.png"
+          $makeappx = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter makeappx.exe |
+            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1).FullName
+          if (-not $makeappx) { throw "makeappx.exe not found" }
+          Write-Host "Using $makeappx"
+          & $makeappx pack /d "$layout" /p "dist/lurk_${V}_windows_amd64.msix" /o
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/lurk_*_windows_amd64.msix
+          if-no-files-found: warn
+
+  release:
+    needs: [version, unix, macos, windows]
+    # Publish as long as the must-have artifacts (unix + macOS) built; MSIX is
+    # optional.
+    if: ${{ !cancelled() && needs.unix.result == 'success' && needs.macos.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Gather artifacts and checksum
+        run: |
+          mkdir -p dist
+          find artifacts -type f -exec cp -n {} dist/ \;
+          rm -f dist/SHA256SUMS
+          ( cd dist && sha256sum lurk_* > SHA256SUMS )
+          echo "Release contents:"; ls -1 dist
+      - name: Publish to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          if gh release view "v$V" >/dev/null 2>&1; then
+            gh release upload "v$V" dist/* --clobber
+          else
+            gh release create "v$V" dist/* --title "lurk $V" --generate-notes
+          fi

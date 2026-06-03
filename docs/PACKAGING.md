@@ -46,25 +46,45 @@ sudo installer -pkg lurk_0.1.0_macos.pkg -target /
 
 `lurk -version` prints the embedded version.
 
-## Windows `.msi` (deferred)
+## Windows `.msi` and `.msix`
 
-A `.zip` is the supported Windows artifact today. A proper installer is left to
-CI rather than built on macOS, because:
+- **`.msi`** is built with [msitools](https://wiki.gnome.org/msitools)' `wixl`
+  (cross-platform — runs on macOS/Linux, no Windows needed), from
+  `packaging/windows/lurk.wxs` via `scripts/build-msi.sh`. `scripts/package.sh`
+  builds it automatically when `wixl` is present (`brew install msitools` /
+  `apt-get install wixl`). It installs `lurk.exe` to `Program Files\lurk` and
+  appends that directory to the system `PATH`.
+- **`.msix`** is built only in CI on a Windows runner (`makeappx`, from the
+  Windows SDK) using `packaging/windows/AppxManifest.xml`, as a full-trust Win32
+  package. See `.github/workflows/release.yml`.
 
-- A useful `.msi`/`.msix` should be **code-signed** (an unsigned installer trips
-  SmartScreen and the MSIX trust model outright), which needs a Windows signing
-  cert.
-- The clean, reproducible path is a Windows GitHub Actions runner using
-  [WiX](https://wixtoolset.org/) (or GoReleaser's `msi` feature). Cross-building
-  an MSI from macOS via `msitools`/`wixl` is possible but unsigned and fiddly.
+Both are produced **unsigned**. Windows will not install an unsigned MSIX, and an
+unsigned MSI trips SmartScreen — sign them with a code-signing certificate before
+distribution (e.g. add a `signtool` step in CI).
 
-When we add release CI, the MSI step belongs there. Until then, Windows users
-take the `.zip` (also consumable by Scoop/winget manifests).
+## CI (GitHub Actions)
 
-## Cutting a release
+`.github/workflows/release.yml` builds the whole matrix on the appropriate
+runners and publishes to the GitHub release:
+
+- **Linux runner** — binaries, `.deb`, `.rpm`, Windows `.zip`, Windows `.msi`.
+- **macOS runner** — universal binary + `.pkg`.
+- **Windows runner** — `.msix` (best-effort; never blocks the release).
+
+Trigger it by pushing a `v*` tag, or manually from the Actions tab / CLI:
+
+```sh
+gh workflow run release.yml -f version=0.1.0     # manual, attaches to v0.1.0
+# or
+git tag v0.2.0 && git push origin v0.2.0         # tag-driven
+```
+
+The release job (re)uploads every artifact with `--clobber` and regenerates a
+combined `SHA256SUMS`.
+
+## Cutting a release locally
 
 ```sh
 scripts/package.sh 0.1.0
-git tag v0.1.0 && git push origin v0.1.0
 gh release create v0.1.0 dist/* --title "lurk 0.1.0" --notes "…"
 ```
