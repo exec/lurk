@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"testing"
 
 	"lurk/client"
@@ -15,6 +16,28 @@ func evt(t *testing.T, line string) client.Event {
 		t.Fatalf("parse %q: %v", line, err)
 	}
 	return client.Event{Message: m}
+}
+
+// TestRouteTextBufferCap verifies that inbound traffic addressed to an unbounded
+// number of distinct targets cannot grow the window list without bound: once the
+// cap is reached, overflow messages route to the server buffer instead of opening
+// new windows.
+func TestRouteTextBufferCap(t *testing.T) {
+	m := newTestModel()
+	const overflow = 50
+	for i := 0; i < maxAutoBuffers+overflow; i++ {
+		m = routeEvent(m, evt(t, fmt.Sprintf(":srv!s@h PRIVMSG #chan%d :hi", i)))
+	}
+	if len(m.buffers) > maxAutoBuffers {
+		t.Errorf("buffer list grew past cap: %d > %d", len(m.buffers), maxAutoBuffers)
+	}
+	if len(m.buffers) != maxAutoBuffers {
+		t.Errorf("buffer count = %d, want exactly the cap %d", len(m.buffers), maxAutoBuffers)
+	}
+	// Overflow messages must still be surfaced (in the server buffer), not dropped.
+	if len(m.buffers[0].lines) == 0 {
+		t.Errorf("overflow messages were dropped instead of routed to the server buffer")
+	}
 }
 
 func TestMetadataNotificationsAreNotRendered(t *testing.T) {

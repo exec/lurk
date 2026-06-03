@@ -118,15 +118,29 @@ func routeText(m model, ev client.Event) model {
 		self = m.cli.Nick()
 	}
 
-	var b *Buffer
-	if isChannel(target) {
-		b, _ = m.ensureBuffer(target, BufferChannel)
-	} else if equalFold(target, self) {
-		// A message to us: the conversation buffer is the sender.
-		b, _ = m.ensureBuffer(ev.Nick(), BufferPM)
-	} else {
-		// A message we sent (echo-message) or otherwise targeted elsewhere.
-		b, _ = m.ensureBuffer(target, BufferPM)
+	// Resolve which window this message belongs to: the channel for channel
+	// traffic; the sender for a message addressed to us (a PM, whose buffer is the
+	// peer); otherwise the target (our own echo, or traffic aimed elsewhere).
+	name, kind := target, BufferChannel
+	if !isChannel(target) {
+		kind = BufferPM
+		if equalFold(target, self) {
+			name = ev.Nick()
+		}
+	}
+
+	// Never let inbound traffic open an unbounded number of windows: a hostile
+	// server can address messages from endless distinct channels/nicks. An
+	// already-open buffer is always reused; a new one is created only while under
+	// the maxAutoBuffers ceiling, past which the message lands in the server
+	// buffer rather than growing the list without bound.
+	b := m.buffer(name)
+	if b == nil {
+		if len(m.buffers) < maxAutoBuffers {
+			b, _ = m.ensureBuffer(name, kind)
+		} else {
+			b = m.buffers[0]
+		}
 	}
 
 	// A message from a user ends any "typing…" indication they had in this buffer.

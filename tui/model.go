@@ -232,6 +232,15 @@ func (m *model) buffer(name string) *Buffer {
 	return nil
 }
 
+// maxAutoBuffers caps how many windows inbound traffic may auto-open. A hostile
+// or compromised server can address messages from endless distinct channels and
+// nicks; without a ceiling each new target would spawn a buffer (and its
+// viewport) and grow the list without bound. Past the cap, traffic for an
+// unopened target is shown in the server buffer instead. It is generous enough
+// that no realistic session of joined channels + PMs approaches it. User-driven
+// opens (/join, /query, the nicklist menu) are not subject to it.
+const maxAutoBuffers = 512
+
 // ensureBuffer returns the buffer for name, creating and appending a new one if
 // it does not already exist. kind distinguishes channels from PMs for display.
 // It returns the buffer and its index. The newly created buffer is NOT focused;
