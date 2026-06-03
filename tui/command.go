@@ -359,7 +359,11 @@ func cmdTopic(m model, args []string, rest string) (action, tea.Cmd) {
 func cmdWhois(m model, args []string, rest string) (action, tea.Cmd) {
 	nick := ""
 	if len(args) > 0 {
-		nick = args[0]
+		// WHOIS takes a single nick; ignore any extra words the user typed so we
+		// don't send a space-bearing (and thus bogus) target.
+		if f := strings.Fields(args[0]); len(f) > 0 {
+			nick = f[0]
+		}
 	} else if b := m.activeBuffer(); b.Kind == BufferPM {
 		nick = b.Title
 	}

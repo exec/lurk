@@ -357,15 +357,10 @@ const (
 )
 
 // ctcpAction detects a CTCP ACTION (/me) payload, returning the inner text with
-// the \x01ACTION ... \x01 framing removed.
+// the \x01ACTION ... \x01 framing removed. It is a thin alias for
+// client.CTCPAction, the shared parser used by both front-ends.
 func ctcpAction(body string) (string, bool) {
-	const prefix = "\x01ACTION "
-	if strings.HasPrefix(body, prefix) {
-		inner := strings.TrimPrefix(body, prefix)
-		inner = strings.TrimSuffix(inner, "\x01")
-		return inner, true
-	}
-	return "", false
+	return client.CTCPAction(body)
 }
 
 // joinReason formats an optional trailing reason for part/quit meta lines,

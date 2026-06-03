@@ -30,6 +30,10 @@ func TestSanitizeTerminal(t *testing.T) {
 		{"isolate spoof", "⁦alice⁩ ⁨", "alice "},
 		{"lrm/rlm/alm marks", "a‎b‏c؜d", "abcd"},
 		{"natural rtl kept", "مرحبا 🌍", "مرحبا 🌍"},
+		// Unicode line/paragraph separators collapse to a space so a single message
+		// cannot be split across visual lines.
+		{"line separator", "a b", "a b"},
+		{"paragraph separator", "a b", "a b"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

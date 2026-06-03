@@ -33,8 +33,8 @@ func SanitizeTerminal(s string) string {
 		return s // fast path: nothing to strip
 	}
 	return strings.Map(func(r rune) rune {
-		if r == '\t' {
-			return ' '
+		if whitespaceSeparator(r) {
+			return ' ' // collapse tab / line / paragraph separators to a space
 		}
 		if unsafeControl(r) {
 			return -1 // drop
@@ -43,12 +43,24 @@ func SanitizeTerminal(s string) string {
 	}, s)
 }
 
+// whitespaceSeparator reports whether r is a whitespace separator that should
+// collapse to a single space rather than be dropped: the horizontal tab, and the
+// Unicode line (U+2028) and paragraph (U+2029) separators. Mapping them to a
+// space preserves word boundaries while preventing a single logical message from
+// being split across visual lines (a layout-spoofing vector in renderers that
+// honor U+2028/U+2029).
+func whitespaceSeparator(r rune) bool {
+	return r == '\t' || r == 0x2028 || r == 0x2029
+}
+
 // unsafeControl reports whether r is a character that must not reach the
-// terminal verbatim: a C0 control or DEL, a C1 control, or a bidirectional
-// formatting control. Tab is included (SanitizeTerminal maps it to a space
-// before this is consulted as a drop predicate).
+// terminal verbatim: a C0 control or DEL, a C1 control, a bidirectional
+// formatting control, or a line/paragraph separator. The whitespace separators
+// (tab, U+2028, U+2029) are reported here so the fast path detects them;
+// SanitizeTerminal maps them to a space before this is consulted as a drop
+// predicate.
 func unsafeControl(r rune) bool {
-	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || bidiControl(r)
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || bidiControl(r) || whitespaceSeparator(r)
 }
 
 // bidiControl reports whether r is a Unicode bidirectional formatting control:

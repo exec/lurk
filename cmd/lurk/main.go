@@ -395,6 +395,12 @@ func registerHandlers(c *client.Client, channel string) {
 			// A private message to us; show the sender as the context.
 			target = ev.Nick()
 		}
+		// A CTCP ACTION (/me) renders as "* target/nick text" rather than a normal
+		// "<target/nick> body" line; other CTCP types fall through to the latter.
+		if act, ok := client.CTCPAction(ev.Text()); ok {
+			fmt.Printf("* %s/%s %s\n", san(target), san(ev.Nick()), san(act))
+			return
+		}
 		fmt.Printf("<%s/%s> %s\n", san(target), san(ev.Nick()), san(ev.Text()))
 	})
 
