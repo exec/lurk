@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 )
@@ -11,9 +13,16 @@ import (
 //
 // Bindings are grouped roughly by concern: global navigation (buffer switching,
 // scrolling), editor affordances (completion, history), and program control
-// (quit, toggling the help view). senpai inspired the binding choices
-// (Ctrl-N/Ctrl-P to cycle buffers, PgUp/PgDn to scroll) but the declarative
-// key.Binding wiring is the bubbles idiom.
+// (quit, help). senpai inspired the binding choices (Ctrl-N/Ctrl-P to cycle
+// buffers, PgUp/PgDn to scroll) but the declarative key.Binding wiring is the
+// bubbles idiom.
+//
+// macOS-friendliness: scrolling is primarily bound to Shift+↑/↓, because
+// Ctrl+↑/↓ are captured by macOS (Mission Control / App Exposé) and never reach
+// the terminal. Ctrl+↑/↓ are kept as secondary bindings for other platforms and
+// external keyboards. Page scrolling uses PgUp/PgDn (Fn+↑/↓ on Apple laptops).
+// Help is the /help command rather than a key, so the common message character
+// "?" stays typeable.
 type keymap struct {
 	// Quit ends the program (also reachable via /quit).
 	Quit key.Binding
@@ -65,12 +74,13 @@ func defaultKeymap() keymap {
 			key.WithHelp("ctrl+u", "users"),
 		),
 		ScrollUp: key.NewBinding(
-			key.WithKeys("ctrl+up"),
-			key.WithHelp("ctrl+↑", "scroll up"),
+			// Shift+↑ first (macOS-safe); Ctrl+↑ kept for other platforms.
+			key.WithKeys("shift+up", "ctrl+up"),
+			key.WithHelp("shift+↑", "scroll up"),
 		),
 		ScrollDown: key.NewBinding(
-			key.WithKeys("ctrl+down"),
-			key.WithHelp("ctrl+↓", "scroll down"),
+			key.WithKeys("shift+down", "ctrl+down"),
+			key.WithHelp("shift+↓", "scroll down"),
 		),
 		PageUp: key.NewBinding(
 			key.WithKeys("pgup"),
@@ -92,9 +102,10 @@ func defaultKeymap() keymap {
 			key.WithKeys("down"),
 			key.WithHelp("↓", "history"),
 		),
+		// Help has no key binding — it is the /help command. "?" is left free so it
+		// can be typed in messages. The entry is kept for the help summary text.
 		Help: key.NewBinding(
-			key.WithKeys("?"),
-			key.WithHelp("?", "help"),
+			key.WithHelp("/help", "keys & commands"),
 		),
 	}
 }
@@ -121,6 +132,24 @@ func (k keymap) FullHelp() [][]key.Binding {
 		{k.Complete, k.HistPrev, k.HistNext},
 		{k.Help, k.Quit},
 	}
+}
+
+// summary renders a one-line "key — action · key — action" digest of the
+// navigation/editing bindings, used by the /help command so the keys are
+// discoverable in-app (the help footer is not rendered). It reads the bindings'
+// own help text so it stays in sync with defaultKeymap.
+func (k keymap) summary() string {
+	order := []key.Binding{
+		k.NextBuffer, k.PrevBuffer, k.FocusNicks,
+		k.ScrollUp, k.ScrollDown, k.PageUp, k.PageDown,
+		k.Complete, k.HistPrev, k.Quit,
+	}
+	parts := make([]string, 0, len(order))
+	for _, b := range order {
+		h := b.Help()
+		parts = append(parts, h.Key+" "+h.Desc)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // key_matches reports whether the key press matches binding b. It wraps

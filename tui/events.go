@@ -153,6 +153,12 @@ func routeTagmsg(m model, ev client.Event) model {
 	if m.cli != nil {
 		self = m.cli.Nick()
 	}
+	// Never show our own typing: with echo-message the server reflects our
+	// +typing TAGMSGs back to us, and we don't indicate to ourselves that we're
+	// typing.
+	if equalFold(ev.Nick(), self) {
+		return m
+	}
 	key := typingBufferKey(ev.Param(0), ev.Nick(), self)
 	if state == "active" {
 		return m.noteTyping(key, ev.Nick())

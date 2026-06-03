@@ -79,6 +79,22 @@ func TestRouteTagmsgTracksTyping(t *testing.T) {
 	}
 }
 
+func TestOwnTypingNotShown(t *testing.T) {
+	// With echo-message, the server reflects our own +typing TAGMSG back to us.
+	// We must never display ourselves as typing.
+	cli := client.New(client.Config{Nick: "me"})
+	m := newModel(cli, nil)
+	m = routeEvent(m, evt(t, "@+typing=active :me!u@h TAGMSG #chan"))
+	if got := m.typingNicks("#chan"); len(got) != 0 {
+		t.Errorf("own typing shown: typingNicks = %v, want empty", got)
+	}
+	// A different user's typing still registers (case-insensitively distinct).
+	m = routeEvent(m, evt(t, "@+typing=active :alice!a@h TAGMSG #chan"))
+	if got := m.typingNicks("#chan"); len(got) != 1 || got[0] != "alice" {
+		t.Errorf("other user typing = %v, want [alice]", got)
+	}
+}
+
 func TestTypingClearedByMessage(t *testing.T) {
 	m := newTestModel()
 	m = routeEvent(m, evt(t, "@+typing=active :alice!a@h TAGMSG #chan"))

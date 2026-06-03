@@ -247,6 +247,7 @@ func (s *state) applyModeChange(channel, modeStr string, args []string) {
 	if cs == nil {
 		return
 	}
+	cm := s.feat.ChanModes()
 	adding := true
 	argi := 0
 	for i := 0; i < len(modeStr); i++ {
@@ -261,10 +262,15 @@ func (s *state) applyModeChange(channel, modeStr string, args []string) {
 		}
 		sym, isPrefix := s.feat.PrefixSymbolForMode(c)
 		if !isPrefix {
-			// Non-prefix mode: it may still consume an argument, but we don't
-			// track those. Best-effort: assume A/B modes and key modes take an
-			// arg; without full CHANMODES bookkeeping we conservatively consume
-			// one only for known prefix modes, leaving others alone.
+			// Non-prefix mode: we don't track it, but we MUST still consume its
+			// argument when it carries one, or a later prefix mode in the same
+			// change would bind to the wrong arg. CHANMODES groups A/B always take
+			// an argument and group C takes one only when set; consult them so a
+			// change like "+bo mask nick" advances past "mask" before "+o" reads
+			// "nick".
+			if modeTakesArg(cm, c, adding) {
+				argi++
+			}
 			continue
 		}
 		// Prefix mode changes always take a nick argument.
@@ -282,6 +288,24 @@ func (s *state) applyModeChange(channel, modeStr string, args []string) {
 		} else {
 			m.Prefixes = strings.ReplaceAll(m.Prefixes, string(sym), "")
 		}
+	}
+}
+
+// modeTakesArg reports whether a non-prefix channel mode letter consumes an
+// argument, given the server's CHANMODES grouping and whether the mode is being
+// added. Group A (lists, e.g. +b) and group B (e.g. +k) always take an argument
+// in both directions; group C (e.g. +l) takes one only when set; group D and any
+// mode absent from CHANMODES take none. This is best-effort alignment: when the
+// server never advertised CHANMODES every group is empty and we consume nothing,
+// matching the historical behaviour.
+func modeTakesArg(cm isupport.ChanModes, mode byte, adding bool) bool {
+	switch {
+	case strings.IndexByte(cm.A, mode) >= 0, strings.IndexByte(cm.B, mode) >= 0:
+		return true
+	case strings.IndexByte(cm.C, mode) >= 0:
+		return adding
+	default:
+		return false
 	}
 }
 

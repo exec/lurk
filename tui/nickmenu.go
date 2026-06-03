@@ -234,30 +234,6 @@ func (m model) applyMenu(e menuEntry) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleMouse maps a left click in the nicklist column to a member selection and
-// opens that member's context menu. Clicks elsewhere are ignored (a future pass
-// can add sidebar click-to-switch). The geometry mirrors view.go: the nicklist
-// is the rightmost nicklistWidth columns, its first row is the "Users (n)" title,
-// and members follow one per row.
-func (m model) handleMouse(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
-	b := m.activeBuffer()
-	_, show := paneWidths(m.width, b.Kind == BufferChannel)
-	if !show.nicklist || msg.X < m.width-nicklistWidth {
-		return m, nil
-	}
-	members := sortedMembers(m)
-	row := msg.Y - 1 // row 0 is the "Users (n)" header
-	if row < 0 || row >= len(members) {
-		return m, nil
-	}
-	m.focus = focusNicks
-	m.nickSel = row
-	m.menuOpen = true
-	m.menuNick = members[row].Nick
-	m.menuSel = 0
-	return m, nil
-}
-
 // renderNickMenu draws the open context menu inside the nicklist column. Keeping
 // it within that column (rather than as a free-floating overlay) avoids
 // compositing over the frame while putting the menu right where the user is

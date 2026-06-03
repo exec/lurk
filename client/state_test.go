@@ -157,6 +157,40 @@ func TestStateModePrefixChanges(t *testing.T) {
 	}
 }
 
+// TestStateModeArgAlignment verifies that a MODE change mixing argument-taking
+// non-prefix modes (CHANMODES groups A/B/C) with prefix modes binds each prefix
+// mode to the correct nick. Before the fix, a non-prefix mode's argument was not
+// consumed, so "+bo mask nick" misread "mask" as the +o target and the op grant
+// was dropped.
+func TestStateModeArgAlignment(t *testing.T) {
+	// Ergo-style CHANMODES: A=bI lists, B=k key, C=l limit, D=imnpst flags.
+	s := newTestState(
+		"PREFIX=(ov)@+", "CHANTYPES=#",
+		"CHANMODES=beI,k,l,imnpstn",
+	)
+	s.self = "me"
+	s.applyNamReply("#c", "alice bob")
+
+	// +b consumes "mask!*@*"; +o must then bind to "alice", not the ban mask.
+	s.applyModeChange("#c", "+bo", []string{"mask!*@*", "alice"})
+	if got := s.channel("#c").members[s.foldKey("alice")].Prefixes; got != "@" {
+		t.Errorf("after +bo, alice prefixes = %q, want @", got)
+	}
+
+	// Group C (+l) takes an arg only when set: "+lo 50 bob" -> +l eats "50",
+	// +o binds to "bob".
+	s.applyModeChange("#c", "+lo", []string{"50", "bob"})
+	if got := s.channel("#c").members[s.foldKey("bob")].Prefixes; got != "@" {
+		t.Errorf("after +lo, bob prefixes = %q, want @", got)
+	}
+
+	// Removing a group C mode (-l) takes no arg, so "-l-o bob" binds -o to "bob".
+	s.applyModeChange("#c", "-l-o", []string{"bob"})
+	if got := s.channel("#c").members[s.foldKey("bob")].Prefixes; got != "" {
+		t.Errorf("after -l-o, bob prefixes = %q, want empty", got)
+	}
+}
+
 func TestStateRenameAndRemoveEverywhere(t *testing.T) {
 	s := newTestState("PREFIX=(ov)@+", "CHANTYPES=#")
 	s.self = "me"

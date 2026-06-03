@@ -68,67 +68,93 @@ type theme struct {
 	self color.Color
 }
 
-// defaultTheme is the single theme instance the view renders with. It is a
-// dark-terminal palette using ANSI/256 colors so Lip Gloss can downsample
-// cleanly on 16-color and monochrome terminals.
+// Catppuccin Mocha palette (https://catppuccin.com) — a dark, harmonious
+// 24-bit color scheme designed for legibility on a dark background. We render
+// in full truecolor; Bubble Tea's renderer downsamples these hex values to the
+// terminal's actual color profile (ANSI256 on Apple Terminal, 16-color on
+// older terminals), so capable terminals (iTerm2, Ghostty, Kitty, WezTerm,
+// Alacritty, modern Linux terminals, Windows Terminal) get the full palette
+// while limited ones still degrade cleanly. Credited in CREDITS.md.
+var (
+	ctpRosewater = lipgloss.Color("#f5e0dc")
+	ctpFlamingo  = lipgloss.Color("#f2cdcd")
+	ctpPink      = lipgloss.Color("#f5c2e7")
+	ctpMauve     = lipgloss.Color("#cba6f7")
+	ctpRed       = lipgloss.Color("#f38ba8")
+	ctpPeach     = lipgloss.Color("#fab387")
+	ctpYellow    = lipgloss.Color("#f9e2af")
+	ctpGreen     = lipgloss.Color("#a6e3a1")
+	ctpTeal      = lipgloss.Color("#94e2d5")
+	ctpSky       = lipgloss.Color("#89dceb")
+	ctpSapphire  = lipgloss.Color("#74c7ec")
+	ctpBlue      = lipgloss.Color("#89b4fa")
+	ctpLavender  = lipgloss.Color("#b4befe")
+	ctpText      = lipgloss.Color("#cdd6f4")
+	ctpSubtext0  = lipgloss.Color("#a6adc8")
+	ctpOverlay0  = lipgloss.Color("#6c7086")
+	ctpSurface0  = lipgloss.Color("#313244")
+
+	// statusAccent is the muted blue backing the status bar and the active
+	// buffer — a darkened Catppuccin blue that keeps white text readable.
+	statusAccent = lipgloss.Color("#3a4669")
+	// highlightBg backs a mention banner: a deep, desaturated red so the white
+	// foreground stays legible (and downsamples to a dark-red 256 cell).
+	highlightBg = lipgloss.Color("#6c2e3e")
+)
+
+// defaultTheme is the single theme instance the view renders with.
 var defaultTheme = newTheme()
 
 func newTheme() theme {
-	// A 16-ish color nick palette drawn from the 256-color cube, skipping the
-	// near-black/near-white extremes and the reds reserved for highlights, so
-	// nicks stay legible on a dark background. senpai uses a similar curated
+	// A curated nick palette spanning the hue wheel for maximum distinguishability
+	// when nicks hash into it, drawn from the Catppuccin Mocha accents. The two
+	// reds (Red/Maroon) are reserved for highlights and ops, so they're omitted
+	// here to avoid confusing a nick with a mention. senpai uses a similar curated
 	// base set (reference/senpai/ui/colors.go baseColors).
 	palette := []color.Color{
-		lipgloss.Color("2"),   // green
-		lipgloss.Color("3"),   // yellow
-		lipgloss.Color("4"),   // blue
-		lipgloss.Color("5"),   // magenta
-		lipgloss.Color("6"),   // cyan
-		lipgloss.Color("10"),  // bright green
-		lipgloss.Color("11"),  // bright yellow
-		lipgloss.Color("12"),  // bright blue
-		lipgloss.Color("13"),  // bright magenta
-		lipgloss.Color("14"),  // bright cyan
-		lipgloss.Color("39"),  // sky blue
-		lipgloss.Color("42"),  // teal-green
-		lipgloss.Color("75"),  // light blue
-		lipgloss.Color("141"), // lavender
-		lipgloss.Color("178"), // gold
-		lipgloss.Color("214"), // orange
+		ctpGreen,
+		ctpYellow,
+		ctpBlue,
+		ctpPink,
+		ctpTeal,
+		ctpPeach,
+		ctpSapphire,
+		ctpMauve,
+		ctpSky,
+		ctpLavender,
+		ctpFlamingo,
+		ctpRosewater,
 	}
 
-	gray := lipgloss.Color("240")
-	brightGray := lipgloss.Color("245")
-
 	return theme{
-		timestamp: lipgloss.NewStyle().Foreground(gray),
+		timestamp: lipgloss.NewStyle().Foreground(ctpOverlay0),
 		text:      lipgloss.NewStyle(),
-		dim:       lipgloss.NewStyle().Foreground(gray),
-		notice:    lipgloss.NewStyle().Foreground(lipgloss.Color("180")),
-		action:    lipgloss.NewStyle().Foreground(lipgloss.Color("177")).Italic(true),
-		highlight: lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(lipgloss.Color("52")).Bold(true),
-		info:      lipgloss.NewStyle().Foreground(brightGray).Italic(true),
+		dim:       lipgloss.NewStyle().Foreground(ctpOverlay0),
+		notice:    lipgloss.NewStyle().Foreground(ctpYellow),
+		action:    lipgloss.NewStyle().Foreground(ctpMauve).Italic(true),
+		highlight: lipgloss.NewStyle().Foreground(ctpRosewater).Background(highlightBg).Bold(true),
+		info:      lipgloss.NewStyle().Foreground(ctpSubtext0).Italic(true),
 
 		statusBar: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("231")).
-			Background(lipgloss.Color("24")),
+			Foreground(ctpText).
+			Background(statusAccent),
 		statusKey: lipgloss.NewStyle().Bold(true),
 
-		sidebar:       lipgloss.NewStyle().Foreground(brightGray),
-		sidebarItem:   lipgloss.NewStyle().Foreground(brightGray),
-		sidebarActive: lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(lipgloss.Color("24")).Bold(true),
-		sidebarUnread: lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Bold(true),
-		sidebarHigh:   lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true),
+		sidebar:       lipgloss.NewStyle().Foreground(ctpSubtext0),
+		sidebarItem:   lipgloss.NewStyle().Foreground(ctpSubtext0),
+		sidebarActive: lipgloss.NewStyle().Foreground(ctpText).Background(statusAccent).Bold(true),
+		sidebarUnread: lipgloss.NewStyle().Foreground(ctpText).Bold(true),
+		sidebarHigh:   lipgloss.NewStyle().Foreground(ctpRed).Bold(true),
 
-		nicklist:     lipgloss.NewStyle().Foreground(brightGray),
-		nicklistOp:   lipgloss.NewStyle().Foreground(lipgloss.Color("203")),
-		nicklistTtl:  lipgloss.NewStyle().Foreground(gray).Bold(true),
-		nicklistAway: lipgloss.NewStyle().Foreground(gray).Faint(true),
-		nicklistAcct: lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
-		verticalRule: lipgloss.NewStyle().Foreground(lipgloss.Color("237")),
+		nicklist:     lipgloss.NewStyle().Foreground(ctpSubtext0),
+		nicklistOp:   lipgloss.NewStyle().Foreground(ctpRed),
+		nicklistTtl:  lipgloss.NewStyle().Foreground(ctpOverlay0).Bold(true),
+		nicklistAway: lipgloss.NewStyle().Foreground(ctpOverlay0).Faint(true),
+		nicklistAcct: lipgloss.NewStyle().Foreground(ctpTeal),
+		verticalRule: lipgloss.NewStyle().Foreground(ctpSurface0),
 
 		nickPalette: palette,
-		self:        lipgloss.Color("231"),
+		self:        ctpText,
 	}
 }
 
@@ -161,45 +187,54 @@ func (t theme) styledNick(nick string, self bool) string {
 // dim meta lines; numerics and anything else fall back to the trailing text.
 func (t theme) formatLine(ev client.Event, self string) (text string, highlight bool) {
 	ts := t.timestamp.Render(ev.Time().Local().Format("15:04"))
-	nick := ev.Nick()
+	// Every server-derived field below is sanitized before it is rendered: the
+	// values are attacker-controlled and the wire parser only strips NUL/CR/LF,
+	// so ESC and the other control bytes that drive terminal escape sequences
+	// still arrive here. nick feeds both the display and the self/colour
+	// comparisons; a legitimate nick has no control bytes, so sanitizing it is a
+	// no-op in practice but closes the spoofing vector.
+	nick := sanitize(ev.Nick())
 	isSelf := nick != "" && equalFold(nick, self)
 
 	switch ev.Command() {
 	case "PRIVMSG":
-		body := ev.Text()
-		if action, ok := ctcpAction(body); ok {
+		// Detect CTCP framing on the raw text (the \x01 markers are control
+		// bytes that sanitize would strip), then sanitize the inner payload.
+		if action, ok := ctcpAction(ev.Text()); ok {
+			action = sanitize(action)
 			line := fmt.Sprintf("%s %s %s", ts, t.action.Render("*"), t.action.Render(nick+" "+action))
 			return t.applyHighlight(line, action, self, isSelf)
 		}
+		body := sanitize(ev.Text())
 		head := t.styledNick(nick, isSelf)
 		line := fmt.Sprintf("%s %s %s", ts, head, t.text.Render(body))
 		return t.applyHighlight(line, body, self, isSelf)
 
 	case "NOTICE":
-		body := ev.Text()
+		body := sanitize(ev.Text())
 		head := lipgloss.NewStyle().Foreground(t.nickColor(nick, isSelf)).Render("-" + nick + "-")
 		line := fmt.Sprintf("%s %s %s", ts, head, t.notice.Render(body))
 		return t.applyHighlight(line, body, self, isSelf)
 
 	case "JOIN":
-		return fmt.Sprintf("%s %s", ts, t.dim.Render(symJoin+" "+nick+" joined "+ev.Param(0))), false
+		return fmt.Sprintf("%s %s", ts, t.dim.Render(symJoin+" "+nick+" joined "+sanitize(ev.Param(0)))), false
 
 	case "PART":
-		msg := joinReason(ev.Text(), ev.Param(0))
+		msg := joinReason(sanitize(ev.Text()), sanitize(ev.Param(0)))
 		return fmt.Sprintf("%s %s", ts, t.dim.Render(symPart+" "+nick+" left"+msg)), false
 
 	case "QUIT":
-		msg := joinReason(ev.Text(), "")
+		msg := joinReason(sanitize(ev.Text()), "")
 		return fmt.Sprintf("%s %s", ts, t.dim.Render(symPart+" "+nick+" quit"+msg)), false
 
 	case "NICK":
-		return fmt.Sprintf("%s %s", ts, t.dim.Render("~ "+nick+" is now known as "+ev.Text())), false
+		return fmt.Sprintf("%s %s", ts, t.dim.Render("~ "+nick+" is now known as "+sanitize(ev.Text()))), false
 
 	case "TOPIC":
-		return fmt.Sprintf("%s %s", ts, t.dim.Render("~ "+nick+" set the topic: "+ev.Text())), false
+		return fmt.Sprintf("%s %s", ts, t.dim.Render("~ "+nick+" set the topic: "+sanitize(ev.Text()))), false
 
 	case "MODE":
-		return fmt.Sprintf("%s %s", ts, t.dim.Render("~ mode "+strings.Join(ev.Message.Params, " "))), false
+		return fmt.Sprintf("%s %s", ts, t.dim.Render("~ mode "+sanitize(strings.Join(ev.Message.Params, " ")))), false
 
 	default:
 		// Numerics and unhandled commands: show the trailing text so the server
@@ -208,7 +243,7 @@ func (t theme) formatLine(ev client.Event, self string) (text string, highlight 
 		if body == "" {
 			body = strings.Join(ev.Message.Params, " ")
 		}
-		return fmt.Sprintf("%s %s", ts, t.dim.Render(body)), false
+		return fmt.Sprintf("%s %s", ts, t.dim.Render(sanitize(body))), false
 	}
 }
 
@@ -248,7 +283,7 @@ func (t theme) formatStandardReply(ev client.Event) string {
 	var style lipgloss.Style
 	switch kind {
 	case "FAIL":
-		marker, style = "✗", lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+		marker, style = "✗", lipgloss.NewStyle().Foreground(ctpRed).Bold(true)
 	case "WARN":
 		marker, style = "⚠", t.notice
 	default: // NOTE
@@ -260,24 +295,30 @@ func (t theme) formatStandardReply(ev client.Event) string {
 	if desc != "" && desc != code {
 		body += ": " + desc
 	}
-	return fmt.Sprintf("%s %s", ts, style.Render(marker+" "+body))
+	// cmd/code/context/desc are all server-supplied; sanitize the assembled body
+	// before rendering so embedded escape sequences cannot reach the terminal.
+	return fmt.Sprintf("%s %s", ts, style.Render(marker+" "+sanitize(body)))
 }
 
 // formatInfo renders a local informational line (command output / error).
 func (t theme) formatInfo(text string) string {
 	ts := t.timestamp.Render(time.Now().Format("15:04"))
-	return fmt.Sprintf("%s %s", ts, t.info.Render(text))
+	// Info lines are locally composed plain text, but some carry server- or
+	// user-supplied fragments (command echoes, raw-send errors), so sanitize.
+	return fmt.Sprintf("%s %s", ts, t.info.Render(sanitize(text)))
 }
 
 // formatSelfMessage renders a locally-echoed outbound PRIVMSG (used when
 // echo-message is not negotiated) so the user sees what they sent immediately.
 func (t theme) formatSelfMessage(self, text string) string {
 	ts := t.timestamp.Render(time.Now().Format("15:04"))
+	// Sanitize the echoed text too: a user can paste attacker-crafted content
+	// carrying escape sequences, and the local echo writes straight to the pane.
 	if action, ok := ctcpAction(text); ok {
-		return fmt.Sprintf("%s %s %s", ts, t.action.Render("*"), t.action.Render(self+" "+action))
+		return fmt.Sprintf("%s %s %s", ts, t.action.Render("*"), t.action.Render(self+" "+sanitize(action)))
 	}
 	head := t.styledNick(self, true)
-	return fmt.Sprintf("%s %s %s", ts, head, t.text.Render(text))
+	return fmt.Sprintf("%s %s %s", ts, head, t.text.Render(sanitize(text)))
 }
 
 // statusLine renders the bottom status bar: network, current nick, active
@@ -373,23 +414,95 @@ func isNickChar(b byte) bool {
 	return false
 }
 
-// stripANSI removes SGR escape sequences from s. It is used when re-rendering a
-// highlighted line over a single background style, where leftover foreground
-// codes from styledNick would otherwise interrupt the banner. It handles the
-// CSI ... m form Lip Gloss emits.
+// sanitize neutralizes terminal control sequences in attacker-controlled display
+// text before it is stored in scrollback and written to the terminal. IRC
+// message bodies, nicks, topics, and reasons are all peer-supplied, and the wire
+// parser only rejects NUL/CR/LF (which would break framing) — so ESC (0x1b) and
+// the other C0/C1 control bytes that introduce ANSI/OSC/DCS sequences still reach
+// the renderer. Left unsanitized, a hostile peer could rewrite the window title,
+// drive the clipboard (OSC 52), move the cursor to forge UI, or emit query
+// sequences whose replies are injected back into the input.
+//
+// sanitize drops every Unicode control character — the C0 range (0x00–0x1F), DEL
+// (0x7F), and the C1 range (0x80–0x9F), which some terminals treat as single-byte
+// CSI/OSC introducers — so no ESC survives to begin a sequence; a horizontal tab
+// is mapped to a single space to preserve word separation. Printable Unicode
+// (emoji, non-Latin scripts) passes through untouched. CTCP framing (\x01) must
+// be parsed off before sanitizing, since it too is a control byte.
+//
+// It must be applied to raw text *before* Lip Gloss styling, never after, or it
+// would strip the renderer's own SGR escapes.
+func sanitize(s string) string {
+	if strings.IndexFunc(s, isUnsafeControl) < 0 {
+		return s // fast path: nothing to strip
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return ' '
+		}
+		if isUnsafeControl(r) {
+			return -1 // drop
+		}
+		return r
+	}, s)
+}
+
+// isUnsafeControl reports whether r is a control character that must not reach
+// the terminal verbatim: a C0 control or DEL, or a C1 control. Tab is included
+// (sanitize maps it to a space before this is consulted as a drop predicate).
+func isUnsafeControl(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// stripANSI removes ANSI escape sequences from s. Its primary use is re-rendering
+// a highlighted line over a single background style, where leftover SGR codes
+// from styledNick would otherwise interrupt the banner; it is also used to
+// measure visible width for truncation. Server text is sanitized before it is
+// styled, so in practice stripANSI only ever sees the renderer's own CSI ... m
+// sequences — but it is written to be a correct, conservative stripper for any
+// input, recognizing the CSI, OSC, and DCS/PM/APC/SOS string forms (not just
+// CSI) so an escape can never slip through.
 func stripANSI(s string) string {
+	if !strings.ContainsRune(s, 0x1b) {
+		return s
+	}
 	var b strings.Builder
 	b.Grow(len(s))
 	for i := 0; i < len(s); i++ {
-		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
-			// skip until the final byte of the CSI sequence (0x40–0x7e).
+		if s[i] != 0x1b {
+			b.WriteByte(s[i])
+			continue
+		}
+		// s[i] is ESC. The following byte selects the sequence form.
+		if i+1 >= len(s) {
+			break // lone trailing ESC: drop it
+		}
+		switch s[i+1] {
+		case '[': // CSI: ESC [ ... <final byte 0x40–0x7e>
 			i += 2
 			for i < len(s) && (s[i] < 0x40 || s[i] > 0x7e) {
 				i++
 			}
-			continue // i now at the final byte; loop's i++ skips it
+			// i now rests on the final byte (or len); the loop's i++ skips it.
+		case ']', 'P', 'X', '^', '_':
+			// OSC / DCS / SOS / PM / APC: a string sequence terminated by ST
+			// (ESC \) or, for OSC, a BEL (0x07).
+			i += 2
+			for i < len(s) {
+				if s[i] == 0x07 { // BEL terminator
+					break
+				}
+				if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' { // ST
+					i++ // consume ESC; the loop's i++ skips the '\'
+					break
+				}
+				i++
+			}
+		default:
+			// Any other Fe/two-byte escape (charset selection, ESC =, …): drop
+			// the ESC and its single following byte.
+			i++
 		}
-		b.WriteByte(s[i])
 	}
 	return b.String()
 }

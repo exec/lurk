@@ -51,10 +51,14 @@ All flags have `LURK_*` environment-variable equivalents.
 | `↑` / `↓` | input history |
 | `Ctrl-N` / `Ctrl-P` | next / previous buffer |
 | `Ctrl-U` | focus the Users list; `↑/↓` select, `Enter` opens the menu, `Esc` back |
-| `PgUp` / `PgDn` | scroll |
+| `Shift-↑` / `Shift-↓` | scroll a few lines (also `Ctrl-↑/↓` on non-macOS keyboards) |
+| `PgUp` / `PgDn` | scroll a page (`Fn-↑/↓` on Apple laptops) |
 | `Ctrl-C` | quit |
 
-Slash commands: `/join /part /msg /query /nick /me /topic /names /close /raw /quit`.
+`Shift-↑/↓` is the scroll default because macOS reserves `Ctrl-↑/↓` for Mission
+Control. Slash commands: `/join /part /msg /query /nick /me /topic /names /close
+/raw /help /quit` — type `/help` in-app for the keys and command list, or `/help
+<command>` for usage.
 
 ## Packages
 

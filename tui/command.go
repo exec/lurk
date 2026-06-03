@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -150,7 +151,39 @@ func init() {
 				return action{kind: actionNone}, nil
 			},
 		},
+		"HELP": {
+			minArgs: 0, maxArgs: 1,
+			usage:  "[command]",
+			desc:   "list keybindings and commands, or show usage for one command",
+			handle: cmdHelp,
+		},
 	}
+}
+
+// cmdHelp implements /help. With no argument it prints the keybinding digest and
+// the list of commands; with a command name it prints that command's usage.
+func cmdHelp(m model, args []string, rest string) (action, tea.Cmd) {
+	if len(args) == 1 {
+		name := strings.ToUpper(strings.TrimPrefix(args[0], "/"))
+		cmd, ok := commands[name]
+		if !ok {
+			return infoAction(fmt.Sprintf("no such command /%s", strings.ToLower(name))), nil
+		}
+		return infoAction(strings.TrimSpace(fmt.Sprintf("/%s %s — %s", strings.ToLower(name), cmd.usage, cmd.desc))), nil
+	}
+	text := "keys: " + m.keys.summary() + "\ncommands: " + commandNames() + " (try /help <command>)"
+	return infoAction(text), nil
+}
+
+// commandNames returns the registered command names as a sorted, "/"-prefixed,
+// space-joined string for the /help listing.
+func commandNames() string {
+	names := make([]string, 0, len(commands))
+	for name := range commands {
+		names = append(names, "/"+strings.ToLower(name))
+	}
+	sort.Strings(names)
+	return strings.Join(names, " ")
 }
 
 // runLine parses and dispatches one submitted editor line. It is the entry
@@ -181,7 +214,7 @@ func runLine(m model, line string) (action, tea.Cmd) {
 
 	cmd, ok := commands[name]
 	if !ok {
-		return infoAction(fmt.Sprintf("unknown command /%s — try /join /msg /query /me /topic /names /part /close /nick /raw /quit", strings.ToLower(name))), nil
+		return infoAction(fmt.Sprintf("unknown command /%s — type /help for the command list", strings.ToLower(name))), nil
 	}
 
 	args := splitArgs(rest, cmd.maxArgs)

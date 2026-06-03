@@ -75,13 +75,18 @@ type Client struct {
 // New returns a Client configured by cfg. It does not perform any I/O; call
 // Connect to dial and register.
 func New(cfg Config) *Client {
-	return &Client{
+	c := &Client{
 		cfg:        cfg.withDefaults(),
 		disp:       newDispatcher(),
 		st:         newState(),
 		registered: make(chan struct{}),
 		done:       make(chan struct{}),
 	}
+	// Seed the self identity from the configured nick so Nick() is meaningful
+	// before registration (Connect re-seeds it, and a 433 fallback / NICK change
+	// updates it later).
+	c.st.self = c.cfg.Nick
+	return c
 }
 
 // Nick returns the client's current nickname (which may differ from the

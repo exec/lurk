@@ -34,6 +34,14 @@ Lurk's terminal UI is built on the **[Charm](https://charm.land)** ecosystem:
 All MIT-licensed. These are Lurk's runtime dependencies for the `tui/` package; a
 read-only copy of their source lives under `reference/` for development reference.
 
+## Catppuccin (color palette)
+
+Lurk's TUI theme uses the **[Catppuccin Mocha](https://catppuccin.com)** palette
+— a dark, harmonious 24-bit color scheme — for its nick colorization and
+semantic styles (`tui/style.go`). Catppuccin is MIT-licensed. We render the
+colors as truecolor and let Bubble Tea downsample for terminals with smaller
+color profiles.
+
 ## senpai (UX reference)
 
 **[senpai](https://git.sr.ht/~delthas/senpai)** — an IRCv3 TUI client in Go — is

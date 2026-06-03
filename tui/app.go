@@ -52,9 +52,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
-	case tea.MouseClickMsg:
-		return m.handleMouse(msg)
-
 	case ircMsg:
 		// Apply the event to model state (view layer owns the buffer mutation),
 		// then immediately re-subscribe to keep the stream alive.
@@ -97,6 +94,13 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
+	// Scrollback navigation works in any focus mode: its keys (Shift/Ctrl+arrows,
+	// PgUp/PgDn) don't collide with menu/nicklist/editor keys, so it is handled
+	// before the focus-specific branches.
+	if m.scrollActive(msg) {
+		return m, nil
+	}
+
 	// The context menu and nicklist focus capture navigation keys while active
 	// (nickmenu.go), so they take precedence over editor/buffer keys.
 	if m.menuOpen {
@@ -127,6 +131,35 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m = applyAction(m, act)
 	m = m.maybeSendTyping(before, act)
 	return m, cmd
+}
+
+// scrollLines is how many lines a single Shift/Ctrl+↑/↓ press moves the
+// scrollback viewport — a few lines for a readable pace while still allowing
+// fine control by tapping.
+const scrollLines = 3
+
+// scrollActive applies a scrollback key to the active buffer's viewport and
+// reports whether the key was a scroll key (and thus consumed). The buffers are
+// pointers, so mutating the viewport in place persists across the returned
+// model. A no-op until the viewport has been sized (vpReady).
+func (m model) scrollActive(msg tea.KeyPressMsg) bool {
+	b := m.activeBuffer()
+	if !b.vpReady {
+		return false
+	}
+	switch {
+	case key_matches(m.keys.ScrollUp, msg):
+		b.vp.ScrollUp(scrollLines)
+	case key_matches(m.keys.ScrollDown, msg):
+		b.vp.ScrollDown(scrollLines)
+	case key_matches(m.keys.PageUp, msg):
+		b.vp.PageUp()
+	case key_matches(m.keys.PageDown, msg):
+		b.vp.PageDown()
+	default:
+		return false
+	}
+	return true
 }
 
 // typingThrottle is the minimum gap between successive outbound "active" typing
@@ -225,10 +258,13 @@ func (m model) View() tea.View {
 		return v
 	}
 	v := render(m)
-	// Full-screen app on the alternate buffer with cell-motion mouse tracking
-	// (for future scroll/click support in the viewport and sidebar).
+	// Full-screen app on the alternate buffer. We deliberately do NOT enable
+	// mouse tracking: any mouse mode makes the terminal forward mouse events to
+	// the app and disables native click-drag text selection, which would stop
+	// users from selecting/copying links, invite codes, and other text. Nicklist
+	// interaction is fully keyboard-driven instead (Ctrl-U to focus the Users
+	// list, then ↑/↓ and Enter for the context menu).
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
 
