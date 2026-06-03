@@ -42,13 +42,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Install nfpm and wixl
+      - name: Install nfpm
         run: |
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          sudo apt-get update
-          sudo apt-get install -y wixl
-      - name: Build packages (binaries, deb, rpm, zip, msi)
+      - name: Build packages (binaries, deb, rpm, zip)
+        # The .msi is built on the macOS runner instead: Ubuntu's packaged wixl
+        # is too old to support the <Environment> (PATH) element. package.sh
+        # cleanly skips the .msi when wixl is absent.
         run: bash scripts/package.sh "${{ needs.version.outputs.version }}"
       - name: Drop per-job checksums (release job regenerates a combined file)
         run: rm -f dist/SHA256SUMS
@@ -82,12 +83,23 @@ jobs:
           chmod 0755 "$root/usr/local/bin/lurk"
           pkgbuild --root "$root" --identifier com.github.exec.lurk \
             --version "$V" --install-location / "dist/lurk_${V}_macos.pkg"
+      - name: Build Windows .msi (wixl)
+        # Built here, not on Linux: Homebrew's wixl supports the <Environment>
+        # element our .wxs uses to add lurk to PATH; Ubuntu's packaged wixl does not.
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          brew install msitools
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -trimpath -ldflags "-s -w -X main.version=$V" \
+            -o "dist/lurk_${V}_windows_amd64.exe" ./cmd/lurk
+          bash scripts/build-msi.sh "$V" "dist/lurk_${V}_windows_amd64.exe" dist
       - uses: actions/upload-artifact@v4
         with:
           name: macos
           path: |
             dist/lurk_*_macos.pkg
             dist/lurk_*_darwin_universal
+            dist/lurk_*_windows_amd64.msi
           if-no-files-found: error
 
   windows:
