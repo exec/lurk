@@ -31,3 +31,6 @@ section.
   server-trust boundary (cleartext-credential refusal, BATCH/CAP/channel-map
   bounds); v0.2.2 extended the escape sanitizer to the `-plain` line client via
   the shared `client.SanitizeTerminal`.
+- v0.2.3: fuzz harness + Serialize round-trip guard; TUI auto-buffer cap;
+  STATUSMSG-target routing, CASEMAPPING-change re-keying, casemapping-correct
+  SelfPrefixes, and the multibyte-safe completion prefix match.

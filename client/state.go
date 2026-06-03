@@ -130,13 +130,35 @@ func (s *state) batchTypeFor(ref string) string {
 }
 
 // mergeISupport folds a batch of 005 tokens into the feature set and refreshes
-// the active case mapping. Re-keying existing channel/member maps under a new
-// mapping is unnecessary in practice (CASEMAPPING is fixed for a connection and
-// arrives in the registration burst before any JOIN), so we simply adopt the
-// latest mapping.
+// the active case mapping. CASEMAPPING normally arrives in the registration
+// burst before any JOIN, so the mapping is fixed by the time state accumulates;
+// but should a (non-conformant or hostile) server change it after channels are
+// tracked, the existing channel/member map keys were folded under the old
+// mapping and would no longer be found. Re-key them whenever the mapping
+// actually changes so lookups stay consistent.
 func (s *state) mergeISupport(tokens []string) {
 	s.feat = s.feat.Merge(tokens)
-	s.fold = s.feat.CaseMapping()
+	newFold := s.feat.CaseMapping()
+	if newFold != s.fold {
+		s.rekey(newFold)
+		s.fold = newFold
+	}
+}
+
+// rekey re-folds every channel and member map key under newFold, preserving the
+// stored display names (which keep their original case). It is called only when
+// the case mapping changes.
+func (s *state) rekey(newFold isupport.CaseMapping) {
+	channels := make(map[string]*channelState, len(s.channels))
+	for _, cs := range s.channels {
+		members := make(map[string]*Member, len(cs.members))
+		for _, mem := range cs.members {
+			members[newFold.Fold(mem.Nick)] = mem
+		}
+		cs.members = members
+		channels[newFold.Fold(cs.name)] = cs
+	}
+	s.channels = channels
 }
 
 // foldKey returns the canonical map key for a nick or channel name.

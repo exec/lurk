@@ -143,13 +143,18 @@ func (c *Client) Typing(target, state string) error {
 
 // SelfPrefixes returns the membership prefix symbols (e.g. "@", "~@", "") the
 // client itself holds in channel, or "" if not a member. Useful for deciding
-// whether operator-only actions (kick, mode) are available.
+// whether operator-only actions (kick, mode) are available. The self nick is
+// matched through the server's case mapping (the same fold used for member keys),
+// not Unicode case-folding, so it is correct under any CASEMAPPING.
 func (c *Client) SelfPrefixes(channel string) string {
-	self := c.Nick()
-	for _, m := range c.Members(channel) {
-		if strings.EqualFold(m.Nick, self) {
-			return m.Prefixes
-		}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cs := c.st.channel(channel)
+	if cs == nil {
+		return ""
+	}
+	if m, ok := cs.members[c.st.foldKey(c.st.self)]; ok {
+		return m.Prefixes
 	}
 	return ""
 }

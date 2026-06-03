@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -114,9 +115,14 @@ func routeEvent(m model, ev client.Event) model {
 func routeText(m model, ev client.Event) model {
 	target := ev.Param(0)
 	self := ""
+	statusMsg := ""
 	if m.cli != nil {
 		self = m.cli.Nick()
+		statusMsg = m.cli.StatusMsg()
 	}
+	// A STATUSMSG target ("@#chan", "+#chan") addresses a subset of a channel's
+	// members; route it to the channel's own buffer, not a phantom "@#chan" window.
+	target = stripStatusPrefix(target, statusMsg)
 
 	// Resolve which window this message belongs to: the channel for channel
 	// traffic; the sender for a message addressed to us (a PM, whose buffer is the
@@ -152,6 +158,23 @@ func routeText(m model, ev client.Event) model {
 	// toward unread twice.
 	m = appendLine(m, b, ev)
 	return m
+}
+
+// stripStatusPrefix removes a leading run of STATUSMSG prefix characters from a
+// channel target ("@#chan" -> "#chan") when the remainder is itself a channel,
+// so a status-message PRIVMSG/NOTICE routes to the channel's buffer. statusMsg is
+// the server's STATUSMSG set (e.g. "@+"); an empty set disables stripping. A
+// target whose stripped form is not a channel (e.g. a modeless "+chan", where the
+// leading '+' is the channel type, not a status prefix) is returned unchanged.
+func stripStatusPrefix(target, statusMsg string) string {
+	if statusMsg == "" || target == "" {
+		return target
+	}
+	stripped := strings.TrimLeft(target, statusMsg)
+	if stripped != target && isChannel(stripped) {
+		return stripped
+	}
+	return target
 }
 
 // routeTagmsg applies a TAGMSG carrying the +typing client tag to the model's

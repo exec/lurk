@@ -192,6 +192,30 @@ func TestStateModeArgAlignment(t *testing.T) {
 	}
 }
 
+// TestStateRekeyOnCasemappingChange verifies that if the server changes
+// CASEMAPPING after channels/members are already tracked, the map keys are
+// re-folded so lookups under the new mapping still resolve.
+func TestStateRekeyOnCasemappingChange(t *testing.T) {
+	// Start under ascii: '[' and ']' do NOT fold, so "Nick[X]" keys as "nick[x]".
+	s := newTestState("CASEMAPPING=ascii", "CHANTYPES=#")
+	s.self = "me"
+	s.addChannel("#Chan")
+	s.channel("#Chan").addMember(s.foldKey, "Nick[X]", "@", "", "")
+
+	// Server now switches to rfc1459, where '[' folds to '{' and ']' to '}'.
+	s.mergeISupport([]string{"CASEMAPPING=rfc1459"})
+
+	// The channel must still be found, now under rfc1459 folding.
+	cs := s.channel("#chan")
+	if cs == nil {
+		t.Fatal("#chan lookup failed after casemapping change")
+	}
+	// And the member must be found under the rfc1459-folded nick "nick{x}".
+	if _, ok := cs.members[s.foldKey("nick{x}")]; !ok {
+		t.Errorf("member not re-keyed: nick{x} not found under rfc1459 fold")
+	}
+}
+
 // TestStateOpenBatchCap verifies that a flood of never-closed BATCH opens cannot
 // grow the batches map without bound, while updates to an already-open ref still
 // take effect.

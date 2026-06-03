@@ -325,12 +325,9 @@ func nextCandidate(candidates []string, word string) string {
 
 // hasPrefixFold reports whether s starts with the lower-cased prefix, comparing
 // case-insensitively. prefix is expected already lower-cased by the caller.
+// Lowercasing the whole of s (rather than byte-slicing it to the prefix length)
+// keeps the comparison correct for multibyte nicks, where a byte slice could
+// split a rune or mismatch the lower-cased length.
 func hasPrefixFold(s, lowerPrefix string) bool {
-	if lowerPrefix == "" {
-		return true
-	}
-	if len(s) < len(lowerPrefix) {
-		return false
-	}
-	return strings.ToLower(s[:len(lowerPrefix)]) == lowerPrefix
+	return strings.HasPrefix(strings.ToLower(s), lowerPrefix)
 }

@@ -18,6 +18,29 @@ func evt(t *testing.T, line string) client.Event {
 	return client.Event{Message: m}
 }
 
+// TestStripStatusPrefix covers routing of STATUSMSG-prefixed channel targets to
+// the channel's own buffer, while leaving plain channels, nicks, and modeless
+// '+'-type channels (when '+' is not a status prefix) untouched.
+func TestStripStatusPrefix(t *testing.T) {
+	cases := []struct {
+		target, statusMsg, want string
+	}{
+		{"@#chan", "@+", "#chan"},
+		{"+#chan", "@+", "#chan"},
+		{"@@#chan", "@+", "#chan"},
+		{"#chan", "@+", "#chan"}, // no prefix to strip
+		{"bob", "@+", "bob"},     // a nick is unaffected
+		{"@#chan", "", "@#chan"}, // server has no STATUSMSG: never strip
+		{"+chan", "@+", "+chan"}, // modeless '+'-type channel: stripped form not a channel, keep
+		{"@#chan", "@", "#chan"}, // only '@' is a status prefix here
+	}
+	for _, c := range cases {
+		if got := stripStatusPrefix(c.target, c.statusMsg); got != c.want {
+			t.Errorf("stripStatusPrefix(%q, %q) = %q, want %q", c.target, c.statusMsg, got, c.want)
+		}
+	}
+}
+
 // TestRouteTextBufferCap verifies that inbound traffic addressed to an unbounded
 // number of distinct targets cannot grow the window list without bound: once the
 // cap is reached, overflow messages route to the server buffer instead of opening

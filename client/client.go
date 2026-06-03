@@ -144,6 +144,16 @@ func (c *Client) Network() string {
 	return c.st.feat.Network()
 }
 
+// StatusMsg returns the server's STATUSMSG prefix characters (e.g. "@+"): the
+// membership symbols that may prefix a channel target to address only the
+// members holding that status (per ISUPPORT). It returns "" when the server does
+// not support status messages.
+func (c *Client) StatusMsg() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.st.feat.StatusMsg()
+}
+
 // CapEnabled reports whether the named IRCv3 capability was successfully
 // negotiated (server-ACKed and not since removed). It returns false before
 // connecting or for caps the server did not grant. Cap names are case-sensitive.
