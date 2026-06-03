@@ -53,6 +53,13 @@ func (m *Message) Serialize() (string, error) {
 	if strings.ContainsRune(m.Command, ' ') {
 		return "", fmt.Errorf("irc: command %q contains a space", m.Command)
 	}
+	// The command must begin with a letter or digit (per the grammar: a name or a
+	// numeric). A leading ':' or '@' would be reparsed as a source or tag segment
+	// — i.e. the serialized line would not frame back to this message — so reject
+	// it rather than emit a self-corrupting line.
+	if !isCommandStart(m.Command[0]) {
+		return "", fmt.Errorf("irc: command %q does not begin with a letter or digit", m.Command)
+	}
 	b.WriteString(m.Command)
 
 	for i, p := range m.Params {
@@ -67,6 +74,12 @@ func (m *Message) Serialize() (string, error) {
 		if !last && p == "" {
 			return "", fmt.Errorf("irc: non-final param at index %d is empty", i)
 		}
+		// A non-final param beginning with ':' would be reparsed as the trailing
+		// param (swallowing the rest of the line), so it cannot be serialized
+		// unambiguously in a non-final position.
+		if !last && strings.HasPrefix(p, ":") {
+			return "", fmt.Errorf("irc: non-final param %q begins with ':'", p)
+		}
 		b.WriteByte(' ')
 		if trailing {
 			b.WriteByte(':')
@@ -76,6 +89,12 @@ func (m *Message) Serialize() (string, error) {
 
 	b.WriteString("\r\n")
 	return b.String(), nil
+}
+
+// isCommandStart reports whether b is a valid first byte of a command token: an
+// ASCII letter (a command name) or digit (a numeric reply).
+func isCommandStart(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
 // checkField rejects bytes that cannot appear in a non-tag wire field: NUL, CR,

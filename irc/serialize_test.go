@@ -98,6 +98,35 @@ func TestSerialize(t *testing.T) {
 	}
 }
 
+// TestSerializeRejectsMisframing covers the guards that prevent Serialize from
+// emitting a line that would reframe to a different message on reparse (found via
+// FuzzParse: Parse(": :") yields Command ":", which serialized as ":" reparses as
+// a bare source). A command must begin with a letter/digit, and a non-final
+// param must not begin with ':'.
+func TestSerializeRejectsMisframing(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  *Message
+	}{
+		{"colon command", &Message{Command: ":"}},
+		{"tag-lead command", &Message{Command: "@x"}},
+		{"punctuation command", &Message{Command: "-bad"}},
+		{"non-final colon param", &Message{Command: "CMD", Params: []string{":x", "y"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := c.msg.Serialize(); err == nil {
+				t.Errorf("Serialize(%+v) = nil error, want a rejection", c.msg)
+			}
+		})
+	}
+
+	// A valid all-digit (numeric) command and a final colon param still serialize.
+	if _, err := (&Message{Command: "001", Params: []string{"me", ":-)"}}).Serialize(); err != nil {
+		t.Errorf("valid numeric/colon-trailing message rejected: %v", err)
+	}
+}
+
 // TestRoundTrip verifies Parse and Serialize are inverses for representative
 // lines (tag order aside, which is not significant).
 func TestRoundTrip(t *testing.T) {
