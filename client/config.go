@@ -114,6 +114,7 @@ var DefaultCaps = []string{
 	"account-tag",
 	"setname",
 	"userhost-in-names",
+	"invite-notify",
 	"batch",
 	"draft/chathistory",
 }

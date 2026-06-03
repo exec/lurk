@@ -121,6 +121,18 @@ func init() {
 			desc:   "request the member list of the current channel",
 			handle: cmdNames,
 		},
+		"WHOIS": {
+			minArgs: 0, maxArgs: 1,
+			usage:  "[nick]",
+			desc:   "look up a user (defaults to the current PM correspondent)",
+			handle: cmdWhois,
+		},
+		"AWAY": {
+			minArgs: 0, maxArgs: argsUnlimited,
+			usage:  "[reason]",
+			desc:   "set an away status, or clear it when given no reason",
+			handle: cmdAway,
+		},
 		"CLOSE": {
 			minArgs: 0, maxArgs: 1,
 			usage:  "[buffer]",
@@ -323,8 +335,7 @@ func cmdQuery(m model, args []string, rest string) (action, tea.Cmd) {
 
 // cmdTopic shows or sets the current channel's topic. With no argument it asks
 // the server for the topic (RPL_TOPIC routes to the buffer); with an argument it
-// sets the topic. TOPIC is sent as a raw line because the client library does
-// not yet wrap it.
+// sets the topic.
 func cmdTopic(m model, args []string, rest string) (action, tea.Cmd) {
 	channel := m.activeBuffer().Title
 	if !isChannel(channel) {
@@ -334,12 +345,45 @@ func cmdTopic(m model, args []string, rest string) (action, tea.Cmd) {
 		return action{kind: actionNone}, nil
 	}
 	if len(args) == 0 {
-		_ = m.cli.SendRaw("TOPIC " + channel)
+		_ = m.cli.RequestTopic(channel)
 		return action{kind: actionNone}, nil
 	}
-	// Set: TOPIC #chan :new topic (trailing param carries the spaces).
-	_ = m.cli.SendRaw(fmt.Sprintf("TOPIC %s :%s", channel, rest))
+	// Set: the rest of the line is the new topic (spaces preserved).
+	_ = m.cli.SetTopic(channel, rest)
 	return action{kind: actionNone}, nil
+}
+
+// cmdWhois looks up a user. With an explicit nick it whoises that nick; with no
+// argument it defaults to the current PM correspondent (the active buffer's
+// title when it is a PM). The WHOIS reply numerics route to the active buffer.
+func cmdWhois(m model, args []string, rest string) (action, tea.Cmd) {
+	nick := ""
+	if len(args) > 0 {
+		nick = args[0]
+	} else if b := m.activeBuffer(); b.Kind == BufferPM {
+		nick = b.Title
+	}
+	if nick == "" {
+		return infoAction("usage: /whois <nick>"), nil
+	}
+	if m.cli != nil {
+		_ = m.cli.Whois(nick)
+	}
+	return action{kind: actionNone}, nil
+}
+
+// cmdAway sets or clears the client's away status. With a reason it marks the
+// client away; with no argument it clears the away status. A local info line
+// confirms the change (the server's 305/306 numerics also route to the server
+// buffer).
+func cmdAway(m model, args []string, rest string) (action, tea.Cmd) {
+	if m.cli != nil {
+		_ = m.cli.Away(rest)
+	}
+	if rest == "" {
+		return infoAction("marked back"), nil
+	}
+	return infoAction("marked away: " + rest), nil
 }
 
 // cmdNames requests the member list of the active channel. The RPL_NAMREPLY /
