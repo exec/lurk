@@ -82,13 +82,37 @@ func parseCapList(list string, fn func(name, value string, hasValue bool)) {
 	}
 }
 
+// addAvailable records name→value in the advertised set, enforcing
+// maxAvailableCaps. It returns false (recording nothing) when a previously unseen
+// name would push the set past the ceiling, so a hostile server cannot grow it
+// without bound by streaming endless distinct names — whether via multiline CAP
+// LS continuations during registration, a long CAP LIST reply, or a CAP NEW flood
+// afterwards. A name already present is always updated (and reported true).
+func (n *Negotiator) addAvailable(name, value string) bool {
+	if _, known := n.available[name]; !known && len(n.available) >= maxAvailableCaps {
+		return false
+	}
+	n.available[name] = value
+	return true
+}
+
+// enable adds name to the enabled set under the same maxAvailableCaps ceiling, so
+// a flood of (possibly unsolicited) ACK or LIST entries from a hostile server
+// cannot grow it without bound. A cap already enabled stays enabled.
+func (n *Negotiator) enable(name string) {
+	if _, on := n.enabled[name]; !on && len(n.enabled) >= maxAvailableCaps {
+		return
+	}
+	n.enabled[name] = struct{}{}
+}
+
 // onLS records a CAP LS advertisement line, accumulating across multiline '*'
 // continuations. When the final line arrives it commits the advertisement and,
 // during initial negotiation, computes the CAP REQ payloads to send.
 func (n *Negotiator) onLS(m *irc.Message) ([]string, error) {
 	caps, more := capsAndMore(m)
 	parseCapList(caps, func(name, value string, _ bool) {
-		n.available[name] = value
+		n.addAvailable(name, value)
 	})
 	if more {
 		// More CAP LS lines are coming; keep collecting.
@@ -181,7 +205,7 @@ func (n *Negotiator) onACK(m *irc.Message) ([]string, error) {
 			delete(n.enabled, rest)
 			return
 		}
-		n.enabled[name] = struct{}{}
+		n.enable(name)
 		if name == "sasl" {
 			n.saslAcked = true
 		}
@@ -255,7 +279,7 @@ func (n *Negotiator) onList(m *irc.Message) {
 		n.enabled = make(map[string]struct{})
 	}
 	parseCapList(caps, func(name, _ string, _ bool) {
-		n.enabled[name] = struct{}{}
+		n.enable(name)
 		if name == "sasl" {
 			n.saslAcked = true
 		}
@@ -271,12 +295,11 @@ func (n *Negotiator) onNew(m *irc.Message) ([]string, error) {
 	caps, _ := capsAndMore(m)
 	var toReq []string
 	parseCapList(caps, func(name, value string, _ bool) {
-		if _, known := n.available[name]; !known && len(n.available) >= maxAvailableCaps {
+		if !n.addAvailable(name, value) {
 			// Advertised set is at its bound; ignore further novel names so a
 			// CAP NEW flood cannot grow it without limit post-registration.
 			return
 		}
-		n.available[name] = value
 		if _, want := n.wantedSet[name]; !want {
 			return
 		}
