@@ -64,6 +64,46 @@ func (c *Client) Notice(target, text string) error {
 	return c.write(irc.NOTICE, target, text)
 }
 
+// Action sends a CTCP ACTION to target (a channel or nick) — the "/me" form,
+// conventionally rendered as "* nick <text>". It wraps text in the CTCP framing
+// (\x01ACTION …\x01) and sends it as a PRIVMSG, so it travels like any other
+// message (and is echoed back under echo-message).
+func (c *Client) Action(target, text string) error {
+	return c.Privmsg(target, "\x01ACTION "+text+"\x01")
+}
+
+// SetTopic changes channel's topic. An empty topic clears the channel topic (the
+// server interprets the trailing empty parameter, "TOPIC <channel> :", as a
+// removal). To read the current topic without changing it, use RequestTopic.
+func (c *Client) SetTopic(channel, topic string) error {
+	return c.write(irc.TOPIC, channel, topic)
+}
+
+// RequestTopic asks the server for channel's current topic by sending a bare
+// "TOPIC <channel>". The reply arrives as RPL_TOPIC (332) or RPL_NOTOPIC (331)
+// and refreshes the tracked topic (see Topic).
+func (c *Client) RequestTopic(channel string) error {
+	return c.write(irc.TOPIC, channel)
+}
+
+// Away marks the client as away with the given reason: servers then send an
+// automatic RPL_AWAY (301) to anyone who messages the client, and (under
+// away-notify) broadcast an AWAY to shared channels. An empty reason clears the
+// away status instead, marking the client back — this mirrors the IRC AWAY
+// command, whose bare, parameterless form means "no longer away". Use Back for a
+// self-documenting way to clear it.
+func (c *Client) Away(reason string) error {
+	if reason == "" {
+		return c.write(irc.AWAY)
+	}
+	return c.write(irc.AWAY, reason)
+}
+
+// Back clears the client's away status (equivalent to Away("")).
+func (c *Client) Back() error {
+	return c.write(irc.AWAY)
+}
+
 // SetNick requests a nickname change.
 func (c *Client) SetNick(nick string) error {
 	return c.write(irc.NICK, nick)

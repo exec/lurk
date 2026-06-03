@@ -16,8 +16,9 @@
 //
 //	A plain line is sent as a PRIVMSG to the current channel (the -channel arg,
 //	updated by /join). Lines beginning with '/' are commands: /join, /part,
-//	/msg, /nick, /names, /quit, /raw. A line starting with '//' sends a literal
-//	message that begins with a single '/'. Ctrl-D (EOF) or Ctrl-C quits cleanly.
+//	/msg, /me, /away, /nick, /names, /quit, /raw. A line starting with '//' sends
+//	a literal message that begins with a single '/'. Ctrl-D (EOF) or Ctrl-C quits
+//	cleanly.
 package main
 
 import (
@@ -256,6 +257,35 @@ func (r *repl) command(line string) {
 			fmt.Printf("<%s/%s> %s\n", client.SanitizeTerminal(target), r.client.Nick(), client.SanitizeTerminal(body))
 		}
 
+	case "me":
+		target := r.Current()
+		if target == "" {
+			fmt.Println("*** no current channel; use /join <#chan> or /msg <target> <text>")
+			return
+		}
+		if rest == "" {
+			fmt.Println("*** usage: /me <action text>")
+			return
+		}
+		if err := r.client.Action(target, rest); err != nil {
+			fmt.Printf("*** me failed: %v\n", err)
+			return
+		}
+		if !r.client.CapEnabled("echo-message") {
+			fmt.Printf("* %s/%s %s\n", client.SanitizeTerminal(target), r.client.Nick(), client.SanitizeTerminal(rest))
+		}
+
+	case "away":
+		if err := r.client.Away(rest); err != nil {
+			fmt.Printf("*** away failed: %v\n", err)
+			return
+		}
+		if rest == "" {
+			fmt.Println("*** marked back")
+		} else {
+			fmt.Printf("*** marked away: %s\n", client.SanitizeTerminal(rest))
+		}
+
 	case "nick":
 		if rest == "" {
 			fmt.Println("*** usage: /nick <newnick>")
@@ -292,7 +322,7 @@ func (r *repl) command(line string) {
 		_ = r.client.Quit(rest)
 
 	default:
-		fmt.Printf("*** unknown command /%s — try: /join /part /msg /nick /names /quit /raw (// for a literal /message)\n", client.SanitizeTerminal(cmd))
+		fmt.Printf("*** unknown command /%s — try: /join /part /msg /me /away /nick /names /quit /raw (// for a literal /message)\n", client.SanitizeTerminal(cmd))
 	}
 }
 
