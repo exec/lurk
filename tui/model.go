@@ -109,6 +109,12 @@ type model struct {
 	// to throttle outbound typing notifications (see maybeSendTyping).
 	lastTypingSent time.Time
 
+	// bell is a one-shot flag set when an inbound message highlighted a buffer
+	// the user is not currently viewing; Update rings the terminal bell and
+	// clears it. It lives on the model so the pure routing path (appendLine) can
+	// request a bell without reaching for I/O.
+	bell bool
+
 	// chanList is the channel-directory modal shown by /list: a filterable,
 	// scrollable list drawn as a centered overlay (channellist.go). chanListOpen
 	// gates the overlay and its key capture; chanListLoading is true between the

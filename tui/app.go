@@ -54,9 +54,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ircMsg:
 		// Apply the event to model state (view layer owns the buffer mutation),
-		// then immediately re-subscribe to keep the stream alive.
+		// then immediately re-subscribe to keep the stream alive. A highlight in an
+		// unfocused buffer also rings the terminal bell.
 		m = routeEvent(m, msg.ev)
-		return m, waitForIRC(m.sub)
+		cmds := []tea.Cmd{waitForIRC(m.sub)}
+		if m.bell {
+			cmds = append(cmds, bellCmd())
+			m.bell = false
+		}
+		return m, tea.Batch(cmds...)
 
 	case ircClosedMsg:
 		// The connection ended; mirror the line client and exit.

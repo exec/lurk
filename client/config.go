@@ -98,6 +98,17 @@ type Config struct {
 	// if the desired Nick is in use (ERR_NICKNAMEINUSE). When empty, the client
 	// appends an underscore to the current nick on each collision.
 	FallbackNick string
+
+	// Version is the client identification string returned to a CTCP VERSION
+	// query. Defaults to "lurk" when empty.
+	Version string
+
+	// AutoReconnect, when true, makes a connection established via Connect
+	// transparently re-dial and re-register (with backoff) after an unexpected
+	// disconnect, re-joining the channels it was in. A user-initiated Quit/Close
+	// stops it. It has no effect on a ConnectConn (injected-transport) session,
+	// which has no address to re-dial.
+	AutoReconnect bool
 }
 
 // DefaultCaps is the set of capabilities Lurk requests when Config.Caps is nil.
@@ -126,6 +137,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Realname == "" {
 		c.Realname = c.Nick
+	}
+	if c.Version == "" {
+		c.Version = "lurk"
 	}
 	if c.Caps == nil {
 		c.Caps = append([]string(nil), DefaultCaps...)

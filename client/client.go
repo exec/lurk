@@ -50,8 +50,22 @@ type Client struct {
 	// is owned by the run goroutine.
 	conv *sasl.Conversation
 
-	// done is closed when the run goroutine exits (the connection ended).
-	done chan struct{}
+	// done is closed once the client has stopped for good (the final connection
+	// ended and, when auto-reconnect is on, no further attempt will be made).
+	done     chan struct{}
+	doneOnce sync.Once
+
+	// stop is closed by Close/Quit to ask the reconnect supervisor to stop
+	// retrying and shut the client down. stopOnce guards the single close.
+	stop     chan struct{}
+	stopOnce sync.Once
+
+	// dial establishes a fresh transport for (re)connection. Connect sets it to
+	// the real net dialer; tests inject a scripted one. reconnectable records
+	// whether this client may re-dial at all (false for ConnectConn, which has no
+	// address).
+	dial          func(ctx context.Context) (transport, error)
+	reconnectable bool
 
 	// mu guards the fields below, which are read by snapshot accessors that may
 	// be called from handler goroutines or other goroutines.
@@ -70,6 +84,7 @@ type Client struct {
 	evMu      sync.Mutex
 	evCh      chan Event
 	evDropped int
+	evClosed  bool // set when the stream is closed on final shutdown
 }
 
 // New returns a Client configured by cfg. It does not perform any I/O; call
@@ -81,6 +96,7 @@ func New(cfg Config) *Client {
 		st:         newState(),
 		registered: make(chan struct{}),
 		done:       make(chan struct{}),
+		stop:       make(chan struct{}),
 	}
 	// Seed the self identity from the configured nick so Nick() is meaningful
 	// before registration (Connect re-seeds it, and a 433 fallback / NICK change
@@ -223,26 +239,73 @@ func (c *Client) Connect(ctx context.Context) error {
 			return errors.New("client: refusing to send a PASS password over a plaintext connection; enable Config.TLS or set Config.AllowInsecureAuth")
 		}
 	}
+	// The real net dialer, reused by the reconnect supervisor for re-dials. A
+	// pre-set dialer (tests inject one) is kept so reconnect is hermetically
+	// testable without real sockets.
+	if c.dial == nil {
+		c.dial = c.netDial
+	}
+	c.reconnectable = true
+	co, err := c.dial(ctx)
+	if err != nil {
+		return err
+	}
+	return c.attachAndRegister(ctx, co)
+}
+
+// netDial dials and TLS-wraps the configured server, returning it as a transport.
+func (c *Client) netDial(ctx context.Context) (transport, error) {
 	co, err := conn.Dial(ctx, "tcp", c.cfg.Server, conn.Options{
 		TLS:                c.cfg.TLS,
 		InsecureSkipVerify: c.cfg.InsecureSkipVerify,
 	})
 	if err != nil {
-		return fmt.Errorf("client: connect: %w", err)
+		return nil, fmt.Errorf("client: connect: %w", err)
 	}
-	return c.attachAndRegister(ctx, co)
+	return co, nil
 }
 
 // ConnectConn attaches an already-established transport (for tests, or callers
 // performing their own dialing) and runs the registration handshake. The Client
-// takes ownership of tr and closes it on shutdown.
+// takes ownership of tr and closes it on shutdown. Such a session is not
+// reconnectable (there is no address to re-dial).
 func (c *Client) ConnectConn(ctx context.Context, tr transport) error {
 	return c.attachAndRegister(ctx, tr)
 }
 
-// attachAndRegister stores the transport, starts the run loop in the
-// background, drives the opening handshake, and waits for registration.
+// attachAndRegister stores the transport, starts the run loop in the background,
+// drives the opening handshake, and waits for registration. On success it starts
+// the reconnect supervisor (when enabled) or, otherwise, a bridge that mirrors
+// the single session's end onto the public done channel.
 func (c *Client) attachAndRegister(ctx context.Context, tr transport) error {
+	supervised := c.reconnectable && c.cfg.AutoReconnect
+
+	// A supervised session runs on a private done channel the supervisor owns;
+	// an unsupervised one drives the public done directly (the prior behavior).
+	sessionDone := c.done
+	if supervised {
+		sessionDone = make(chan struct{})
+	}
+
+	if err := c.startSession(tr, sessionDone, ctx); err != nil {
+		if supervised {
+			go c.bridgeDone(sessionDone)
+		}
+		return err
+	}
+
+	if supervised {
+		go c.supervise(sessionDone)
+	}
+	return nil
+}
+
+// startSession attaches tr, starts its run goroutine on sessionDone, sends the
+// opening handshake, and waits for registration to complete (or the context to
+// cancel, or the client to be stopped). It is used both for the initial connect
+// and for each reconnect attempt.
+func (c *Client) startSession(tr transport, sessionDone chan struct{}, ctx context.Context) error {
+	c.resetRegistration()
 	c.tr = tr
 	c.neg = cap.NewNegotiator(c.cfg.Caps)
 
@@ -251,25 +314,36 @@ func (c *Client) attachAndRegister(ctx context.Context, tr transport) error {
 	c.st.self = c.cfg.Nick
 	c.mu.Unlock()
 
-	// Start the run loop, which processes inbound messages (including the
-	// registration burst) and signals completion via the registered channel.
-	go c.run()
+	go c.run(sessionDone)
 
-	// Kick off the opening sequence: CAP LS 302, (PASS), NICK, USER.
 	if err := c.sendOpening(); err != nil {
-		c.Close()
+		c.tr.Close()
 		return fmt.Errorf("client: opening: %w", err)
 	}
 
-	// Wait for registration to complete, the context to cancel, or the
-	// connection to end.
 	select {
 	case <-c.registered:
 		return c.regErr
 	case <-ctx.Done():
-		c.Close()
+		c.tr.Close()
 		return fmt.Errorf("client: registration: %w", ctx.Err())
+	case <-c.stop:
+		c.tr.Close()
+		return errStopped
 	}
+}
+
+// resetRegistration re-arms the one-shot registration state for a fresh session
+// (the initial connect, or a reconnect). It is only called between sessions,
+// when no run goroutine is active, so it needs no extra synchronization beyond
+// the state mutex it already takes.
+func (c *Client) resetRegistration() {
+	c.mu.Lock()
+	c.registered = make(chan struct{})
+	c.regOnce = sync.Once{}
+	c.regErr = nil
+	c.conv = nil
+	c.mu.Unlock()
 }
 
 // sendOpening emits the capability-negotiation start and the NICK/USER (and
@@ -303,8 +377,10 @@ func (c *Client) signalRegistered(err error) {
 	})
 }
 
-// Close tears down the connection. It is safe to call multiple times.
+// Close tears down the connection and stops any reconnect supervisor. It is safe
+// to call multiple times.
 func (c *Client) Close() error {
+	c.stopOnce.Do(func() { close(c.stop) })
 	if c.tr == nil {
 		return nil
 	}

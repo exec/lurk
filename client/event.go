@@ -193,7 +193,29 @@ func (d *dispatcher) dispatch(ev *Event) {
 // register under these keys; the run loop raises them after updating state.
 const (
 	evtConnected = "@connected"
+
+	// evtReconnecting / evtReconnected are raised by the auto-reconnect supervisor
+	// (reconnect.go) around a transparent re-dial after an unexpected disconnect,
+	// so a UI can surface the gap. Their Message carries a human-readable note as
+	// the trailing parameter.
+	evtReconnecting = "@reconnecting"
+	evtReconnected  = "@reconnected"
 )
+
+// Exported synthetic-event command keys, for stream consumers that route on
+// Event.Command() (e.g. the TUI surfacing reconnect status).
+const (
+	EventReconnecting = evtReconnecting
+	EventReconnected  = evtReconnected
+)
+
+// HandleReconnecting registers a handler fired when the connection dropped and
+// the client is about to (or retrying to) re-dial.
+func (c *Client) HandleReconnecting(h Handler) { c.disp.on(evtReconnecting, h) }
+
+// HandleReconnected registers a handler fired once a re-dial has re-registered
+// successfully and the prior channels have been re-joined.
+func (c *Client) HandleReconnected(h Handler) { c.disp.on(evtReconnected, h) }
 
 // On registers a handler for a raw IRC command or numeric. The command should
 // be the canonical upper-case form (use the constants in package irc, e.g.

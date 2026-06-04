@@ -73,9 +73,14 @@ scrolling needs a terminal with Kitty-keyboard support (iTerm2, Ghostty, Kitty,
 WezTerm, Alacritty); Terminal.app can't send `Shift-↑/↓`, and macOS reserves
 `Ctrl-↑/↓` for Mission Control.
 
-Slash commands: `/join /part /msg /query /nick /me /away /whois /list /topic
-/names /close /raw /help /quit` — type `/help` in-app for the keys and command
-list, or `/help <command>` for usage.
+Slash commands: `/join /part /msg /query /nick /me /away /whois /whowas /list
+/topic /names /mode /op /deop /voice /devoice /kick /ban /unban /invite /notice
+/ctcp /motd /clear /close /raw /help /quit` — type `/help` in-app for the keys
+and command list, or `/help <command>` for usage.
+
+Lurk auto-reconnects (with backoff) after an unexpected disconnect and re-joins
+your channels; a mention in a buffer you're not watching rings the terminal bell;
+and it answers standard CTCP queries (VERSION/PING/TIME/CLIENTINFO).
 
 ## Packages
 

@@ -392,6 +392,8 @@ func parseConfig() (cfg client.Config, channel string, plain bool, configPath st
 		Server:             *server,
 		TLS:                *useTLS,
 		InsecureSkipVerify: *insecure,
+		AutoReconnect:      true,
+		Version:            "lurk " + version,
 		SASL: client.SASLConfig{
 			Mechanism: strings.ToUpper(*saslMech),
 			Username:  *saslUser,
@@ -426,6 +428,8 @@ func networkToConfig(n config.Network, def config.Identity) (client.Config, []st
 		TLS:                n.TLS,
 		InsecureSkipVerify: n.Insecure,
 		AllowInsecureAuth:  n.AllowInsecureAuth,
+		AutoReconnect:      true,
+		Version:            "lurk " + version,
 		SASL: client.SASLConfig{
 			Mechanism: strings.ToUpper(n.SASL.Mechanism),
 			Username:  n.SASL.Username,
@@ -487,6 +491,9 @@ func registerHandlers(c *client.Client, channel string) {
 	c.HandleConnected(func(ev *client.Event) {
 		fmt.Printf("*** connected (welcome: %s)\n", san(ev.Text()))
 	})
+
+	c.HandleReconnecting(func(ev *client.Event) { fmt.Printf("*** %s\n", san(ev.Text())) })
+	c.HandleReconnected(func(ev *client.Event) { fmt.Printf("*** %s\n", san(ev.Text())) })
 
 	c.HandleMessage(func(ev *client.Event) {
 		target := ev.Param(0)

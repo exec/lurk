@@ -121,8 +121,10 @@ func (c *Client) SetNick(nick string) error {
 }
 
 // Quit sends a QUIT with an optional reason and lets the server close the
-// connection. The caller may also call Close to tear down locally.
+// connection. It also stops the reconnect supervisor (a deliberate quit must not
+// trigger a re-dial); the caller may still call Close to tear down locally.
 func (c *Client) Quit(reason string) error {
+	c.stopOnce.Do(func() { close(c.stop) })
 	if reason == "" {
 		return c.write(irc.QUIT)
 	}

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -9,6 +10,16 @@ import (
 	"lurk/client"
 	"lurk/irc"
 )
+
+// bellCmd rings the terminal bell by writing a BEL to stderr. stderr is not the
+// stream Bubble Tea's renderer writes to, so the control byte cannot corrupt the
+// on-screen frame; if stderr is not a terminal the byte is harmlessly discarded.
+func bellCmd() tea.Cmd {
+	return func() tea.Msg {
+		fmt.Fprint(os.Stderr, "\a")
+		return nil
+	}
+}
 
 // This file bridges the client's event stream into the Bubble Tea update loop.
 // The design follows the idiomatic "channel + re-subscribing Cmd" subscription
@@ -69,6 +80,10 @@ func routeEvent(m model, ev client.Event) model {
 			pluralEvents(ev.Dropped))
 	}
 	switch ev.Command() {
+	case client.EventReconnecting, client.EventReconnected:
+		// Connection-status notices from the reconnect supervisor: show them where
+		// the user is looking so a drop/recovery is visible.
+		return appendInfo(m, m.activeBuffer(), ev.Text())
 	case irc.PRIVMSG, irc.NOTICE:
 		return routeText(m, ev)
 	case irc.JOIN, irc.PART, irc.QUIT, irc.NICK, irc.MODE, irc.TOPIC, irc.KICK:

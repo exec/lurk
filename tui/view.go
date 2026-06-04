@@ -485,6 +485,8 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 		b.Unread++
 		if highlight {
 			b.Highlight = true
+			// Ring the bell for a mention in a buffer the user isn't watching.
+			m.bell = true
 		}
 	}
 	return m

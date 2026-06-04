@@ -20,12 +20,14 @@ const (
 	rplTopicWhoTime = "333"   // RPL_TOPICWHOTIME: <client> <channel> <setBy> <setAt unix>
 )
 
-// run is the client's single message-processing goroutine. It drains inbound
+// run is a connection's single message-processing goroutine. It drains inbound
 // messages from the transport, applies protocol handling (PING, capability
 // negotiation, SASL, registration numerics, state tracking), and dispatches
-// each message to user handlers. It returns when the Messages channel closes.
-func (c *Client) run() {
-	defer close(c.done)
+// each message to user handlers. It returns when the Messages channel closes,
+// closing sessionDone to signal that this connection has ended (the supervisor,
+// or the single-session bridge, decides what happens next).
+func (c *Client) run(sessionDone chan struct{}) {
+	defer close(sessionDone)
 	for m := range c.tr.Messages() {
 		c.handle(m)
 	}
@@ -81,6 +83,11 @@ func (c *Client) handle(m *irc.Message) {
 
 	// State tracking for membership-affecting messages.
 	c.track(m)
+
+	// Auto-answer CTCP queries (VERSION/PING/TIME/CLIENTINFO) directed at us.
+	if m.Command == irc.PRIVMSG {
+		c.maybeAnswerCTCP(m)
+	}
 
 	// Protocol reactions that depend on freshly-tracked state (e.g. requesting
 	// channel history once our own JOIN is confirmed).

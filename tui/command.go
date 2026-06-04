@@ -133,6 +133,111 @@ func init() {
 			desc:   "look up a user (defaults to the current PM correspondent)",
 			handle: cmdWhois,
 		},
+		"WHOWAS": {
+			minArgs: 1, maxArgs: 1,
+			usage: "<nick>",
+			desc:  "look up a user who has logged off",
+			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
+				return rawCmd(m, "WHOWAS "+args[0])
+			},
+		},
+		"MOTD": {
+			minArgs: 0, maxArgs: 0,
+			usage: "",
+			desc:  "request the server's message of the day",
+			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
+				return rawCmd(m, "MOTD")
+			},
+		},
+		"KICK": {
+			minArgs: 1, maxArgs: 2,
+			usage:  "<nick> [reason]",
+			desc:   "remove a user from the current channel",
+			handle: cmdKick,
+		},
+		"MODE": {
+			minArgs: 0, maxArgs: argsUnlimited,
+			usage:  "[target] <modes> [args]",
+			desc:   "view or change channel/user modes",
+			handle: cmdMode,
+		},
+		"OP": {
+			minArgs: 1, maxArgs: argsUnlimited,
+			usage: "<nick> [nick...]",
+			desc:  "grant operator status in the current channel",
+			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
+				return applyChanMode(m, "+", "o", strings.Fields(rest))
+			},
+		},
+		"DEOP": {
+			minArgs: 1, maxArgs: argsUnlimited,
+			usage: "<nick> [nick...]",
+			desc:  "remove operator status",
+			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
+				return applyChanMode(m, "-", "o", strings.Fields(rest))
+			},
+		},
+		"VOICE": {
+			minArgs: 1, maxArgs: argsUnlimited,
+			usage: "<nick> [nick...]",
+			desc:  "grant voice in the current channel",
+			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
+				return applyChanMode(m, "+", "v", strings.Fields(rest))
+			},
+		},
+		"DEVOICE": {
+			minArgs: 1, maxArgs: argsUnlimited,
+			usage: "<nick> [nick...]",
+			desc:  "remove voice",
+			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
+				return applyChanMode(m, "-", "v", strings.Fields(rest))
+			},
+		},
+		"BAN": {
+			minArgs: 1, maxArgs: argsUnlimited,
+			usage: "<mask> [mask...]",
+			desc:  "ban a user/mask from the current channel",
+			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
+				return applyChanMode(m, "+", "b", strings.Fields(rest))
+			},
+		},
+		"UNBAN": {
+			minArgs: 1, maxArgs: argsUnlimited,
+			usage: "<mask> [mask...]",
+			desc:  "lift a ban from the current channel",
+			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
+				return applyChanMode(m, "-", "b", strings.Fields(rest))
+			},
+		},
+		"INVITE": {
+			minArgs: 1, maxArgs: 2,
+			usage:  "<nick> [channel]",
+			desc:   "invite a user to a channel (defaults to the current one)",
+			handle: cmdInvite,
+		},
+		"NOTICE": {
+			minArgs: 2, maxArgs: 2,
+			usage: "<target> <text>",
+			desc:  "send a notice to a target",
+			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
+				if m.cli != nil {
+					_ = m.cli.Notice(args[0], args[1])
+				}
+				return action{kind: actionNone}, nil
+			},
+		},
+		"CTCP": {
+			minArgs: 2, maxArgs: 3,
+			usage:  "<target> <command> [args]",
+			desc:   "send a CTCP query (e.g. /ctcp nick VERSION)",
+			handle: cmdCTCP,
+		},
+		"CLEAR": {
+			minArgs: 0, maxArgs: 0,
+			usage:  "",
+			desc:   "clear the current buffer's scrollback",
+			handle: cmdClear,
+		},
 		"AWAY": {
 			minArgs: 0, maxArgs: argsUnlimited,
 			usage:  "[reason]",
@@ -421,6 +526,103 @@ func cmdNames(m model, args []string, rest string) (action, tea.Cmd) {
 	if m.cli != nil {
 		_ = m.cli.Names(channel)
 	}
+	return action{kind: actionNone}, nil
+}
+
+// rawCmd sends a raw protocol line and returns no action. It is the shared body
+// for the thin command wrappers (/whowas, /motd) that have no local UI effect.
+func rawCmd(m model, line string) (action, tea.Cmd) {
+	if m.cli != nil {
+		if err := m.cli.SendRaw(line); err != nil {
+			return infoAction(fmt.Sprintf("%s: %v", strings.ToLower(strings.Fields(line)[0]), err)), nil
+		}
+	}
+	return action{kind: actionNone}, nil
+}
+
+// cmdKick removes a user from the active channel, with an optional reason.
+func cmdKick(m model, args []string, rest string) (action, tea.Cmd) {
+	ch := m.activeBuffer().Title
+	if !isChannel(ch) {
+		return infoAction("not a channel; switch to a channel buffer first"), nil
+	}
+	reason := ""
+	if len(args) > 1 {
+		reason = args[1]
+	}
+	if m.cli != nil {
+		_ = m.cli.Kick(ch, args[0], reason)
+	}
+	return action{kind: actionNone}, nil
+}
+
+// applyChanMode applies a prefix/list mode (op/voice/ban …) to one or more
+// targets in the active channel. sign is "+"/"-" and letter the mode char.
+func applyChanMode(m model, sign, letter string, targets []string) (action, tea.Cmd) {
+	ch := m.activeBuffer().Title
+	if !isChannel(ch) {
+		return infoAction("not a channel; switch to a channel buffer first"), nil
+	}
+	if len(targets) == 0 {
+		return infoAction("usage: need at least one target"), nil
+	}
+	if m.cli != nil {
+		modes := sign + strings.Repeat(letter, len(targets))
+		_ = m.cli.ChannelMode(ch, modes, targets...)
+	}
+	return action{kind: actionNone}, nil
+}
+
+// cmdMode views or changes modes. With no argument on a channel buffer it asks
+// the server for the channel's modes; otherwise it forwards the raw MODE line.
+func cmdMode(m model, args []string, rest string) (action, tea.Cmd) {
+	if rest == "" {
+		ch := m.activeBuffer().Title
+		if !isChannel(ch) {
+			return infoAction("usage: /mode <target> <modes> [args]"), nil
+		}
+		return rawCmd(m, "MODE "+ch)
+	}
+	return rawCmd(m, "MODE "+rest)
+}
+
+// cmdInvite invites a user to a channel (the active channel when none is given).
+func cmdInvite(m model, args []string, rest string) (action, tea.Cmd) {
+	channel := ""
+	if len(args) > 1 {
+		channel = args[1]
+	} else if ch := m.activeBuffer().Title; isChannel(ch) {
+		channel = ch
+	}
+	if !isChannel(channel) {
+		return infoAction("usage: /invite <nick> <channel>"), nil
+	}
+	if m.cli != nil {
+		_ = m.cli.Invite(args[0], channel)
+	}
+	return action{kind: actionNone}, nil
+}
+
+// cmdCTCP sends a CTCP query to a target, wrapping it in the \x01 framing.
+func cmdCTCP(m model, args []string, rest string) (action, tea.Cmd) {
+	verb := strings.ToUpper(args[1])
+	payload := verb
+	if len(args) > 2 {
+		payload += " " + args[2]
+	}
+	if m.cli != nil {
+		_ = m.cli.Privmsg(args[0], "\x01"+payload+"\x01")
+	}
+	return action{kind: actionNone}, nil
+}
+
+// cmdClear empties the active buffer's scrollback (a local view action; no
+// protocol is sent).
+func cmdClear(m model, args []string, rest string) (action, tea.Cmd) {
+	b := m.activeBuffer()
+	b.lines = nil
+	b.gotHistory = false
+	b.refresh()
 	return action{kind: actionNone}, nil
 }
 

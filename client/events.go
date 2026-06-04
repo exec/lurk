@@ -45,7 +45,7 @@ func (c *Client) Events() <-chan Event {
 func (c *Client) publish(ev *Event) {
 	c.evMu.Lock()
 	ch := c.evCh
-	if ch == nil {
+	if ch == nil || c.evClosed {
 		c.evMu.Unlock()
 		return
 	}
