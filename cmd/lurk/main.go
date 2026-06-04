@@ -16,7 +16,7 @@
 //
 //	A plain line is sent as a PRIVMSG to the current channel (the -channel arg,
 //	updated by /join). Lines beginning with '/' are commands: /join, /part,
-//	/msg, /me, /away, /nick, /names, /quit, /raw. A line starting with '//' sends
+//	/msg, /me, /away, /nick, /names, /list, /quit, /raw. A line starting with '//' sends
 //	a literal message that begins with a single '/'. Ctrl-D (EOF) or Ctrl-C quits
 //	cleanly.
 package main
@@ -327,6 +327,17 @@ func (r *repl) command(line string) {
 			fmt.Printf("*** names failed: %v\n", err)
 		}
 
+	case "list":
+		var err error
+		if rest == "" {
+			err = r.client.List()
+		} else {
+			err = r.client.List(strings.Fields(rest)[0])
+		}
+		if err != nil {
+			fmt.Printf("*** list failed: %v\n", err)
+		}
+
 	case "raw":
 		if rest == "" {
 			fmt.Println("*** usage: /raw <protocol line>")
@@ -341,7 +352,7 @@ func (r *repl) command(line string) {
 		_ = r.client.Quit(rest)
 
 	default:
-		fmt.Printf("*** unknown command /%s — try: /join /part /msg /me /away /nick /names /quit /raw (// for a literal /message)\n", client.SanitizeTerminal(cmd))
+		fmt.Printf("*** unknown command /%s — try: /join /part /msg /me /away /nick /names /list /quit /raw (// for a literal /message)\n", client.SanitizeTerminal(cmd))
 	}
 }
 
@@ -520,6 +531,14 @@ func registerHandlers(c *client.Client, channel string) {
 	c.On(irc.FAIL, stdReply)
 	c.On(irc.WARN, stdReply)
 	c.On(irc.NOTE, stdReply)
+
+	// Channel directory (/list): one line per channel, then a terminator.
+	c.On(irc.RPL_LIST, func(ev *client.Event) {
+		fmt.Printf("*** %s (%s users) %s\n", san(ev.Param(1)), san(ev.Param(2)), san(ev.Text()))
+	})
+	c.On(irc.RPL_LISTEND, func(ev *client.Event) {
+		fmt.Println("*** end of channel list")
+	})
 
 	// Print the member list once NAMES completes for our channel.
 	c.On(irc.RPL_ENDOFNAMES, func(ev *client.Event) {

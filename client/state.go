@@ -416,6 +416,21 @@ func (s *state) renameEverywhere(oldNick, newNick string) {
 	}
 }
 
+// channelsWith returns the names of the channels that currently have nick as a
+// member, sorted. It is meant to be read just before removeEverywhere /
+// renameEverywhere so a QUIT/NICK notice can be fanned out to the right buffers.
+func (s *state) channelsWith(nick string) []string {
+	key := s.foldKey(nick)
+	var out []string
+	for _, cs := range s.channels {
+		if _, ok := cs.members[key]; ok {
+			out = append(out, cs.name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // removeEverywhere drops a member from every channel (for a QUIT).
 func (s *state) removeEverywhere(nick string) {
 	for _, cs := range s.channels {

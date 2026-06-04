@@ -221,16 +221,62 @@ func renderNicklist(m model, w, h int) string {
 		self = m.cli.Nick()
 	}
 
-	title := t.nicklistTtl.Render(fmt.Sprintf("Users (%d)", len(members)))
-	rows := []string{title}
 	focused := m.focus == focusNicks
-	for i, mem := range members {
+
+	// The title takes the first row; the rest is a scroll window over the member
+	// list. When focused, the window follows the selection so it never scrolls off
+	// screen (the bug where a selection below the fold vanished). avail clamps to
+	// at least 1 so a 1-row column still renders the selected nick.
+	avail := h - 1
+	if avail < 1 {
+		avail = 1
+	}
+	start := nicklistStart(m.nickSel, len(members), avail, focused)
+	end := min(start+avail, len(members))
+
+	title := t.nicklistTtl.Render(nicklistTitle(len(members), start, end))
+	rows := []string{title}
+	for i := start; i < end; i++ {
 		selected := focused && i == m.nickSel
-		isSelf := equalFold(mem.Nick, self)
-		rows = append(rows, t.nickRow(mem, w, selected, isSelf))
+		isSelf := equalFold(members[i].Nick, self)
+		rows = append(rows, t.nickRow(members[i], w, selected, isSelf))
 	}
 	body := strings.Join(rows, "\n")
 	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(body)
+}
+
+// nicklistStart returns the index of the first member to render so that a window
+// of `rows` rows keeps the selection visible. When the list fits, or the nicklist
+// is not focused, it renders from the top; otherwise it centers the selection and
+// clamps to the ends so the first/last page stays full.
+func nicklistStart(sel, n, rows int, focused bool) int {
+	if !focused || n <= rows || rows <= 0 {
+		return 0
+	}
+	start := sel - rows/2
+	if start < 0 {
+		start = 0
+	}
+	if start > n-rows {
+		start = n - rows
+	}
+	return start
+}
+
+// nicklistTitle renders the "Users (N)" header, appending a "↑M ↓K" hint of how
+// many members are scrolled off above/below the current window.
+func nicklistTitle(n, start, end int) string {
+	title := fmt.Sprintf("Users (%d)", n)
+	above, below := start, n-end
+	switch {
+	case above > 0 && below > 0:
+		return fmt.Sprintf("%s ↑%d↓%d", title, above, below)
+	case above > 0:
+		return fmt.Sprintf("%s ↑%d", title, above)
+	case below > 0:
+		return fmt.Sprintf("%s ↓%d", title, below)
+	}
+	return title
 }
 
 // nickRow formats a single nicklist row for mem within column width w. Away

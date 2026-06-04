@@ -70,6 +70,15 @@ func (c *Client) handle(m *irc.Message) {
 		c.handleNickInUse(m)
 	}
 
+	// QUIT and NICK name no channel of their own, yet must be shown in every
+	// channel the subject was in. Capture those channels now, before track()
+	// removes/renames the member, so the dispatched event can carry them.
+	var affected []string
+	switch m.Command {
+	case irc.QUIT, irc.NICK:
+		affected = c.CommonChannels(m.Nick())
+	}
+
 	// State tracking for membership-affecting messages.
 	c.track(m)
 
@@ -78,7 +87,7 @@ func (c *Client) handle(m *irc.Message) {
 	c.afterTrack(m)
 
 	// User dispatch last, so handlers see fully updated state.
-	c.dispatch(m)
+	c.dispatchAffected(m, affected)
 }
 
 // chatHistoryLimit is the number of recent messages requested per channel when
@@ -112,7 +121,14 @@ func (c *Client) afterTrack(m *irc.Message) {
 // tag, the event is annotated with the open batch's type so consumers can group
 // or label it (the batch may be closed before they inspect the event).
 func (c *Client) dispatch(m *irc.Message) {
-	ev := &Event{Client: c, Message: m, recvTime: time.Now()}
+	c.dispatchAffected(m, nil)
+}
+
+// dispatchAffected is dispatch with a precomputed list of affected channels
+// (see Event.affectedChannels): the channels a QUIT/NICK subject was in, captured
+// before state tracking removed them. affected is nil for every other command.
+func (c *Client) dispatchAffected(m *irc.Message, affected []string) {
+	ev := &Event{Client: c, Message: m, recvTime: time.Now(), affectedChannels: affected}
 	if ref := m.Tags.Get("batch"); ref != "" {
 		c.mu.Lock()
 		ev.batchType = c.st.batchTypeFor(ref)

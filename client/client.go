@@ -121,6 +121,16 @@ func (c *Client) Members(channel string) []Member {
 	return out
 }
 
+// CommonChannels returns the channels the client currently shares with nick —
+// channels we are in where nick is a member — sorted. It is most useful read
+// just before a QUIT/NICK removes or renames the member everywhere, to fan the
+// notice out to the affected channel buffers.
+func (c *Client) CommonChannels(nick string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.st.channelsWith(nick)
+}
+
 // Topic returns the tracked topic of channel: the topic text, the nick/mask
 // that last set it, and when it was set. It reports the values gathered from
 // RPL_TOPIC (332), RPL_TOPICWHOTIME (333), and live TOPIC commands. For a

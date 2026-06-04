@@ -18,6 +18,11 @@ const (
 	RPL_NAMREPLY   = "353" // channel member list (NAMES)
 	RPL_ENDOFNAMES = "366"
 
+	// LIST reply burst: 321 starts (often omitted), 322 is one channel, 323 ends.
+	RPL_LISTSTART = "321" // <client> Channel :Users  Name
+	RPL_LIST      = "322" // <client> <channel> <#visible> :<topic>
+	RPL_LISTEND   = "323" // <client> :End of /LIST
+
 	// WHOIS reply burst: 311 opens, 318 closes; the rest are optional detail
 	// lines a client renders as the whois result.
 	RPL_AWAY          = "301" // <client> <nick> :<away message>

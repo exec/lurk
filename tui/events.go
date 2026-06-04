@@ -99,9 +99,9 @@ func routeEvent(m model, ev client.Event) model {
 	case irc.RPL_AWAY, irc.RPL_WHOISUSER, irc.RPL_WHOISSERVER,
 		irc.RPL_WHOISOPERATOR, irc.RPL_WHOISIDLE, irc.RPL_ENDOFWHOIS,
 		irc.RPL_WHOISCHANNELS, irc.RPL_WHOISACCOUNT, irc.RPL_WHOISACTUALLY,
-		irc.RPL_WHOISSECURE:
-		// WHOIS replies render in the buffer the user is looking at (the menu /
-		// command was triggered there), not the distant server buffer.
+		irc.RPL_WHOISSECURE, irc.RPL_LISTSTART, irc.RPL_LIST, irc.RPL_LISTEND:
+		// WHOIS and LIST replies render in the buffer the user is looking at (the
+		// menu / command was triggered there), not the distant server buffer.
 		return appendLine(m, m.activeBuffer(), ev)
 	default:
 		// Registration burst, MOTD, numerics, errors: server buffer.
@@ -218,6 +218,25 @@ func typingBufferKey(target, sender, self string) string {
 // when one is identifiable, else the server buffer. State (membership) is
 // already tracked by the client; here we only render the notice.
 func routeMembership(m model, ev client.Event) model {
+	// QUIT and NICK name no channel of their own. The client attaches the
+	// channels the subject was in (captured before the membership change) so the
+	// notice lands in each of those channel buffers — not the distant server
+	// buffer, where quits used to wrongly appear.
+	if chans := ev.Channels(); len(chans) > 0 {
+		shown := false
+		for _, ch := range chans {
+			if b := m.buffer(ch); b != nil {
+				m = appendLine(m, b, ev)
+				shown = true
+			}
+		}
+		if shown {
+			return m
+		}
+		// No buffer open for any shared channel: fall back to the server buffer.
+		return appendLine(m, m.buffers[0], ev)
+	}
+
 	target := ev.Param(0)
 	if isChannel(target) {
 		if b := m.buffer(target); b != nil {

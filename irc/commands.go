@@ -19,6 +19,7 @@ const (
 	QUIT         = "QUIT"
 	MODE         = "MODE"
 	NAMES        = "NAMES"
+	LIST         = "LIST"
 	WHOIS        = "WHOIS"
 	KICK         = "KICK"
 	INVITE       = "INVITE"

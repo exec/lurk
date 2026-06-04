@@ -32,6 +32,13 @@ type Event struct {
 	// batch. Read via BatchType(); captured at dispatch because the batch may be
 	// closed (and forgotten) before a consumer inspects the event.
 	batchType string
+
+	// affectedChannels lists the channels the event's subject was in at the time
+	// the event was processed, captured before state tracking mutates membership.
+	// It is set only for QUIT and NICK — messages that carry no channel of their
+	// own yet need to be shown in every channel the user shared with us (by then
+	// the member has already been removed/renamed). Read via Channels().
+	affectedChannels []string
 }
 
 // Convenience accessors mirroring irc.Message so handlers can read common
@@ -119,6 +126,23 @@ func (e *Event) Time() time.Time {
 // when it was dispatched. It returns "" when the event is not part of any batch.
 func (e *Event) BatchType() string {
 	return e.batchType
+}
+
+// Channels returns the channels the event's subject shared with us when the
+// event was processed. It is populated only for QUIT and NICK — events that name
+// no channel of their own but should be reflected in every channel the user was
+// in (the member is already gone from state by the time a consumer sees the
+// event). It returns nil for every other command.
+func (e *Event) Channels() []string {
+	return e.affectedChannels
+}
+
+// WithChannels returns a copy of e annotated with the given affected channels
+// (the ones Channels reports). The client sets these internally for QUIT/NICK;
+// this builder lets tests and tools construct the same fan-out events directly.
+func (e Event) WithChannels(channels []string) Event {
+	e.affectedChannels = channels
+	return e
 }
 
 // Handler is the signature for both raw and semantic event handlers. It is

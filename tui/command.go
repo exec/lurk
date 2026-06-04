@@ -121,6 +121,12 @@ func init() {
 			desc:   "request the member list of the current channel",
 			handle: cmdNames,
 		},
+		"LIST": {
+			minArgs: 0, maxArgs: 1,
+			usage:  "[filter]",
+			desc:   "list channels (optionally filtered, e.g. /list >50)",
+			handle: cmdList,
+		},
 		"WHOIS": {
 			minArgs: 0, maxArgs: 1,
 			usage:  "[nick]",
@@ -372,6 +378,21 @@ func cmdWhois(m model, args []string, rest string) (action, tea.Cmd) {
 	}
 	if m.cli != nil {
 		_ = m.cli.Whois(nick)
+	}
+	return action{kind: actionNone}, nil
+}
+
+// cmdList queries the server's channel directory. An optional argument is a
+// server-specific filter (e.g. ">50" for channels with more than 50 users). The
+// RPL_LIST replies route through the event bridge to the active buffer, where the
+// command was issued.
+func cmdList(m model, args []string, rest string) (action, tea.Cmd) {
+	if m.cli != nil {
+		if len(args) > 0 {
+			_ = m.cli.List(args[0])
+		} else {
+			_ = m.cli.List()
+		}
 	}
 	return action{kind: actionNone}, nil
 }

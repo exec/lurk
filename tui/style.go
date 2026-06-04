@@ -302,6 +302,10 @@ func (t theme) formatNumeric(ev client.Event) string {
 		body = subj + " is away: " + text
 	case irc.RPL_ENDOFWHOIS: // <me> <nick> :End of /WHOIS list
 		body = "end of whois — " + subj
+	case irc.RPL_LIST: // <me> <channel> <#visible> :<topic>
+		body = fmt.Sprintf("%s (%s users) %s", subj, sanitize(ev.Param(2)), text)
+	case irc.RPL_LISTEND: // <me> :End of /LIST
+		body = "end of list"
 	default:
 		// Any other numeric: show all params after the recipient nick so middle
 		// data is not dropped (e.g. "<nick> No such nick" for an error reply).

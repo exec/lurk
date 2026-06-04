@@ -29,6 +29,12 @@ go install lurk/cmd/lurk@latest   # or: go build ./cmd/lurk
 ## Run
 
 ```sh
+# Network launcher: pick (or add/edit/delete) a saved network, then connect
+lurk
+
+# Connect directly to a saved network by name (skips the launcher)
+lurk libera
+
 # Plaintext
 lurk -server irc.example.net:6667 -nick yournick -channel '#chan'
 
@@ -39,6 +45,12 @@ lurk -server irc.example.net:6697 -tls -nick yournick \
 # Line-mode (no full-screen UI), useful for scripting
 lurk -plain -server irc.example.net:6667 -nick yournick -channel '#chan'
 ```
+
+Run with no `-server` to open the **network launcher** — a list of saved
+networks (each bundling its own identity and optional SASL), with connect / add /
+edit / delete. Networks persist to `~/.config/lurk/config.json` (XDG-aware;
+override with `-config` or `LURK_CONFIG`), written `0600` since passwords are
+stored in cleartext. Passing `-server` connects directly and skips the launcher.
 
 All flags have `LURK_*` environment-variable equivalents.
 
@@ -61,9 +73,9 @@ scrolling needs a terminal with Kitty-keyboard support (iTerm2, Ghostty, Kitty,
 WezTerm, Alacritty); Terminal.app can't send `Shift-↑/↓`, and macOS reserves
 `Ctrl-↑/↓` for Mission Control.
 
-Slash commands: `/join /part /msg /query /nick /me /away /whois /topic /names
-/close /raw /help /quit` — type `/help` in-app for the keys and command list, or
-`/help <command>` for usage.
+Slash commands: `/join /part /msg /query /nick /me /away /whois /list /topic
+/names /close /raw /help /quit` — type `/help` in-app for the keys and command
+list, or `/help <command>` for usage.
 
 ## Packages
 

@@ -54,6 +54,17 @@ func (c *Client) Names(channels ...string) error {
 	return c.write(irc.NAMES, strings.Join(channels, ","))
 }
 
+// List sends a LIST query for the channel directory. With no arguments it
+// requests the full list; given channels (or a server-specific filter like
+// ">50") it narrows the query. Replies arrive as RPL_LIST (322) per channel,
+// bracketed by the optional RPL_LISTSTART (321) and RPL_LISTEND (323).
+func (c *Client) List(args ...string) error {
+	if len(args) == 0 {
+		return c.write(irc.LIST)
+	}
+	return c.write(irc.LIST, strings.Join(args, ","))
+}
+
 // Privmsg sends a PRIVMSG to target (a channel or nick).
 func (c *Client) Privmsg(target, text string) error {
 	return c.write(irc.PRIVMSG, target, text)

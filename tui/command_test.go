@@ -30,6 +30,25 @@ func TestRunLineAway(t *testing.T) {
 	}
 }
 
+func TestRunLineList(t *testing.T) {
+	m := newTestModel()
+
+	// /list is a protocol-only command: it returns actionNone (the RPL_LIST
+	// replies route to the buffer via the event bridge). It must be accepted both
+	// bare and with a filter argument.
+	for _, line := range []string{"/list", "/list >50"} {
+		act, _ := runLine(m, line)
+		if act.kind != actionNone {
+			t.Errorf("%q kind = %v, want actionNone", line, act.kind)
+		}
+	}
+
+	// It is listed in /help.
+	if !strings.Contains(commandNames(), "/list") {
+		t.Errorf("/list missing from command list: %s", commandNames())
+	}
+}
+
 func TestRunLineWhois(t *testing.T) {
 	m := newTestModel()
 
