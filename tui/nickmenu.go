@@ -83,9 +83,20 @@ func (m model) enterNickFocus() model {
 		return m
 	}
 	m.focus = focusNicks
+	// Blur the editor so its caret stops blinking while the nicklist has focus.
+	m.input.Blur()
 	if m.nickSel < 0 || m.nickSel >= len(sortedMembers(m)) {
 		m.nickSel = 0
 	}
+	return m
+}
+
+// refocusInput returns keyboard focus to the message editor and re-focuses the
+// textinput so its caret reappears. It is the single place the nicklist/menu
+// hand control back to the editor.
+func (m model) refocusInput() model {
+	m.focus = focusInput
+	m.input.Focus()
 	return m
 }
 
@@ -95,7 +106,7 @@ func (m model) enterNickFocus() model {
 func (m model) handleNickFocusKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	members := sortedMembers(m)
 	if len(members) == 0 {
-		m.focus = focusInput
+		m = m.refocusInput()
 		return m, nil
 	}
 	if m.nickSel >= len(members) {
@@ -103,7 +114,7 @@ func (m model) handleNickFocusKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "esc", "ctrl+u":
-		m.focus = focusInput
+		m = m.refocusInput()
 	case "up", "k":
 		if m.nickSel > 0 {
 			m.nickSel--
@@ -131,7 +142,7 @@ func (m model) handleMenuKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "left":
 		m.menuOpen = false
-		m.focus = focusInput
+		m = m.refocusInput()
 	case "up", "k":
 		if m.menuSel > 0 {
 			m.menuSel--
@@ -145,7 +156,7 @@ func (m model) handleMenuKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.applyMenu(entries[m.menuSel])
 		}
 		m.menuOpen = false
-		m.focus = focusInput
+		m = m.refocusInput()
 	}
 	return m, nil
 }
@@ -190,7 +201,7 @@ func (m model) applyMenu(e menuEntry) (tea.Model, tea.Cmd) {
 	nick := m.menuNick
 	ch := m.activeBuffer().Title
 	m.menuOpen = false
-	m.focus = focusInput
+	m = m.refocusInput()
 
 	switch e.act {
 	case miMessage:

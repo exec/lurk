@@ -179,10 +179,13 @@ func render(m model) tea.View {
 	}
 
 	v := tea.NewView(frame)
-	// Place the hardware cursor at the input caret. The input pane is the last
-	// row; its prompt offset is the editor's cursor position within that row.
-	if cur := inputCursor(m); cur != nil {
-		v.Cursor = cur
+	// Place the hardware cursor at the input caret only when the editor actually
+	// has focus; while the nicklist or its menu is driving keys, the caret would
+	// otherwise keep blinking in the input box and muddle where focus is.
+	if m.focus == focusInput && !m.menuOpen {
+		if cur := inputCursor(m); cur != nil {
+			v.Cursor = cur
+		}
 	}
 	return v
 }
@@ -229,6 +232,10 @@ func renderSidebar(m model, w, h int) string {
 		}
 		rows = append(rows, st.Width(w).Render(truncate(line, w)))
 	}
+	// Window the list around the active buffer so it never scrolls off-screen
+	// when there are more buffers than rows (the same clipping the nicklist had).
+	start := nicklistStart(m.active, len(rows), h, true)
+	rows = rows[start:min(start+h, len(rows))]
 	body := strings.Join(rows, "\n")
 	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(body)
 }
