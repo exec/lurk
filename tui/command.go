@@ -382,10 +382,10 @@ func cmdWhois(m model, args []string, rest string) (action, tea.Cmd) {
 	return action{kind: actionNone}, nil
 }
 
-// cmdList queries the server's channel directory. An optional argument is a
+// cmdList queries the server's channel directory and opens the channel-list
+// modal (channellist.go) to show the results. An optional argument is a
 // server-specific filter (e.g. ">50" for channels with more than 50 users). The
-// RPL_LIST replies route through the event bridge to the active buffer, where the
-// command was issued.
+// RPL_LIST replies are collected by the event bridge and populate the modal.
 func cmdList(m model, args []string, rest string) (action, tea.Cmd) {
 	if m.cli != nil {
 		if len(args) > 0 {
@@ -394,7 +394,7 @@ func cmdList(m model, args []string, rest string) (action, tea.Cmd) {
 			_ = m.cli.List()
 		}
 	}
-	return action{kind: actionNone}, nil
+	return action{kind: actionListOpen}, nil
 }
 
 // cmdAway sets or clears the client's away status. With a reason it marks the

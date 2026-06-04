@@ -63,6 +63,12 @@ func layout(m model) model {
 	// horizontally within the bottom row rather than wrapping.
 	m.input.SetWidth(m.width)
 
+	// Keep the channel-list modal sized to the (possibly resized) terminal.
+	if m.chanListOpen {
+		w, h := channelListSize(m)
+		m.chanList.SetSize(w, h)
+	}
+
 	// Size the active buffer's viewport. Inactive buffers are sized lazily when
 	// they become active (their lines are retained), which keeps resize O(1)
 	// rather than O(buffers).
@@ -147,6 +153,14 @@ func render(m model) tea.View {
 	input := renderInput(m)
 
 	frame := lipgloss.JoinVertical(lipgloss.Left, top, status, input)
+
+	// The channel-list modal (/list) draws as a centered overlay on top of the
+	// whole frame; while it is open it owns the screen, so we skip the editor
+	// cursor placement below.
+	if m.chanListOpen {
+		v := tea.NewView(overlayChannelList(m, frame))
+		return v
+	}
 
 	v := tea.NewView(frame)
 	// Place the hardware cursor at the input caret. The input pane is the last

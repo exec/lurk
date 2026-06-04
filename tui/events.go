@@ -99,10 +99,14 @@ func routeEvent(m model, ev client.Event) model {
 	case irc.RPL_AWAY, irc.RPL_WHOISUSER, irc.RPL_WHOISSERVER,
 		irc.RPL_WHOISOPERATOR, irc.RPL_WHOISIDLE, irc.RPL_ENDOFWHOIS,
 		irc.RPL_WHOISCHANNELS, irc.RPL_WHOISACCOUNT, irc.RPL_WHOISACTUALLY,
-		irc.RPL_WHOISSECURE, irc.RPL_LISTSTART, irc.RPL_LIST, irc.RPL_LISTEND:
-		// WHOIS and LIST replies render in the buffer the user is looking at (the
-		// menu / command was triggered there), not the distant server buffer.
+		irc.RPL_WHOISSECURE:
+		// WHOIS replies render in the buffer the user is looking at (the menu /
+		// command was triggered there), not the distant server buffer.
 		return appendLine(m, m.activeBuffer(), ev)
+	case irc.RPL_LISTSTART, irc.RPL_LIST, irc.RPL_LISTEND:
+		// LIST replies feed the channel-directory modal (channellist.go); when the
+		// modal is not driving the request they fall back to the active buffer.
+		return routeListReply(m, ev)
 	default:
 		// Registration burst, MOTD, numerics, errors: server buffer.
 		return appendLine(m, m.buffers[0], ev)

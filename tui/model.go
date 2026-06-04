@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
@@ -107,6 +108,16 @@ type model struct {
 	// lastTypingSent is when we last emitted our own "active" +typing tag, used
 	// to throttle outbound typing notifications (see maybeSendTyping).
 	lastTypingSent time.Time
+
+	// chanList is the channel-directory modal shown by /list: a filterable,
+	// scrollable list drawn as a centered overlay (channellist.go). chanListOpen
+	// gates the overlay and its key capture; chanListLoading is true between the
+	// LIST request and RPL_LISTEND, while chanListAccum gathers the RPL_LIST rows
+	// before they populate the list on completion.
+	chanList        list.Model
+	chanListOpen    bool
+	chanListLoading bool
+	chanListAccum   []list.Item
 }
 
 // typingEntry is one remote user composing in a buffer, with the moment its

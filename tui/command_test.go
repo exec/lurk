@@ -33,13 +33,13 @@ func TestRunLineAway(t *testing.T) {
 func TestRunLineList(t *testing.T) {
 	m := newTestModel()
 
-	// /list is a protocol-only command: it returns actionNone (the RPL_LIST
-	// replies route to the buffer via the event bridge). It must be accepted both
-	// bare and with a filter argument.
+	// /list opens the channel-directory modal: it returns actionListOpen (the
+	// LIST request is sent and the RPL_LIST replies populate the modal). It must
+	// be accepted both bare and with a filter argument.
 	for _, line := range []string{"/list", "/list >50"} {
 		act, _ := runLine(m, line)
-		if act.kind != actionNone {
-			t.Errorf("%q kind = %v, want actionNone", line, act.kind)
+		if act.kind != actionListOpen {
+			t.Errorf("%q kind = %v, want actionListOpen", line, act.kind)
 		}
 	}
 

@@ -71,6 +71,10 @@ const (
 	// actionInfo appends a local informational line (command usage, errors) to
 	// the active buffer.
 	actionInfo
+	// actionListOpen opens the channel-directory modal (/list). The LIST request
+	// has already been sent; the core opens the modal in its loading state and
+	// the RPL_LIST replies populate it (channellist.go).
+	actionListOpen
 )
 
 // action is the control value handleInput returns for the core to apply. Its

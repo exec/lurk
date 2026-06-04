@@ -64,6 +64,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	default:
+		// While the channel-list modal is open it owns ancillary messages (its
+		// filter-input blink, status-message timers, filtering results).
+		if m.chanListOpen {
+			var cmd tea.Cmd
+			m.chanList, cmd = m.chanList.Update(msg)
+			return m, cmd
+		}
 		// Forward anything else (cursor blink, paste, etc.) to the editor so the
 		// caret keeps blinking and bracketed paste works.
 		var cmd tea.Cmd
@@ -92,6 +99,13 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key_matches(m.keys.Quit, msg) {
 		m.quitting = true
 		return m, tea.Quit
+	}
+
+	// The channel-list modal is a full overlay: while open it owns every key
+	// (navigation, filtering, Enter to join, Esc to close) ahead of scrollback,
+	// the nicklist, and the editor.
+	if m.chanListOpen {
+		return m.handleChannelListKey(msg)
 	}
 
 	// Scrollback navigation works in any focus mode: its keys (Shift/Ctrl+arrows,
@@ -242,6 +256,11 @@ func applyAction(m model, act action) model {
 		// A local informational line for the active buffer (e.g. command usage,
 		// errors). Routed through the view layer's append.
 		m = appendInfo(m, m.activeBuffer(), act.text)
+
+	case actionListOpen:
+		// Open the channel-directory modal in its loading state; the LIST replies
+		// (already requested by the command) populate it (channellist.go).
+		m = openChannelList(m)
 	}
 	return m
 }
