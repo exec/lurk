@@ -26,9 +26,11 @@ func fillBuffer(t *testing.T) model {
 	return m
 }
 
-// TestScrollKeysMoveViewport verifies the (previously un-dispatched) scrollback
-// keys actually move the viewport, via the real Update path, for both the
-// macOS-safe Shift+arrow bindings and the Ctrl+arrow aliases, plus PgUp/PgDn.
+// TestScrollKeysMoveViewport verifies the scrollback keys actually move the
+// viewport, via the real Update path, for every modifier+arrow binding
+// (Shift/Ctrl/Alt) plus PgUp/PgDn. The code path is modifier-agnostic; whether a
+// given terminal delivers the modifier is a separate, terminal-specific matter
+// (see the macOS note in keys.go) — PgUp/PgDn always reach the app.
 func TestScrollKeysMoveViewport(t *testing.T) {
 	press := func(m model, msg tea.KeyPressMsg) (model, int) {
 		tm, _ := m.Update(msg)
@@ -39,29 +41,32 @@ func TestScrollKeysMoveViewport(t *testing.T) {
 	m := fillBuffer(t)
 	bottom := m.activeBuffer().vp.YOffset()
 
-	// Shift+Up (macOS-safe) scrolls up — the offset decreases.
+	// Shift+Up scrolls up — the offset decreases.
 	m, up := press(m, tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModShift})
 	if up >= bottom {
 		t.Fatalf("shift+up did not scroll up: YOffset %d -> %d", bottom, up)
 	}
 
-	// Page Up scrolls up further.
+	// Page Up scrolls up further (the reliable cross-terminal binding).
 	m, pg := press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if pg >= up {
 		t.Fatalf("pgup did not scroll up: YOffset %d -> %d", up, pg)
 	}
 
-	// Shift+Down and Page Down move back toward the bottom.
+	// Shift+Down moves back toward the bottom.
 	m, dn := press(m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift})
 	if dn <= pg {
 		t.Fatalf("shift+down did not scroll down: YOffset %d -> %d", pg, dn)
 	}
 
-	// Ctrl+Up alias (non-macOS keyboards) scrolls up too.
-	cur := m.activeBuffer().vp.YOffset()
-	m, ca := press(m, tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModCtrl})
-	if ca >= cur {
-		t.Fatalf("ctrl+up alias did not scroll up: YOffset %d -> %d", cur, ca)
+	// Ctrl+Up and Alt+Up aliases scroll up too.
+	for _, mod := range []tea.KeyMod{tea.ModCtrl, tea.ModAlt} {
+		cur := m.activeBuffer().vp.YOffset()
+		var got int
+		m, got = press(m, tea.KeyPressMsg{Code: tea.KeyUp, Mod: mod})
+		if got >= cur {
+			t.Fatalf("alias mod %v did not scroll up: YOffset %d -> %d", mod, cur, got)
+		}
 	}
 }
 

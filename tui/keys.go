@@ -17,12 +17,16 @@ import (
 // buffers, PgUp/PgDn to scroll) but the declarative key.Binding wiring is the
 // bubbles idiom.
 //
-// macOS-friendliness: scrolling is primarily bound to Shift+↑/↓, because
-// Ctrl+↑/↓ are captured by macOS (Mission Control / App Exposé) and never reach
-// the terminal. Ctrl+↑/↓ are kept as secondary bindings for other platforms and
-// external keyboards. Page scrolling uses PgUp/PgDn (Fn+↑/↓ on Apple laptops).
-// Help is the /help command rather than a key, so the common message character
-// "?" stays typeable.
+// Scrolling and macOS terminals: line scrolling is bound to Shift+↑/↓, Ctrl+↑/↓,
+// and Alt+↑/↓, because no single modifier+arrow combination reaches every macOS
+// terminal. Shift+arrows require a terminal that speaks the Kitty keyboard
+// protocol or sends xterm-modified sequences (iTerm2, Ghostty, Kitty, WezTerm,
+// Alacritty) — Apple's Terminal.app sends neither, so there a bare Shift+↑ is
+// indistinguishable from ↑ (input history). Ctrl+↑/↓ are captured by macOS itself
+// (Mission Control / App Exposé). Alt+↑/↓ work when the terminal sends Option as
+// Meta. The reliable cross-terminal scroll is therefore PgUp/PgDn (Fn+↑/↓ on
+// Apple laptops), which always reaches the app. Help is the /help command rather
+// than a key, so the common message character "?" stays typeable.
 type keymap struct {
 	// Quit ends the program (also reachable via /quit).
 	Quit key.Binding
@@ -74,13 +78,14 @@ func defaultKeymap() keymap {
 			key.WithHelp("ctrl+u", "users"),
 		),
 		ScrollUp: key.NewBinding(
-			// Shift+↑ first (macOS-safe); Ctrl+↑ kept for other platforms.
-			key.WithKeys("shift+up", "ctrl+up"),
-			key.WithHelp("shift+↑", "scroll up"),
+			// Multiple modifiers since no one combo reaches every terminal; PgUp is
+			// the reliable fallback (see the macOS note above).
+			key.WithKeys("shift+up", "ctrl+up", "alt+up"),
+			key.WithHelp("shift+↑/pgup", "scroll up"),
 		),
 		ScrollDown: key.NewBinding(
-			key.WithKeys("shift+down", "ctrl+down"),
-			key.WithHelp("shift+↓", "scroll down"),
+			key.WithKeys("shift+down", "ctrl+down", "alt+down"),
+			key.WithHelp("shift+↓/pgdn", "scroll down"),
 		),
 		PageUp: key.NewBinding(
 			key.WithKeys("pgup"),
