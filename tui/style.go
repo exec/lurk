@@ -275,30 +275,33 @@ func (t theme) formatNumeric(ev client.Event) string {
 	subj := sanitize(ev.Param(1)) // the nick a WHOIS line is about
 	text := sanitize(ev.Text())
 
+	// WHOIS replies render as a compact block: RPL_WHOISUSER (311) opens with a
+	// header carrying the nick, the detail numerics are shown indented WITHOUT
+	// repeating the nick (the burst arrives contiguously, bracketed by the header
+	// and the RPL_ENDOFWHOIS footer, so the subject stays clear), and the footer
+	// carries the nick again. RPL_AWAY (301) keeps the nick inline and unindented
+	// because it also arrives standalone (when you message an away user), not just
+	// within a whois.
 	var body string
 	switch ev.Command() {
 	case irc.RPL_WHOISUSER: // <me> <nick> <user> <host> * :<realname>
-		body = fmt.Sprintf("%s is %s@%s (%s)", subj, sanitize(ev.Param(2)), sanitize(ev.Param(3)), text)
+		body = fmt.Sprintf("whois %s — %s@%s (%s)", subj, sanitize(ev.Param(2)), sanitize(ev.Param(3)), text)
 	case irc.RPL_WHOISSERVER: // <me> <nick> <server> :<server info>
-		body = fmt.Sprintf("%s on %s (%s)", subj, sanitize(ev.Param(2)), text)
+		body = whoisDetail("server", fmt.Sprintf("%s (%s)", sanitize(ev.Param(2)), text))
 	case irc.RPL_WHOISACCOUNT: // <me> <nick> <account> :is logged in as
-		body = fmt.Sprintf("%s is logged in as %s", subj, sanitize(ev.Param(2)))
+		body = whoisDetail("account", sanitize(ev.Param(2)))
 	case irc.RPL_WHOISIDLE: // <me> <nick> <secs> [<signon>] :seconds idle, signon time
-		body = subj + " " + idleSummary(ev.Param(2), ev.Param(3))
+		body = whoisDetail("idle", idleSummary(ev.Param(2), ev.Param(3)))
 	case irc.RPL_WHOISCHANNELS: // <me> <nick> :<channels>
-		body = subj + " on " + text
+		body = whoisDetail("channels", text)
 	case irc.RPL_WHOISACTUALLY: // <me> <nick> [<user@host>] <ip> :Actual ...
-		if mid := midParams(ev); len(mid) > 0 {
-			body = subj + " actually " + sanitize(strings.Join(mid, " "))
-		} else {
-			body = subj + " " + text
-		}
-	case irc.RPL_AWAY: // <me> <nick> :<away message>
+		body = whoisDetail("actually", actuallyValue(midParams(ev)))
+	case irc.RPL_WHOISOPERATOR, irc.RPL_WHOISSECURE: // <me> <nick> :is an operator / secure
+		body = whoisDetail("", text)
+	case irc.RPL_AWAY: // <me> <nick> :<away message> — also arrives standalone
 		body = subj + " is away: " + text
-	case irc.RPL_WHOISOPERATOR, irc.RPL_WHOISSECURE: // <me> <nick> :is ...
-		body = strings.TrimSpace(subj + " " + text)
 	case irc.RPL_ENDOFWHOIS: // <me> <nick> :End of /WHOIS list
-		body = "end of whois for " + subj
+		body = "end of whois — " + subj
 	default:
 		// Any other numeric: show all params after the recipient nick so middle
 		// data is not dropped (e.g. "<nick> No such nick" for an error reply).
@@ -322,12 +325,42 @@ func midParams(ev client.Event) []string {
 	return p[2 : len(p)-1]
 }
 
-// idleSummary renders an RPL_WHOISIDLE body: the idle seconds and, when the
-// optional signon timestamp is present and valid, the local sign-on time.
+// whoisDetail formats one indented WHOIS detail row: "  · <label> <value>", with
+// the label padded to a column so successive rows align. An empty label yields
+// "  · <value>" for replies that are already a full phrase (operator/secure).
+func whoisDetail(label, value string) string {
+	if label == "" {
+		return "  · " + value
+	}
+	return fmt.Sprintf("  · %-8s %s", label, value)
+}
+
+// actuallyValue renders the RPL_WHOISACTUALLY data fields (the real host and IP):
+// "<host> (<ip>)", collapsing to just the host when the IP is already part of it
+// (e.g. "~u@10.0.0.29" already contains "10.0.0.29"), to avoid showing it twice.
+func actuallyValue(mid []string) string {
+	switch len(mid) {
+	case 0:
+		return ""
+	case 1:
+		return sanitize(mid[0])
+	default:
+		host := sanitize(mid[0])
+		ip := sanitize(mid[len(mid)-1])
+		if ip == "" || strings.Contains(host, ip) {
+			return host
+		}
+		return host + " (" + ip + ")"
+	}
+}
+
+// idleSummary renders an RPL_WHOISIDLE value: the idle seconds and, when the
+// optional signon timestamp is present and valid, the local sign-on time. The
+// "idle" label is supplied by the caller (whoisDetail), so it is not repeated.
 func idleSummary(secs, signon string) string {
-	out := "idle"
+	out := "?"
 	if secs != "" {
-		out += " " + sanitize(secs) + "s"
+		out = sanitize(secs) + "s"
 	}
 	if n, err := strconv.ParseInt(strings.TrimSpace(signon), 10, 64); err == nil && n > 0 {
 		out += ", signed on " + time.Unix(n, 0).Local().Format("2006-01-02 15:04")
