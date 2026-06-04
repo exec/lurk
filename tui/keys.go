@@ -123,15 +123,19 @@ func defaultKeymap() keymap {
 	}
 }
 
-// ShortHelp implements help.KeyMap: the one-line footer hints. It surfaces the
-// handful of bindings a user most needs at a glance.
+// ShortHelp implements help.KeyMap: the one-line footer hints rendered under the
+// status bar. It surfaces the handful of bindings a user most needs at a glance.
+// PageUp is included over Complete because scrolling is the binding new users
+// most often go looking for (Tab-completion is easily discovered by trying it).
 func (k keymap) ShortHelp() []key.Binding {
+	// The "/help" gateway is rendered separately by renderHelp (bubbles/help skips
+	// the Help binding, which has no key), so it is omitted here. PageUp leads
+	// because scrolling is the binding new users most often go looking for.
 	return []key.Binding{
+		k.PageUp,
 		k.NextBuffer,
 		k.PrevBuffer,
 		k.FocusNicks,
-		k.Complete,
-		k.Help,
 		k.Quit,
 	}
 }

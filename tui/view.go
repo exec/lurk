@@ -33,13 +33,31 @@ import (
 const (
 	sidebarWidth  = 18 // buffer-list column
 	nicklistWidth = 16 // member-list column (channels only)
+	topicHeight   = 1  // channel topic bar rows (channels only)
 	statusHeight  = 1  // status bar rows
+	helpHeight    = 1  // key-hint footer rows
 	inputHeight   = 1  // input pane rows (coordinated with tui-input)
 
 	// minBodyWidth is the floor for the message pane; below this we drop the
 	// nicklist and then the sidebar so the message text never collapses.
 	minBodyWidth = 20
 )
+
+// verticalLayout returns the row heights of the stacked regions for the current
+// model: the topic bar (shown for channels only), and the message body that
+// fills what remains after the topic bar, status bar, help footer, and input.
+// body is floored at 1 so the message pane never vanishes on a tiny terminal.
+// The full stack is: [topic] · body · status · help · input, summing to height.
+func verticalLayout(m model) (topic, body int) {
+	if m.activeBuffer().Kind == BufferChannel {
+		topic = topicHeight
+	}
+	body = m.height - topic - statusHeight - helpHeight - inputHeight
+	if body < 1 {
+		body = 1
+	}
+	return topic, body
+}
 
 // layout recomputes every pane size from the model's current dimensions and the
 // active buffer, then re-fills the active buffer's viewport. It is called from
@@ -54,10 +72,7 @@ func layout(m model) model {
 	}
 
 	bodyW, _ := paneWidths(m.width, m.activeBuffer().Kind == BufferChannel)
-	bodyH := m.height - statusHeight - inputHeight
-	if bodyH < 1 {
-		bodyH = 1
-	}
+	_, bodyH := verticalLayout(m)
 
 	// Size the editor to the full terminal width so long input lines scroll
 	// horizontally within the bottom row rather than wrapping.
@@ -131,10 +146,7 @@ func paneWidths(total int, channel bool) (body int, showCols struct{ sidebar, ni
 func render(m model) tea.View {
 	bodyKind := m.activeBuffer().Kind
 	bodyW, show := paneWidths(m.width, bodyKind == BufferChannel)
-	bodyH := m.height - statusHeight - inputHeight
-	if bodyH < 1 {
-		bodyH = 1
-	}
+	topicH, bodyH := verticalLayout(m)
 
 	body := renderBody(m, bodyW, bodyH)
 
@@ -149,10 +161,14 @@ func render(m model) tea.View {
 	}
 	top := lipgloss.JoinHorizontal(lipgloss.Top, cols...)
 
-	status := renderStatus(m)
-	input := renderInput(m)
-
-	frame := lipgloss.JoinVertical(lipgloss.Left, top, status, input)
+	// Stack the regions: an optional topic bar above the panes, then the status
+	// bar, the key-hint footer, and the input editor at the bottom.
+	rows := make([]string, 0, 5)
+	if topicH > 0 {
+		rows = append(rows, renderTopic(m, m.width))
+	}
+	rows = append(rows, top, renderStatus(m), renderHelp(m), renderInput(m))
+	frame := lipgloss.JoinVertical(lipgloss.Left, rows...)
 
 	// The channel-list modal (/list) draws as a centered overlay on top of the
 	// whole frame; while it is open it owns the screen, so we skip the editor
@@ -322,6 +338,41 @@ func (t theme) nickRow(mem client.Member, w int, selected, isSelf bool) string {
 		styled += t.nicklistAcct.Render(badge)
 	}
 	return styled
+}
+
+// renderTopic renders the channel topic bar shown across the top for channel
+// buffers: the tracked topic (read live from the client), or a placeholder when
+// none is set. It reuses the status-bar style so the top and bottom bars frame
+// the conversation. The topic is server-controlled, so it is sanitized and
+// truncated to the bar width.
+func renderTopic(m model, w int) string {
+	topic := ""
+	if m.cli != nil {
+		topic, _, _ = m.cli.Topic(m.activeBuffer().Title)
+	}
+	topic = sanitize(topic)
+	if topic == "" {
+		topic = "(no topic set)"
+	}
+	content := truncate(" Topic: "+topic+" ", w)
+	return defaultTheme.statusBar.Width(w).Render(content)
+}
+
+// renderHelp renders the one-line key-hint footer under the status bar, so the
+// core navigation keys are discoverable on screen rather than only via /help. It
+// always leads with the "/help" gateway (bubbles/help skips that binding because
+// it has no key), then the curated ShortHelp set sized to whatever width remains
+// so the keys truncate before the gateway does.
+func renderHelp(m model) string {
+	t := defaultTheme
+	gateway := t.statusKey.Render("/help") + t.dim.Render(" commands  •  ")
+	m.help.SetWidth(max(0, m.width-lipgloss.Width(gateway)))
+	footer := gateway + m.help.View(m.keys)
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(helpHeight).
+		MaxHeight(helpHeight).
+		Render(footer)
 }
 
 // renderStatus renders the bottom status bar with network/nick/active-buffer

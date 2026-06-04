@@ -22,21 +22,18 @@ func renderInput(m model) string {
 }
 
 // inputCursor returns the hardware cursor position for the editor caret, offset
-// into the full frame. The input pane is the bottom inputHeight row(s), sitting
-// below the top region (height-statusHeight-inputHeight rows) and the status
-// bar. The textinput's own Cursor already accounts for the prompt and the
-// horizontal scroll offset, so only the vertical offset is added here; the pane
-// starts at column 0 so X needs no adjustment.
+// into the full frame. The input pane is the bottom row, sitting below the
+// optional topic bar, the message region, the status bar, and the help footer
+// (see verticalLayout). The textinput's own Cursor already accounts for the
+// prompt and the horizontal scroll offset, so only the vertical offset is added
+// here; the pane starts at column 0 so X needs no adjustment.
 func inputCursor(m model) *tea.Cursor {
 	c := m.input.Cursor()
 	if c == nil {
 		return nil
 	}
-	bodyH := m.height - statusHeight - inputHeight
-	if bodyH < 1 {
-		bodyH = 1
-	}
-	c.Y += bodyH + statusHeight
+	topicH, bodyH := verticalLayout(m)
+	c.Y += topicH + bodyH + statusHeight + helpHeight
 	return c
 }
 
