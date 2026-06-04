@@ -388,12 +388,18 @@ func (t theme) formatStandardReply(ev client.Event) string {
 	return fmt.Sprintf("%s %s", ts, style.Render(marker+" "+sanitize(body)))
 }
 
-// formatInfo renders a local informational line (command output / error).
+// formatInfo renders a local informational line (command output / error). The
+// text may be intentionally multi-line (e.g. /help puts the keybindings and the
+// command list on separate rows), so it is sanitized per line and rejoined:
+// sanitize strips '\n' as a control byte — correct for server message bodies, but
+// here the breaks are ours and must survive, or the rows weld together.
 func (t theme) formatInfo(text string) string {
 	ts := t.timestamp.Render(time.Now().Format("15:04"))
-	// Info lines are locally composed plain text, but some carry server- or
-	// user-supplied fragments (command echoes, raw-send errors), so sanitize.
-	return fmt.Sprintf("%s %s", ts, t.info.Render(sanitize(text)))
+	segs := strings.Split(text, "\n")
+	for i, s := range segs {
+		segs[i] = sanitize(s)
+	}
+	return fmt.Sprintf("%s %s", ts, t.info.Render(strings.Join(segs, "\n")))
 }
 
 // formatSelfMessage renders a locally-echoed outbound PRIVMSG (used when

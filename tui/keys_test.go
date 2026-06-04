@@ -117,6 +117,41 @@ func TestHelpCommand(t *testing.T) {
 	}
 }
 
+// TestFormatInfoPreservesNewlines guards the /help layout: an info line's
+// intentional line breaks must survive (sanitize strips '\n' as a control byte),
+// while control characters within a line are still stripped.
+func TestFormatInfoPreservesNewlines(t *testing.T) {
+	tm := newTheme()
+	got := stripANSI(tm.formatInfo("keys: a · b · ctrl+c quit\ncommands: /x /y"))
+	if !strings.Contains(got, "\n") {
+		t.Errorf("formatInfo dropped the newline (rows would weld): %q", got)
+	}
+	if !strings.Contains(got, "commands: /x /y") {
+		t.Errorf("formatInfo mangled the second line: %q", got)
+	}
+	// An embedded escape within a line must still be neutralized.
+	if strings.ContainsRune(stripANSI(tm.formatInfo("a\x1b]52;c;x\x07b")), 0x1b) {
+		t.Error("formatInfo left an ESC unsanitized")
+	}
+}
+
+// TestHelpCommandIsTwoLines confirms the rendered /help text actually breaks
+// between the keys digest and the command list (the bug where "quit" and
+// "commands:" ran together).
+func TestHelpCommandIsTwoLines(t *testing.T) {
+	m := newTestModel()
+	act, _ := runLine(m, "/help")
+	rendered := stripANSI(defaultTheme.formatInfo(act.text))
+	keysIdx := strings.Index(rendered, "keys:")
+	cmdsIdx := strings.Index(rendered, "commands:")
+	if keysIdx < 0 || cmdsIdx < 0 {
+		t.Fatalf("/help missing sections: %q", rendered)
+	}
+	if !strings.Contains(rendered[keysIdx:cmdsIdx], "\n") {
+		t.Errorf("/help has no newline between keys and commands:\n%s", rendered)
+	}
+}
+
 // TestQuestionMarkIsLiteral guards that "?" is not swallowed as a help shortcut
 // but typed into the editor like any other character.
 func TestQuestionMarkIsLiteral(t *testing.T) {
