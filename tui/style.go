@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image/color"
+	"strconv"
 	"strings"
 	"time"
 
 	"charm.land/lipgloss/v2"
 
 	"lurk/client"
+	"lurk/irc"
 )
 
 // style.go owns the visual identity of the TUI: the Lip Gloss theme, stable
@@ -237,14 +239,100 @@ func (t theme) formatLine(ev client.Event, self string) (text string, highlight 
 		return fmt.Sprintf("%s %s", ts, t.dim.Render("~ mode "+sanitize(strings.Join(ev.Message.Params, " ")))), false
 
 	default:
-		// Numerics and unhandled commands: show the trailing text so the server
-		// buffer still surfaces MOTD, errors, and replies.
+		if isNumericCommand(ev.Command()) {
+			return t.formatNumeric(ev), false
+		}
+		// Unhandled non-numeric command: show the trailing text.
 		body := ev.Text()
 		if body == "" {
 			body = strings.Join(ev.Message.Params, " ")
 		}
 		return fmt.Sprintf("%s %s", ts, t.dim.Render(sanitize(body))), false
 	}
+}
+
+// isNumericCommand reports whether cmd is a three-digit numeric reply code.
+func isNumericCommand(cmd string) bool {
+	if len(cmd) != 3 {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if cmd[i] < '0' || cmd[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// formatNumeric renders a numeric (3-digit) server reply. Every numeric carries
+// the recipient's own nick as its first parameter; a trailing-only render would
+// drop the data fields the trailing text merely labels — WHOIS idle seconds, the
+// actual host/IP, the channel list. This composes the useful values for the
+// WHOIS/AWAY family and, for any other numeric, shows every parameter after the
+// recipient nick so nothing (e.g. the "<nick>" an error reply is about) is lost.
+func (t theme) formatNumeric(ev client.Event) string {
+	ts := t.timestamp.Render(ev.Time().Local().Format("15:04"))
+	subj := sanitize(ev.Param(1)) // the nick a WHOIS line is about
+	text := sanitize(ev.Text())
+
+	var body string
+	switch ev.Command() {
+	case irc.RPL_WHOISUSER: // <me> <nick> <user> <host> * :<realname>
+		body = fmt.Sprintf("%s is %s@%s (%s)", subj, sanitize(ev.Param(2)), sanitize(ev.Param(3)), text)
+	case irc.RPL_WHOISSERVER: // <me> <nick> <server> :<server info>
+		body = fmt.Sprintf("%s on %s (%s)", subj, sanitize(ev.Param(2)), text)
+	case irc.RPL_WHOISACCOUNT: // <me> <nick> <account> :is logged in as
+		body = fmt.Sprintf("%s is logged in as %s", subj, sanitize(ev.Param(2)))
+	case irc.RPL_WHOISIDLE: // <me> <nick> <secs> [<signon>] :seconds idle, signon time
+		body = subj + " " + idleSummary(ev.Param(2), ev.Param(3))
+	case irc.RPL_WHOISCHANNELS: // <me> <nick> :<channels>
+		body = subj + " on " + text
+	case irc.RPL_WHOISACTUALLY: // <me> <nick> [<user@host>] <ip> :Actual ...
+		if mid := midParams(ev); len(mid) > 0 {
+			body = subj + " actually " + sanitize(strings.Join(mid, " "))
+		} else {
+			body = subj + " " + text
+		}
+	case irc.RPL_AWAY: // <me> <nick> :<away message>
+		body = subj + " is away: " + text
+	case irc.RPL_WHOISOPERATOR, irc.RPL_WHOISSECURE: // <me> <nick> :is ...
+		body = strings.TrimSpace(subj + " " + text)
+	case irc.RPL_ENDOFWHOIS: // <me> <nick> :End of /WHOIS list
+		body = "end of whois for " + subj
+	default:
+		// Any other numeric: show all params after the recipient nick so middle
+		// data is not dropped (e.g. "<nick> No such nick" for an error reply).
+		if p := ev.Message.Params; len(p) >= 2 {
+			body = sanitize(strings.Join(p[1:], " "))
+		} else {
+			body = text
+		}
+	}
+	return fmt.Sprintf("%s %s", ts, t.dim.Render(body))
+}
+
+// midParams returns the parameters of a numeric that sit between the subject nick
+// (index 1) and the trailing description (the last param) — the data fields a
+// reply like RPL_WHOISACTUALLY carries. It returns nil when there are none.
+func midParams(ev client.Event) []string {
+	p := ev.Message.Params
+	if len(p) <= 3 {
+		return nil
+	}
+	return p[2 : len(p)-1]
+}
+
+// idleSummary renders an RPL_WHOISIDLE body: the idle seconds and, when the
+// optional signon timestamp is present and valid, the local sign-on time.
+func idleSummary(secs, signon string) string {
+	out := "idle"
+	if secs != "" {
+		out += " " + sanitize(secs) + "s"
+	}
+	if n, err := strconv.ParseInt(strings.TrimSpace(signon), 10, 64); err == nil && n > 0 {
+		out += ", signed on " + time.Unix(n, 0).Local().Format("2006-01-02 15:04")
+	}
+	return out
 }
 
 // applyHighlight checks whether body mentions self and, if so, re-renders the
