@@ -149,11 +149,16 @@ func renderChannelListModal(m model) string {
 	w, _ := channelListSize(m)
 
 	var body string
-	if m.chanListLoading {
+	switch {
+	case m.chanListLoading:
 		body = m.chanList.Styles.Title.Render("Channels") + "\n\n" +
 			t.dim.Render(fmt.Sprintf("loading… (%d so far)", len(m.chanListAccum))) + "\n\n" +
 			t.dim.Render("esc cancel")
-	} else {
+	case len(m.chanList.Items()) == 0:
+		body = m.chanList.Styles.Title.Render("Channels") + "\n\n" +
+			t.dim.Render("No channels found.") + "\n\n" +
+			t.dim.Render("esc close")
+	default:
 		body = m.chanList.View()
 	}
 

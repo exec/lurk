@@ -82,6 +82,10 @@ Lurk auto-reconnects (with backoff) after an unexpected disconnect and re-joins
 your channels; a mention in a buffer you're not watching rings the terminal bell;
 and it answers standard CTCP queries (VERSION/PING/TIME/CLIENTINFO).
 
+The theme follows your terminal: a dark (Catppuccin Mocha) or light (Latte)
+palette is chosen from the detected background, and `NO_COLOR` switches to a
+monochrome theme.
+
 ## Packages
 
 ```

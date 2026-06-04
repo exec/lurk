@@ -195,12 +195,31 @@ func render(m model) tea.View {
 // shorter than bodyH and misalign the JoinHorizontal).
 func renderBody(m model, w, h int) string {
 	b := m.activeBuffer()
+	// An empty buffer shows a centered hint instead of a blank void, so a new user
+	// has a next step (and a fresh channel/PM reads as "nothing yet" not "broken").
+	if len(b.lines) == 0 {
+		hint := defaultTheme.dim.Width(min(w-2, 56)).Align(lipgloss.Center).Render(emptyHint(b))
+		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, hint)
+	}
 	var content string
 	if b.vpReady {
 		content = b.vp.View()
 	}
 	// Pad/truncate to exactly h rows and w cols so the columns line up.
 	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(content)
+}
+
+// emptyHint returns the placeholder shown in an empty buffer, tailored to its
+// kind so the suggested next step fits the context.
+func emptyHint(b *Buffer) string {
+	switch b.Kind {
+	case BufferServer:
+		return "Type /help for commands · /list to browse channels · /join #channel"
+	case BufferPM:
+		return "No messages yet — say hello to " + b.Title
+	default:
+		return "No messages yet in " + b.Title
+	}
 }
 
 // renderSidebar renders the buffer list with per-buffer activity markers: a
@@ -225,10 +244,14 @@ func renderSidebar(m model, w, h int) string {
 		if b.Kind == BufferServer && label == "" {
 			label = "(server)"
 		}
+		// Show the unread count on an inactive buffer with pending activity, so a
+		// busy session can be triaged at a glance.
+		if i != m.active && b.Unread > 0 {
+			label = fmt.Sprintf("%s (%d)", label, b.Unread)
+		}
 		line := fmt.Sprintf("%s %s", marker, label)
 		if i == m.active {
 			st = t.sidebarActive
-			line = fmt.Sprintf("%s %s", marker, label)
 		}
 		rows = append(rows, st.Width(w).Render(truncate(line, w)))
 	}
@@ -391,9 +414,17 @@ func renderStatus(m model) string {
 		nick = m.cli.Nick()
 	}
 	b := m.activeBuffer()
-	scrolled := b.vpReady && !b.vp.AtBottom()
+	scrollNote := ""
+	if b.vpReady && !b.vp.AtBottom() {
+		below := b.vp.TotalLineCount() - b.vp.YOffset() - b.vp.Height()
+		if below < 1 {
+			scrollNote = "↓ more"
+		} else {
+			scrollNote = fmt.Sprintf("↓ %d more (End)", below)
+		}
+	}
 	typing := typingNote(m.typingNicks(asciiLower(b.Title)))
-	return defaultTheme.statusLine(network, nick, b.Title, scrolled, typing, m.width)
+	return defaultTheme.statusLine(network, nick, b.Title, scrollNote, typing, m.width)
 }
 
 // typingNote renders the "X is typing…" status segment for the given typers, or

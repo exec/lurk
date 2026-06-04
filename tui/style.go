@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image/color"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -104,60 +105,189 @@ var (
 	highlightBg = lipgloss.Color("#6c2e3e")
 )
 
-// defaultTheme is the single theme instance the view renders with.
-var defaultTheme = newTheme()
+// Catppuccin Latte palette — the light counterpart of Mocha, used when the
+// terminal reports a light background so the dim greys and accents stay legible.
+var (
+	latRosewater = lipgloss.Color("#dc8a78")
+	latFlamingo  = lipgloss.Color("#dd7878")
+	latPink      = lipgloss.Color("#ea76cb")
+	latMauve     = lipgloss.Color("#8839ef")
+	latRed       = lipgloss.Color("#d20f39")
+	latPeach     = lipgloss.Color("#fe640b")
+	latYellow    = lipgloss.Color("#df8e1d")
+	latGreen     = lipgloss.Color("#40a02b")
+	latTeal      = lipgloss.Color("#179299")
+	latSky       = lipgloss.Color("#04a5e5")
+	latSapphire  = lipgloss.Color("#209fb5")
+	latBlue      = lipgloss.Color("#1e66f5")
+	latLavender  = lipgloss.Color("#7287fd")
+	latText      = lipgloss.Color("#4c4f69")
+	latSubtext0  = lipgloss.Color("#6c6f85")
+	latOverlay0  = lipgloss.Color("#9ca0b0")
+	latSurface0  = lipgloss.Color("#ccd0da")
 
-func newTheme() theme {
-	// A curated nick palette spanning the hue wheel for maximum distinguishability
-	// when nicks hash into it, drawn from the Catppuccin Mocha accents. The two
-	// reds (Red/Maroon) are reserved for highlights and ops, so they're omitted
-	// here to avoid confusing a nick with a mention. senpai uses a similar curated
-	// base set (reference/senpai/ui/colors.go baseColors).
-	palette := []color.Color{
-		ctpGreen,
-		ctpYellow,
-		ctpBlue,
-		ctpPink,
-		ctpTeal,
-		ctpPeach,
-		ctpSapphire,
-		ctpMauve,
-		ctpSky,
-		ctpLavender,
-		ctpFlamingo,
-		ctpRosewater,
+	// Light status/highlight backings: a blue bar with near-white text, and a
+	// soft-pink mention banner with dark text.
+	latStatusAccent = lipgloss.Color("#1e66f5")
+	latStatusFg     = lipgloss.Color("#eff1f5")
+	latHighlightBg  = lipgloss.Color("#f2aebb")
+)
+
+// themeColors is the variant-specific color set buildTheme assembles a theme
+// from; dark (Mocha) and light (Latte) supply different values, the monochrome
+// theme is built separately.
+type themeColors struct {
+	overlay0, subtext0, text                color.Color // greys → fg
+	notice, action, red, teal               color.Color // accents
+	accentFg, accentBg, highlightFg, highBg color.Color // status/highlight backings
+	rule                                    color.Color
+	nicks                                   []color.Color
+}
+
+// defaultTheme is the theme the view renders with. It is resolved once from the
+// environment at startup (NO_COLOR / COLORFGBG) and may be refined at runtime
+// when the terminal answers the background-color query (applyDetectedBackground).
+var defaultTheme = pickThemeFromEnv()
+
+// newTheme returns the dark (Catppuccin Mocha) theme. It is the default and the
+// one the tests build against.
+func newTheme() theme { return buildTheme(darkColors()) }
+
+// lightTheme returns the light (Catppuccin Latte) theme.
+func lightTheme() theme { return buildTheme(lightColors()) }
+
+// darkColors / lightColors supply the Mocha / Latte variant colors. The two reds
+// are reserved for highlights and ops, so the nick palette omits them to avoid
+// confusing a nick with a mention (the curation follows senpai's baseColors).
+func darkColors() themeColors {
+	return themeColors{
+		overlay0: ctpOverlay0, subtext0: ctpSubtext0, text: ctpText,
+		notice: ctpYellow, action: ctpMauve, red: ctpRed, teal: ctpTeal,
+		accentFg: ctpText, accentBg: statusAccent, highlightFg: ctpRosewater, highBg: highlightBg,
+		rule:  ctpSurface0,
+		nicks: []color.Color{ctpGreen, ctpYellow, ctpBlue, ctpPink, ctpTeal, ctpPeach, ctpSapphire, ctpMauve, ctpSky, ctpLavender, ctpFlamingo, ctpRosewater},
 	}
+}
 
+func lightColors() themeColors {
+	return themeColors{
+		overlay0: latOverlay0, subtext0: latSubtext0, text: latText,
+		notice: latYellow, action: latMauve, red: latRed, teal: latTeal,
+		accentFg: latStatusFg, accentBg: latStatusAccent, highlightFg: latText, highBg: latHighlightBg,
+		rule:  latSurface0,
+		nicks: []color.Color{latGreen, latYellow, latBlue, latPink, latTeal, latPeach, latSapphire, latMauve, latSky, latLavender, latFlamingo, latRosewater},
+	}
+}
+
+// buildTheme assembles a theme from a variant's colors.
+func buildTheme(c themeColors) theme {
+	s := lipgloss.NewStyle
 	return theme{
-		timestamp: lipgloss.NewStyle().Foreground(ctpOverlay0),
-		text:      lipgloss.NewStyle(),
-		dim:       lipgloss.NewStyle().Foreground(ctpOverlay0),
-		notice:    lipgloss.NewStyle().Foreground(ctpYellow),
-		action:    lipgloss.NewStyle().Foreground(ctpMauve).Italic(true),
-		highlight: lipgloss.NewStyle().Foreground(ctpRosewater).Background(highlightBg).Bold(true),
-		info:      lipgloss.NewStyle().Foreground(ctpSubtext0).Italic(true),
+		timestamp: s().Foreground(c.overlay0),
+		text:      s(),
+		dim:       s().Foreground(c.overlay0),
+		notice:    s().Foreground(c.notice),
+		action:    s().Foreground(c.action).Italic(true),
+		highlight: s().Foreground(c.highlightFg).Background(c.highBg).Bold(true),
+		info:      s().Foreground(c.subtext0).Italic(true),
 
-		statusBar: lipgloss.NewStyle().
-			Foreground(ctpText).
-			Background(statusAccent),
-		statusKey: lipgloss.NewStyle().Bold(true),
+		statusBar: s().Foreground(c.accentFg).Background(c.accentBg),
+		statusKey: s().Bold(true),
 
-		sidebar:       lipgloss.NewStyle().Foreground(ctpSubtext0),
-		sidebarItem:   lipgloss.NewStyle().Foreground(ctpSubtext0),
-		sidebarActive: lipgloss.NewStyle().Foreground(ctpText).Background(statusAccent).Bold(true),
-		sidebarUnread: lipgloss.NewStyle().Foreground(ctpText).Bold(true),
-		sidebarHigh:   lipgloss.NewStyle().Foreground(ctpRed).Bold(true),
+		sidebar:       s().Foreground(c.subtext0),
+		sidebarItem:   s().Foreground(c.subtext0),
+		sidebarActive: s().Foreground(c.accentFg).Background(c.accentBg).Bold(true),
+		sidebarUnread: s().Foreground(c.text).Bold(true),
+		sidebarHigh:   s().Foreground(c.red).Bold(true),
 
-		nicklist:     lipgloss.NewStyle().Foreground(ctpSubtext0),
-		nicklistOp:   lipgloss.NewStyle().Foreground(ctpRed),
-		nicklistTtl:  lipgloss.NewStyle().Foreground(ctpOverlay0).Bold(true),
-		nicklistAway: lipgloss.NewStyle().Foreground(ctpOverlay0).Faint(true),
-		nicklistAcct: lipgloss.NewStyle().Foreground(ctpTeal),
-		verticalRule: lipgloss.NewStyle().Foreground(ctpSurface0),
+		nicklist:     s().Foreground(c.subtext0),
+		nicklistOp:   s().Foreground(c.red),
+		nicklistTtl:  s().Foreground(c.overlay0).Bold(true),
+		nicklistAway: s().Foreground(c.overlay0).Faint(true),
+		nicklistAcct: s().Foreground(c.teal),
+		verticalRule: s().Foreground(c.rule),
 
-		nickPalette: palette,
-		self:        ctpText,
+		nickPalette: c.nicks,
+		self:        c.text,
 	}
+}
+
+// monoTheme is the colorless theme used under NO_COLOR: it distinguishes line
+// kinds with bold / italic / faint / reverse attributes alone. The nick palette
+// is a single NoColor so nick rendering keeps its bold without applying a hue.
+func monoTheme() theme {
+	s := lipgloss.NewStyle
+	var none color.Color = lipgloss.NoColor{}
+	return theme{
+		timestamp:     s().Faint(true),
+		text:          s(),
+		dim:           s().Faint(true),
+		notice:        s().Italic(true),
+		action:        s().Italic(true),
+		highlight:     s().Reverse(true).Bold(true),
+		info:          s().Italic(true).Faint(true),
+		statusBar:     s().Reverse(true),
+		statusKey:     s().Bold(true),
+		sidebar:       s(),
+		sidebarItem:   s(),
+		sidebarActive: s().Reverse(true).Bold(true),
+		sidebarUnread: s().Bold(true),
+		sidebarHigh:   s().Bold(true).Underline(true),
+		nicklist:      s(),
+		nicklistOp:    s().Bold(true),
+		nicklistTtl:   s().Bold(true),
+		nicklistAway:  s().Faint(true),
+		nicklistAcct:  s().Faint(true),
+		verticalRule:  s().Faint(true),
+		nickPalette:   []color.Color{none},
+		self:          none,
+	}
+}
+
+// pickThemeFromEnv chooses the startup theme: NO_COLOR forces monochrome;
+// otherwise a COLORFGBG hint of a light background selects the light theme; the
+// dark theme is the default. A terminal that answers the background-color query
+// later refines this via applyDetectedBackground.
+func pickThemeFromEnv() theme {
+	if noColorSet() {
+		return monoTheme()
+	}
+	if lightBackgroundEnv() {
+		return lightTheme()
+	}
+	return newTheme()
+}
+
+// applyDetectedBackground swaps to the light or dark theme once the terminal
+// reports its background, unless NO_COLOR has disabled color. It is called from
+// Update on a tea.BackgroundColorMsg (same goroutine as View, so the reassign is
+// safe).
+func applyDetectedBackground(dark bool) {
+	if noColorSet() {
+		return // NO_COLOR wins regardless of background
+	}
+	if dark {
+		defaultTheme = newTheme()
+	} else {
+		defaultTheme = lightTheme()
+	}
+}
+
+// noColorSet reports whether the NO_COLOR convention (https://no-color.org) is in
+// effect: the variable present and non-empty.
+func noColorSet() bool { return os.Getenv("NO_COLOR") != "" }
+
+// lightBackgroundEnv reads the COLORFGBG hint some terminals export ("fg;bg" or
+// "fg;default;bg") and reports whether the background field names a light color
+// (ANSI 7 or 15).
+func lightBackgroundEnv() bool {
+	v := os.Getenv("COLORFGBG")
+	if v == "" {
+		return false
+	}
+	fields := strings.Split(v, ";")
+	bg := fields[len(fields)-1]
+	return bg == "7" || bg == "15"
 }
 
 // nickColor returns the stable display color for nick. Hashing the (lower-cased)
@@ -454,7 +584,7 @@ func (t theme) formatSelfMessage(self, text string) string {
 
 // statusLine renders the bottom status bar: network, current nick, active
 // buffer, and a scroll indicator. width pads it to the full terminal width.
-func (t theme) statusLine(network, nick, buffer string, scrolled bool, typing string, width int) string {
+func (t theme) statusLine(network, nick, buffer, scrollNote, typing string, width int) string {
 	if network == "" {
 		network = "(connecting)"
 	}
@@ -469,8 +599,8 @@ func (t theme) statusLine(network, nick, buffer string, scrolled bool, typing st
 	if typing != "" {
 		parts = append(parts, t.info.Render(typing))
 	}
-	if scrolled {
-		parts = append(parts, t.statusKey.Render("[scrolled]"))
+	if scrollNote != "" {
+		parts = append(parts, t.statusKey.Render(scrollNote))
 	}
 	content := " " + strings.Join(parts, "  ") + " "
 	return t.statusBar.Width(width).Render(content)

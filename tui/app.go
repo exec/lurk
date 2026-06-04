@@ -37,6 +37,9 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		waitForIRC(m.sub),
 		textinput.Blink,
+		// Ask the terminal for its background color so the theme can match a light
+		// or dark terminal (answered via tea.BackgroundColorMsg in Update).
+		tea.RequestBackgroundColor,
 	)
 }
 
@@ -63,6 +66,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.bell = false
 		}
 		return m, tea.Batch(cmds...)
+
+	case tea.BackgroundColorMsg:
+		// The terminal answered our background-color query: match the theme to a
+		// light or dark terminal (unless NO_COLOR has disabled color).
+		applyDetectedBackground(msg.IsDark())
+		return m, nil
 
 	case ircClosedMsg:
 		// The connection ended; mirror the line client and exit.
