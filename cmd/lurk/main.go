@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"lurk/client"
+	"lurk/config"
 	"lurk/irc"
 	"lurk/tui"
 )
@@ -46,7 +47,27 @@ var version = "dev"
 func main() {
 	log.SetFlags(log.Ltime)
 
-	cfg, channel, plain := parseConfig()
+	cfg, channel, plain, configPath := parseConfig()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// With no -server, open the launcher: pick (or create) a saved network and
+	// build the connection config from it. The launcher is a self-contained TUI
+	// that runs to completion before we connect.
+	if cfg.Server == "" {
+		net, defaults, err := resolveNetwork(ctx, configPath)
+		if err != nil {
+			log.Fatalf("lurk: %v", err)
+		}
+		if net == nil {
+			return // user quit the launcher without choosing
+		}
+		var channels []string
+		cfg, channels = networkToConfig(*net, defaults)
+		channel = strings.Join(channels, ",")
+	}
+
 	if cfg.Nick == "" {
 		log.Fatal("lurk: a nickname is required (-nick or LURK_NICK)")
 	}
@@ -56,8 +77,6 @@ func main() {
 
 	c := client.New(cfg)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 	regCtx, regCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer regCancel()
 
@@ -327,18 +346,20 @@ func (r *repl) command(line string) {
 }
 
 // parseConfig builds a client.Config from flags backed by environment
-// variables, and returns the channel to join.
-func parseConfig() (client.Config, string, bool) {
+// variables, and returns the channel to join, whether to use the plain client,
+// and the config-file path override (-config / LURK_CONFIG, "" for the default).
+func parseConfig() (cfg client.Config, channel string, plain bool, configPath string) {
 	var (
-		server   = flag.String("server", env("LURK_SERVER", ""), "server host:port (env LURK_SERVER)")
-		nick     = flag.String("nick", env("LURK_NICK", "lurk"), "nickname (env LURK_NICK)")
-		user     = flag.String("user", env("LURK_USER", ""), "username/ident, defaults to nick (env LURK_USER)")
-		realname = flag.String("realname", env("LURK_REALNAME", "lurk IRC client"), "realname (env LURK_REALNAME)")
-		pass     = flag.String("pass", env("LURK_PASS", ""), "server password (env LURK_PASS)")
-		useTLS   = flag.Bool("tls", envBool("LURK_TLS", false), "connect with TLS (env LURK_TLS)")
-		insecure = flag.Bool("insecure", envBool("LURK_INSECURE", false), "skip TLS certificate verification (env LURK_INSECURE)")
-		channel  = flag.String("channel", env("LURK_CHANNEL", ""), "channel to join (env LURK_CHANNEL)")
-		plain    = flag.Bool("plain", envBool("LURK_PLAIN", false), "use the plain line-mode client instead of the full-screen TUI (env LURK_PLAIN)")
+		server     = flag.String("server", env("LURK_SERVER", ""), "server host:port (env LURK_SERVER)")
+		nick       = flag.String("nick", env("LURK_NICK", "lurk"), "nickname (env LURK_NICK)")
+		user       = flag.String("user", env("LURK_USER", ""), "username/ident, defaults to nick (env LURK_USER)")
+		realname   = flag.String("realname", env("LURK_REALNAME", "lurk IRC client"), "realname (env LURK_REALNAME)")
+		pass       = flag.String("pass", env("LURK_PASS", ""), "server password (env LURK_PASS)")
+		useTLS     = flag.Bool("tls", envBool("LURK_TLS", false), "connect with TLS (env LURK_TLS)")
+		insecure   = flag.Bool("insecure", envBool("LURK_INSECURE", false), "skip TLS certificate verification (env LURK_INSECURE)")
+		channelArg = flag.String("channel", env("LURK_CHANNEL", ""), "channel to join (env LURK_CHANNEL)")
+		plainArg   = flag.Bool("plain", envBool("LURK_PLAIN", false), "use the plain line-mode client instead of the full-screen TUI (env LURK_PLAIN)")
+		configArg  = flag.String("config", env("LURK_CONFIG", ""), "config-file path for the network launcher (env LURK_CONFIG)")
 
 		saslMech    = flag.String("sasl", env("LURK_SASL", ""), "SASL mechanism: PLAIN or EXTERNAL (env LURK_SASL)")
 		saslUser    = flag.String("sasl-user", env("LURK_SASL_USER", ""), "SASL username (env LURK_SASL_USER)")
@@ -352,7 +373,7 @@ func parseConfig() (client.Config, string, bool) {
 		os.Exit(0)
 	}
 
-	cfg := client.Config{
+	cfg = client.Config{
 		Nick:               *nick,
 		User:               *user,
 		Realname:           *realname,
@@ -370,7 +391,74 @@ func parseConfig() (client.Config, string, bool) {
 		// so the REPL suppresses its local echo when it is negotiated.
 		Caps: append(append([]string(nil), client.DefaultCaps...), "echo-message"),
 	}
-	return cfg, *channel, *plain
+	return cfg, *channelArg, *plainArg, *configArg
+}
+
+// networkToConfig maps a saved network to a client.Config (falling back to def
+// for blank identity fields, and to "lurk" for a still-blank nick) and returns
+// its autojoin channels.
+func networkToConfig(n config.Network, def config.Identity) (client.Config, []string) {
+	pick := func(vals ...string) string {
+		for _, v := range vals {
+			if v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	cfg := client.Config{
+		Nick:               pick(n.Nick, def.Nick, "lurk"),
+		User:               pick(n.User, def.User),
+		Realname:           pick(n.Realname, def.Realname, "lurk IRC client"),
+		Pass:               n.Pass,
+		Server:             n.Addr,
+		TLS:                n.TLS,
+		InsecureSkipVerify: n.Insecure,
+		AllowInsecureAuth:  n.AllowInsecureAuth,
+		SASL: client.SASLConfig{
+			Mechanism: strings.ToUpper(n.SASL.Mechanism),
+			Username:  n.SASL.Username,
+			Password:  n.SASL.Password,
+		},
+		Caps: append(append([]string(nil), client.DefaultCaps...), "echo-message"),
+	}
+	return cfg, n.Channels
+}
+
+// resolveNetwork loads the launcher config and resolves the network to connect
+// to: a positional `lurk <name>` argument connects directly to the saved network
+// of that name, otherwise the interactive launcher runs. A nil network with no
+// error means the user quit the launcher without choosing.
+func resolveNetwork(ctx context.Context, configPath string) (*config.Network, config.Identity, error) {
+	var (
+		store *config.File
+		path  string
+		err   error
+	)
+	if configPath != "" {
+		path = configPath
+		store, err = config.LoadFrom(configPath)
+	} else {
+		store, path, err = config.Load()
+	}
+	if err != nil {
+		return nil, config.Identity{}, err
+	}
+
+	if args := flag.Args(); len(args) > 0 {
+		name := args[0]
+		n, ok := store.Get(name)
+		if !ok {
+			return nil, config.Identity{}, fmt.Errorf("no saved network named %q (run lurk with no arguments to add one)", name)
+		}
+		return &n, store.Defaults, nil
+	}
+
+	net, err := tui.Launch(ctx, store, path)
+	if err != nil {
+		return nil, config.Identity{}, err
+	}
+	return net, store.Defaults, nil
 }
 
 // registerHandlers wires the printing handlers used by the smoke test.
