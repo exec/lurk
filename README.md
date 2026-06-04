@@ -51,14 +51,19 @@ All flags have `LURK_*` environment-variable equivalents.
 | `↑` / `↓` | input history |
 | `Ctrl-N` / `Ctrl-P` | next / previous buffer |
 | `Ctrl-U` | focus the Users list; `↑/↓` select, `Enter` opens the menu, `Esc` back |
-| `Shift-↑` / `Shift-↓` | scroll a few lines (also `Ctrl-↑/↓` on non-macOS keyboards) |
-| `PgUp` / `PgDn` | scroll a page (`Fn-↑/↓` on Apple laptops) |
+| `PgUp` / `PgDn` — **`Fn-↑` / `Fn-↓` on a Mac** | scroll a page (works in every terminal) |
+| `Shift-↑` / `Shift-↓` | scroll a few lines (also `Alt-↑/↓`, or `Ctrl-↑/↓` off macOS) |
 | `Ctrl-C` | quit |
 
-`Shift-↑/↓` is the scroll default because macOS reserves `Ctrl-↑/↓` for Mission
-Control. Slash commands: `/join /part /msg /query /nick /me /topic /names /close
-/raw /help /quit` — type `/help` in-app for the keys and command list, or `/help
-<command>` for usage.
+**Scrolling on macOS:** use `Fn-↑` / `Fn-↓` (these are `PgUp`/`PgDn`) — they reach
+the app in every terminal, including Apple's Terminal.app. `Shift-↑/↓` line
+scrolling needs a terminal with Kitty-keyboard support (iTerm2, Ghostty, Kitty,
+WezTerm, Alacritty); Terminal.app can't send `Shift-↑/↓`, and macOS reserves
+`Ctrl-↑/↓` for Mission Control.
+
+Slash commands: `/join /part /msg /query /nick /me /away /whois /topic /names
+/close /raw /help /quit` — type `/help` in-app for the keys and command list, or
+`/help <command>` for usage.
 
 ## Packages
 

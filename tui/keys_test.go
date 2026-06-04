@@ -1,11 +1,32 @@
 package tui
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 )
+
+// TestPageScrollHelpLabelIsOSAware verifies the page-scroll help label shows the
+// keys a user actually presses on their platform: Fn+↑/↓ on macOS (where those
+// are PgUp/PgDn and are the reliable scroll), and pgup/pgdn elsewhere.
+func TestPageScrollHelpLabelIsOSAware(t *testing.T) {
+	k := defaultKeymap()
+	wantUp, wantDown := "pgup", "pgdn"
+	if runtime.GOOS == "darwin" {
+		wantUp, wantDown = "fn+↑", "fn+↓"
+	}
+	if got := k.PageUp.Help().Key; got != wantUp {
+		t.Errorf("PageUp help key = %q, want %q", got, wantUp)
+	}
+	if got := k.PageDown.Help().Key; got != wantDown {
+		t.Errorf("PageDown help key = %q, want %q", got, wantDown)
+	}
+	if !strings.Contains(k.summary(), wantUp) {
+		t.Errorf("/help summary missing page-scroll label %q:\n%s", wantUp, k.summary())
+	}
+}
 
 // fillBuffer sizes the UI, opens and focuses a channel buffer, and floods it
 // with enough lines to overflow the viewport so scrolling has somewhere to go.

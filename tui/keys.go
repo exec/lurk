@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"runtime"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -60,6 +61,13 @@ type keymap struct {
 // defaultKeymap returns the standard bindings. The help text (second arg to
 // WithHelp) is what the footer renders, so it is kept terse.
 func defaultKeymap() keymap {
+	// On macOS, PgUp/PgDn are Fn+↑/↓ and are the reliable scroll (Terminal.app
+	// cannot send Shift+arrows and macOS reserves Ctrl+arrows for Mission
+	// Control), so label them with the keys a Mac user actually presses.
+	pageUpHelp, pageDownHelp := "pgup", "pgdn"
+	if runtime.GOOS == "darwin" {
+		pageUpHelp, pageDownHelp = "fn+↑", "fn+↓"
+	}
 	return keymap{
 		Quit: key.NewBinding(
 			key.WithKeys("ctrl+c"),
@@ -78,22 +86,22 @@ func defaultKeymap() keymap {
 			key.WithHelp("ctrl+u", "users"),
 		),
 		ScrollUp: key.NewBinding(
-			// Multiple modifiers since no one combo reaches every terminal; PgUp is
-			// the reliable fallback (see the macOS note above).
+			// Multiple modifiers since no one combo reaches every terminal; PgUp
+			// (Fn+↑ on a Mac) is the reliable fallback (see the macOS note above).
 			key.WithKeys("shift+up", "ctrl+up", "alt+up"),
-			key.WithHelp("shift+↑/pgup", "scroll up"),
+			key.WithHelp("shift+↑", "scroll up"),
 		),
 		ScrollDown: key.NewBinding(
 			key.WithKeys("shift+down", "ctrl+down", "alt+down"),
-			key.WithHelp("shift+↓/pgdn", "scroll down"),
+			key.WithHelp("shift+↓", "scroll down"),
 		),
 		PageUp: key.NewBinding(
 			key.WithKeys("pgup"),
-			key.WithHelp("pgup", "page up"),
+			key.WithHelp(pageUpHelp, "page up"),
 		),
 		PageDown: key.NewBinding(
 			key.WithKeys("pgdown"),
-			key.WithHelp("pgdn", "page down"),
+			key.WithHelp(pageDownHelp, "page down"),
 		),
 		Complete: key.NewBinding(
 			key.WithKeys("tab"),
