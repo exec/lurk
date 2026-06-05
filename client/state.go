@@ -46,6 +46,15 @@ type channelState struct {
 	// members maps folded nick -> Member.
 	members map[string]*Member
 
+	// namesSeen records the folded member keys observed in the current in-flight
+	// NAMES burst (the 353 lines up to the closing 366). It is nil except while a
+	// burst is being collected. On 366 (endNames) every tracked member NOT in this
+	// set is pruned, so a re-issued NAMES reconciles departures rather than leaving
+	// ghosts. Members are still written into members as each 353 arrives (so the
+	// burst is additive/idempotent and snapshot readers see them immediately); the
+	// set only drives the closing reconciliation. See applyNamReply / endNames.
+	namesSeen map[string]bool
+
 	// topic is the channel topic text (empty if unset/unknown). topicSetBy is the
 	// nick (or mask) that last set it, and topicAt when it was set; both are
 	// populated from RPL_TOPICWHOTIME (333) and may be zero/empty if the server
@@ -230,8 +239,19 @@ func (cs *channelState) renameMember(fold func(string) string, oldNick, newNick 
 // optionally prefixed with one or more membership symbols (e.g. "@+nick" under
 // multi-prefix). Prefix symbols are recognised via the server's PREFIX
 // advertisement.
+//
+// A 353/366 burst is treated as authoritative: the first 353 of a fresh burst
+// starts recording which members were named, subsequent 353s add to that record,
+// and the closing 366 (see endNames) prunes any tracked member NOT named in the
+// burst. This reconciles departures — a re-issued NAMES (e.g. after a netsplit)
+// drops members who left rather than leaving them as ghosts. Members named in the
+// burst are added/updated immediately via addMember, which preserves metadata
+// learned elsewhere (e.g. an Account from extended-join survives the sweep).
 func (s *state) applyNamReply(channel, names string) {
 	cs := s.addChannel(channel)
+	if cs.namesSeen == nil {
+		cs.namesSeen = make(map[string]bool)
+	}
 	symbols := s.feat.PrefixSymbols()
 	for _, raw := range strings.Fields(names) {
 		mask, prefixes := splitPrefixes(raw, symbols)
@@ -243,7 +263,27 @@ func (s *state) applyNamReply(channel, names string) {
 			continue
 		}
 		cs.addMember(s.foldKey, nick, prefixes, user, host)
+		cs.namesSeen[s.foldKey(nick)] = true
 	}
+}
+
+// endNames closes a NAMES burst for channel (on RPL_ENDOFNAMES, 366): every
+// tracked member that was NOT named in the burst is pruned, so members who left
+// between sweeps are reconciled away rather than lingering as ghosts. A 366 with
+// no preceding 353 (an empty burst) prunes every member, yielding an empty
+// channel — the server's authoritative "nobody here".
+func (s *state) endNames(channel string) {
+	cs := s.channel(channel)
+	if cs == nil {
+		return
+	}
+	seen := cs.namesSeen // nil if 366 arrived with no 353 burst (prune all)
+	for key := range cs.members {
+		if !seen[key] {
+			delete(cs.members, key)
+		}
+	}
+	cs.namesSeen = nil
 }
 
 // splitMask splits a nick!user@host mask into its parts. A bare nick (no '!' or

@@ -201,6 +201,14 @@ func (n *Negotiator) buildReqLines(caps []string) []string {
 // onACK applies a server ACK. Per the spec REQ is atomic, so every cap named in
 // the ACK is enabled (or disabled, for "-name" entries) together. It decrements
 // the pending-request count and advances toward SASL or CAP END.
+//
+// We only enable caps the client actually wanted (and therefore REQ'd): a
+// conformant server only ACKs what we asked for, but a misbehaving or hostile
+// one could ACK arbitrary caps, which would otherwise flip on behaviour gated by
+// IsEnabled (e.g. Typing checking message-tags) without the client ever asking.
+// Un-requested caps are skipped for enabling, but still counted toward the
+// pending-request total so the verdict accounting stays correct and registration
+// does not stall.
 func (n *Negotiator) onACK(m *irc.Message) ([]string, error) {
 	caps, _ := capsAndMore(m)
 	count := 0
@@ -208,6 +216,10 @@ func (n *Negotiator) onACK(m *irc.Message) ([]string, error) {
 		count++
 		if rest, neg := strings.CutPrefix(name, "-"); neg {
 			delete(n.enabled, rest)
+			return
+		}
+		if _, wanted := n.wantedSet[name]; !wanted {
+			// Not a cap we requested: do not enable it. (Still counted above.)
 			return
 		}
 		n.enable(name)

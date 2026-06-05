@@ -276,6 +276,8 @@ func (c *Client) track(m *irc.Message) {
 		c.trackBatch(m)
 	case irc.RPL_NAMREPLY:
 		c.trackNamReply(m)
+	case irc.RPL_ENDOFNAMES:
+		c.trackEndOfNames(m)
 	case irc.MODE:
 		c.trackMode(m)
 	case cmdTopic:
@@ -462,6 +464,18 @@ func (c *Client) trackNamReply(m *irc.Message) {
 		return
 	}
 	c.st.applyNamReply(channel, names)
+}
+
+// trackEndOfNames records RPL_ENDOFNAMES (366): "<client> <channel> :End of
+// /NAMES list". It closes the in-flight NAMES burst for the channel, atomically
+// replacing the tracked member set with the accumulated one so a re-issued NAMES
+// reconciles departures (see state.endNames).
+func (c *Client) trackEndOfNames(m *irc.Message) {
+	channel := m.Param(1)
+	if channel == "" {
+		return
+	}
+	c.st.endNames(channel)
 }
 
 // trackMode applies a channel MODE change to membership prefixes. The params

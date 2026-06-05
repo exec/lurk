@@ -111,12 +111,32 @@ func (c *Client) Notice(target, text string) error {
 	return nil
 }
 
+// actionPrefix and actionSuffix are the CTCP ACTION framing that wraps the "/me"
+// text inside a PRIVMSG. They are sized into the split budget so each emitted
+// chunk — framing included — stays within the wire limit.
+const (
+	actionPrefix = "\x01ACTION "
+	actionSuffix = "\x01"
+)
+
 // Action sends a CTCP ACTION to target (a channel or nick) — the "/me" form,
 // conventionally rendered as "* nick <text>". It wraps text in the CTCP framing
-// (\x01ACTION …\x01) and sends it as a PRIVMSG. It does NOT go through the
-// splitting Privmsg, since the \x01 framing must stay intact in a single line.
+// (\x01ACTION …\x01) and sends it as a PRIVMSG. A long action is split into
+// multiple PRIVMSGs, each re-wrapped in its own \x01ACTION …\x01 framing, so no
+// chunk overflows 512 bytes (which would otherwise truncate the line and drop
+// the closing \x01). The split budget is the target-aware PRIVMSG budget minus
+// the framing overhead, so the framed wire line still fits.
 func (c *Client) Action(target, text string) error {
-	return c.write(irc.PRIVMSG, target, "\x01ACTION "+text+"\x01")
+	budget := messageBudget(irc.PRIVMSG, target) - len(actionPrefix) - len(actionSuffix)
+	if budget < 1 {
+		budget = 1 // pathological (huge target): still emit minimal chunks
+	}
+	for _, chunk := range splitMessage(text, budget) {
+		if err := c.write(irc.PRIVMSG, target, actionPrefix+chunk+actionSuffix); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // splitMessage breaks s into pieces each at most max bytes, preferring to cut at
