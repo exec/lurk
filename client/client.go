@@ -40,10 +40,17 @@ type Client struct {
 	cfg  Config
 	disp *dispatcher
 
-	// tr is the transport, set by Connect or ConnectConn.
+	// trMu guards the session pointers tr and neg, which the reconnect
+	// supervisor replaces (in startSession) while caller goroutines read them
+	// (Send/WriteMessage/write/Close/Err/CapEnabled). It is held only around the
+	// pointer load/store — never across the blocking network I/O those methods
+	// perform — so a reconnect swap cannot tear an interface read mid-flight.
+	trMu sync.Mutex
+
+	// tr is the transport, set by Connect or ConnectConn (guarded by trMu).
 	tr transport
 
-	// neg drives capability negotiation during registration.
+	// neg drives capability negotiation during registration (guarded by trMu).
 	neg *cap.Negotiator
 
 	// conv drives the SASL exchange while one is in progress (nil otherwise). It
@@ -103,6 +110,33 @@ func New(cfg Config) *Client {
 	// updates it later).
 	c.st.self = c.cfg.Nick
 	return c
+}
+
+// transport returns the current session transport under trMu. The caller must
+// release the lock (which this accessor already does) before performing any
+// blocking I/O on the returned value, so reconnect can swap the pointer without
+// waiting on network writes.
+func (c *Client) transport() transport {
+	c.trMu.Lock()
+	defer c.trMu.Unlock()
+	return c.tr
+}
+
+// negotiator returns the current session capability negotiator under trMu.
+func (c *Client) negotiator() *cap.Negotiator {
+	c.trMu.Lock()
+	defer c.trMu.Unlock()
+	return c.neg
+}
+
+// setSession atomically installs the transport and negotiator for a new session
+// under trMu. It is called by startSession for the initial connect and for each
+// reconnect attempt.
+func (c *Client) setSession(tr transport, neg *cap.Negotiator) {
+	c.trMu.Lock()
+	defer c.trMu.Unlock()
+	c.tr = tr
+	c.neg = neg
 }
 
 // Nick returns the client's current nickname (which may differ from the
@@ -189,18 +223,20 @@ func (c *Client) StatusMsg() string {
 // negotiated (server-ACKed and not since removed). It returns false before
 // connecting or for caps the server did not grant. Cap names are case-sensitive.
 func (c *Client) CapEnabled(name string) bool {
-	if c.neg == nil {
+	neg := c.negotiator()
+	if neg == nil {
 		return false
 	}
-	return c.neg.IsEnabled(name)
+	return neg.IsEnabled(name)
 }
 
 // Send enqueues a raw, pre-serialized protocol line (without CRLF).
 func (c *Client) Send(line string) error {
-	if c.tr == nil {
+	tr := c.transport()
+	if tr == nil {
 		return errors.New("client: not connected")
 	}
-	return c.tr.Send(line)
+	return tr.Send(line)
 }
 
 // SendRaw enqueues a raw, pre-serialized protocol line exactly as given (no
@@ -213,16 +249,21 @@ func (c *Client) SendRaw(line string) error {
 
 // WriteMessage enqueues a message for sending.
 func (c *Client) WriteMessage(m *irc.Message) error {
-	if c.tr == nil {
+	tr := c.transport()
+	if tr == nil {
 		return errors.New("client: not connected")
 	}
-	return c.tr.WriteMessage(m)
+	return tr.WriteMessage(m)
 }
 
 // write is the internal helper the registration/run code uses to emit a
 // command with parameters.
 func (c *Client) write(command string, params ...string) error {
-	return c.tr.WriteMessage(&irc.Message{Command: command, Params: params})
+	tr := c.transport()
+	if tr == nil {
+		return errors.New("client: not connected")
+	}
+	return tr.WriteMessage(&irc.Message{Command: command, Params: params})
 }
 
 // Connect dials the configured server, attaches the transport, and runs the
@@ -311,8 +352,7 @@ func (c *Client) attachAndRegister(ctx context.Context, tr transport) error {
 // and for each reconnect attempt.
 func (c *Client) startSession(tr transport, sessionDone chan struct{}, ctx context.Context) error {
 	c.resetRegistration()
-	c.tr = tr
-	c.neg = cap.NewNegotiator(c.cfg.Caps)
+	c.setSession(tr, cap.NewNegotiator(c.cfg.Caps))
 
 	// Seed the self nick before any I/O so state tracking has an identity.
 	c.mu.Lock()
@@ -322,7 +362,7 @@ func (c *Client) startSession(tr transport, sessionDone chan struct{}, ctx conte
 	go c.run(sessionDone)
 
 	if err := c.sendOpening(); err != nil {
-		c.tr.Close()
+		tr.Close()
 		return fmt.Errorf("client: opening: %w", err)
 	}
 
@@ -330,10 +370,10 @@ func (c *Client) startSession(tr transport, sessionDone chan struct{}, ctx conte
 	case <-c.registered:
 		return c.regErr
 	case <-ctx.Done():
-		c.tr.Close()
+		tr.Close()
 		return fmt.Errorf("client: registration: %w", ctx.Err())
 	case <-c.stop:
-		c.tr.Close()
+		tr.Close()
 		return errStopped
 	}
 }
@@ -354,8 +394,12 @@ func (c *Client) resetRegistration() {
 // sendOpening emits the capability-negotiation start and the NICK/USER (and
 // optional PASS) registration lines.
 func (c *Client) sendOpening() error {
+	tr, neg := c.transport(), c.negotiator()
+	if tr == nil || neg == nil {
+		return errors.New("client: not connected")
+	}
 	// CAP LS 302 must precede NICK/USER so the server holds 001 until CAP END.
-	if err := c.tr.Send(c.neg.Start()); err != nil {
+	if err := tr.Send(neg.Start()); err != nil {
 		return err
 	}
 	if c.cfg.Pass != "" {
@@ -386,18 +430,20 @@ func (c *Client) signalRegistered(err error) {
 // to call multiple times.
 func (c *Client) Close() error {
 	c.stopOnce.Do(func() { close(c.stop) })
-	if c.tr == nil {
+	tr := c.transport()
+	if tr == nil {
 		return nil
 	}
 	// Unblock any pending registration wait with a closed-connection error.
 	c.signalRegistered(errors.New("client: closed before registration completed"))
-	return c.tr.Close()
+	return tr.Close()
 }
 
 // Err returns the transport's terminal error after the connection ends.
 func (c *Client) Err() error {
-	if c.tr == nil {
+	tr := c.transport()
+	if tr == nil {
 		return nil
 	}
-	return c.tr.Err()
+	return tr.Err()
 }

@@ -29,6 +29,7 @@ package cap
 import (
 	"sort"
 	"strings"
+	"sync"
 
 	"lurk/irc"
 )
@@ -96,10 +97,20 @@ func (s State) String() string {
 	}
 }
 
-// Negotiator drives one connection's capability negotiation. It is not safe for
-// concurrent use; the client run-loop owns it and calls it from a single
-// goroutine.
+// Negotiator drives one connection's capability negotiation. The run-loop
+// owns mutation (it feeds CAP messages to Receive from a single goroutine),
+// but the read-only queries (IsEnabled, Enabled, Available, NeedSASL, State,
+// SASLMechs) may be called concurrently from other goroutines — e.g. the TUI
+// calling IsEnabled on every TAGMSG. The mu mutex guards every access to the
+// maps and negotiation fields so those concurrent reads cannot race the
+// run-loop's writes. Public entry points lock mu; the internal helpers they
+// call assume it is already held.
 type Negotiator struct {
+	// mu guards all fields below for the duration of any public method call. It
+	// is non-reentrant: internal helpers must use the unlocked variants (e.g.
+	// needSASL) rather than calling a public method that re-locks.
+	mu sync.Mutex
+
 	// wanted is the set of caps the client would like to enable, in the order
 	// the caller supplied (used for stable, deterministic REQ ordering).
 	wanted    []string
@@ -167,19 +178,33 @@ func NewNegotiator(wanted []string) *Negotiator {
 // and moves the Negotiator into the Listing state. It is idempotent only in the
 // sense that calling it again simply re-returns the line; call it once.
 func (n *Negotiator) Start() string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	n.state = StateListing
 	n.collectingLS = true
 	return capLSLine
 }
 
 // State reports the current negotiation phase.
-func (n *Negotiator) State() State { return n.state }
+func (n *Negotiator) State() State {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.state
+}
 
 // NeedSASL reports whether the client should run the SASL exchange now: the
 // sasl cap was wanted, the server ACKed it, and SASL has not yet been completed.
 // When true, the Negotiator is in StateWaitingSASL and will not emit CAP END
 // until SASLComplete is called.
 func (n *Negotiator) NeedSASL() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.needSASL()
+}
+
+// needSASL is the unlocked body of NeedSASL, for internal callers that already
+// hold n.mu.
+func (n *Negotiator) needSASL() bool {
 	return n.saslWanted && n.saslAcked && !n.saslDone
 }
 
@@ -187,6 +212,8 @@ func (n *Negotiator) NeedSASL() bool {
 // values (the empty string for value-less caps). The returned map is owned by
 // the caller.
 func (n *Negotiator) Available() map[string]string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	out := make(map[string]string, len(n.available))
 	for k, v := range n.available {
 		out[k] = v
@@ -197,6 +224,8 @@ func (n *Negotiator) Available() map[string]string {
 // Enabled returns the sorted list of capabilities currently enabled (ACKed and
 // not subsequently disabled or removed via CAP DEL).
 func (n *Negotiator) Enabled() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	out := make([]string, 0, len(n.enabled))
 	for k := range n.enabled {
 		out = append(out, k)
@@ -207,6 +236,8 @@ func (n *Negotiator) Enabled() []string {
 
 // IsEnabled reports whether a specific capability is currently enabled.
 func (n *Negotiator) IsEnabled(capName string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	_, ok := n.enabled[capName]
 	return ok
 }
@@ -217,6 +248,8 @@ func (n *Negotiator) IsEnabled(capName string) bool {
 // (sasl-3.1 style), in which case the client falls back to its configured
 // mechanism.
 func (n *Negotiator) SASLMechs() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	v, ok := n.available["sasl"]
 	if !ok || v == "" {
 		return nil

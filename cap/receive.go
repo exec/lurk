@@ -18,6 +18,11 @@ func (n *Negotiator) Receive(m *irc.Message) ([]string, error) {
 		return nil, nil
 	}
 
+	// Lock for the whole dispatch: the helpers below mutate the available/enabled
+	// maps and negotiation fields that concurrent readers (IsEnabled etc.) touch.
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	// CAP layout: <client> <SUBCMD> [*] [:caps]. Param(0) is the target nick or
 	// "*"; Param(1) is the subcommand. The cap list is the final parameter; a
 	// bare "*" parameter before it signals multiline continuation (LS/LIST).
@@ -237,7 +242,7 @@ func (n *Negotiator) afterVerdict(capsInVerdict int) []string {
 		return nil
 	}
 	// All initial REQs resolved.
-	if n.NeedSASL() {
+	if n.needSASL() {
 		n.state = StateWaitingSASL
 		return nil
 	}
@@ -249,6 +254,8 @@ func (n *Negotiator) afterVerdict(capsInVerdict int) []string {
 // It releases the negotiation hold and returns the CAP END line to send. It is
 // a no-op returning nil if SASL was not pending.
 func (n *Negotiator) SASLComplete() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	if n.saslDone {
 		return nil
 	}
