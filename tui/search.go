@@ -59,6 +59,32 @@ func (m *model) cycleSearch() {
 	scrollToLine(m.activeBuffer(), m.searchMatches[m.searchPos])
 }
 
+// shiftSearchMatches keeps the stored match indices valid after a scrollback
+// trim dropped `drop` lines off the front of the active buffer. Matches are
+// absolute indices into b.lines, so each shifts down by drop; any that fall off
+// the front are discarded and searchPos is clamped to what remains. It is a
+// no-op when no search is active or nothing was dropped. (Search is only ever
+// scoped to the active buffer, so the active buffer is the one whose trim
+// matters.)
+func (m *model) shiftSearchMatches(drop int) {
+	if drop <= 0 || len(m.searchMatches) == 0 {
+		return
+	}
+	out := m.searchMatches[:0]
+	for _, idx := range m.searchMatches {
+		if idx -= drop; idx >= 0 {
+			out = append(out, idx)
+		}
+	}
+	m.searchMatches = out
+	if m.searchPos >= len(out) {
+		m.searchPos = len(out) - 1
+	}
+	if m.searchPos < 0 {
+		m.searchPos = 0
+	}
+}
+
 // clearSearch drops any active search state.
 func (m *model) clearSearch() {
 	m.searchTerm = ""

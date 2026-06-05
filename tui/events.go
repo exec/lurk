@@ -84,6 +84,13 @@ func routeEventOn(m model, net *network, ev client.Event) model {
 	if net == nil {
 		net = m.activeNet()
 	}
+	// Drop events for a network that is no longer connected (e.g. an ircMsg that
+	// was already queued when removeNetwork dropped its network). Routing it would
+	// either land in net0's server buffer (a cross-network leak) or re-create a
+	// buffer back-pointing at the dead network.
+	if !m.hasNetwork(net) {
+		return m
+	}
 	// A synthetic overflow marker (the client dropped events under backpressure)
 	// carries a nil Message and a non-zero Dropped count. Surface the gap in the
 	// network's server buffer rather than dereferencing the nil Message below.

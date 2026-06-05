@@ -324,7 +324,9 @@ func applyAction(m model, act action) model {
 	case actionClose:
 		i := m.active
 		if act.target != "" {
-			i = m.bufferIndex(act.target)
+			// Resolve across all networks so /close #x can close a channel that
+			// lives on a non-active network (active-net scoping would miss it).
+			_, i = m.findBuffer(act.target)
 		}
 		m.closeBuffer(i)
 		m = layout(m)

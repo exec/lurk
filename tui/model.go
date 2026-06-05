@@ -305,24 +305,65 @@ func (m *model) netBuffer(net *network, name string) *Buffer {
 	return nil
 }
 
+// findBuffer locates an open buffer named name across all networks, preferring
+// the active network so a name open on several networks resolves to the one the
+// user is looking at. It returns the buffer (whose .net is its owning network)
+// and its index, or (nil, -1) if no buffer by that name is open anywhere. It is
+// used by named-target commands (/part #x, /close #x) so the protocol side
+// effect goes to the channel's OWN server, not whichever network is focused.
+func (m *model) findBuffer(name string) (*Buffer, int) {
+	if i := m.bufferIndexIn(m.activeNet(), name); i >= 0 {
+		return m.buffers[i], i
+	}
+	for i, b := range m.buffers {
+		if equalFold(b.Title, name) {
+			return b, i
+		}
+	}
+	return nil, -1
+}
+
 // activeNet returns the network owning the focused buffer.
 func (m *model) activeNet() *network {
 	return m.activeBuffer().net
 }
 
-// serverBuffer returns net's server/status buffer (its first buffer).
+// hasNetwork reports whether net is currently a connected network. It guards the
+// event router against routing for a network that removeNetwork already dropped
+// (a stale ircMsg that was queued before the removal).
+func (m *model) hasNetwork(net *network) bool {
+	if net == nil {
+		return false
+	}
+	for _, n := range m.networks {
+		if n == net {
+			return true
+		}
+	}
+	return false
+}
+
+// serverBuffer returns net's server/status buffer (its first buffer), or nil
+// when net is not (or no longer) a connected network. Returning nil rather than
+// falling back to buffers[0] keeps a late event for a removed network from
+// leaking into net0's server buffer (or re-creating a buffer back-pointing at the
+// dead network); callers drop the event when this is nil.
 func (m *model) serverBuffer(net *network) *Buffer {
+	if net == nil {
+		return nil
+	}
 	for _, b := range m.buffers {
 		if b.net == net && b.Kind == BufferServer {
 			return b
 		}
 	}
-	return m.buffers[0]
+	return nil
 }
 
 // targetBuffer returns where a net-scoped reply (WHOIS, LIST, reconnect notice)
 // should render: the focused buffer when it belongs to net, else net's server
-// buffer — so a reply never lands in an unrelated network's window.
+// buffer — so a reply never lands in an unrelated network's window. It is nil
+// when net is not a connected network (see serverBuffer); callers drop the event.
 func (m *model) targetBuffer(net *network) *Buffer {
 	if ab := m.activeBuffer(); ab.net == net {
 		return ab
@@ -485,6 +526,14 @@ func (m model) removeNetwork(net *network) model {
 	if b := m.buffers[m.active]; b.net != nil {
 		m.cli = b.net.cli
 	}
+	// The re-homed buffer is now the focused one, so clear its activity markers —
+	// otherwise the survivor we're looking at keeps stale unread/highlight pips.
+	// (We clear directly rather than routing through switchTo: the old network and
+	// its buffers are already gone, so switchTo's "mark old buffer read" branch has
+	// nothing valid to act on.)
+	nb := m.buffers[m.active]
+	nb.Unread = 0
+	nb.Highlight = false
 	return m
 }
 

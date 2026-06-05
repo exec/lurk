@@ -251,7 +251,9 @@ func (m model) applyMenu(e menuEntry) (tea.Model, tea.Cmd) {
 // looking. The subject nick is the title; the selected entry is highlighted.
 func renderNickMenu(m model, w, h int) string {
 	entries := menuEntries(m)
-	rows := []string{defaultTheme.nicklistTtl.Render(truncate(m.menuNick, w))}
+	// menuNick is a raw member nick from the server; sanitize before it reaches the
+	// renderer so an ESC-laden nick cannot inject control sequences into the title.
+	rows := []string{defaultTheme.nicklistTtl.Render(truncate(sanitize(m.menuNick), w))}
 	sel := lipgloss.NewStyle().Reverse(true)
 	for i, e := range entries {
 		if i == m.menuSel {

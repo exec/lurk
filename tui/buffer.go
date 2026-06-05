@@ -148,7 +148,10 @@ func (b *Buffer) markHistory(t theme) {
 	b.gotHistory = true
 }
 
-func (b *Buffer) addLine(s string) {
+// addLine returns the number of lines dropped off the front by the scrollback
+// trim (0 when nothing was dropped), so callers holding absolute indices into
+// lines — the model's scrollback-search matches — can shift them to stay valid.
+func (b *Buffer) addLine(s string) int {
 	b.lines = append(b.lines, s)
 	if len(b.lines) > scrollbackLimit {
 		// Drop the oldest lines. Re-slice onto a fresh backing array
@@ -160,7 +163,9 @@ func (b *Buffer) addLine(s string) {
 		if b.readMarker -= drop; b.readMarker < 0 {
 			b.readMarker = 0
 		}
+		return drop
 	}
+	return 0
 }
 
 // refresh re-renders the scrollback into the viewport. It wraps each stored line

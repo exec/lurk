@@ -450,10 +450,12 @@ func splitArgs(s string, max int) []string {
 // core's routing; here we only emit the protocol and a close request.
 func cmdPart(m model, args []string, rest string) (action, tea.Cmd) {
 	channel := m.activeBuffer().Title
+	named := false
 	reason := ""
 	if len(args) > 0 {
 		if isChannel(args[0]) {
 			channel = args[0]
+			named = true
 			reason = strings.TrimSpace(strings.TrimPrefix(rest, args[0]))
 		} else {
 			reason = rest
@@ -462,11 +464,26 @@ func cmdPart(m model, args []string, rest string) (action, tea.Cmd) {
 	if !isChannel(channel) {
 		return infoAction("not a channel; use /part <channel>"), nil
 	}
-	if m.cli != nil {
+	// Resolve the protocol side effect against the channel's OWNING network: a
+	// named channel may live on a different network than the focused one, so
+	// sending PART through the active client would hit the wrong server (and the
+	// active-net buffer lookup would find nothing). When the named channel is open
+	// nowhere, do nothing rather than PART a channel we never joined.
+	cli := m.cli
+	if named {
+		b, _ := m.findBuffer(channel)
+		if b == nil {
+			return infoAction("no such channel buffer: " + channel), nil
+		}
+		if b.net != nil {
+			cli = b.net.cli
+		}
+	}
+	if cli != nil {
 		if reason != "" {
-			_ = m.cli.PartReason(reason, channel)
+			_ = cli.PartReason(reason, channel)
 		} else {
-			_ = m.cli.Part(channel)
+			_ = cli.Part(channel)
 		}
 	}
 	return action{kind: actionClose, target: channel}, nil
@@ -753,11 +770,19 @@ func cmdClose(m model, args []string, rest string) (action, tea.Cmd) {
 		target = args[0]
 	}
 	channel := target
+	cli := m.cli
 	if channel == "" {
 		channel = m.activeBuffer().Title
+	} else {
+		// A named target may belong to a non-active network; PART its OWN server
+		// (resolving the client through the buffer's owning network), not whichever
+		// network is currently focused.
+		if b, _ := m.findBuffer(target); b != nil && b.net != nil {
+			cli = b.net.cli
+		}
 	}
-	if isChannel(channel) && m.cli != nil {
-		_ = m.cli.Part(channel)
+	if isChannel(channel) && cli != nil {
+		_ = cli.Part(channel)
 	}
 	return action{kind: actionClose, target: target}, nil
 }

@@ -236,7 +236,9 @@ func renderSidebar(m model, w, h int) string {
 	for i, b := range m.buffers {
 		// With more than one network, group buffers under a bold network header.
 		if multi && b.net != lastNet {
-			rows = append(rows, t.nicklistTtl.Width(w).Render(truncate(b.net.label(), w)))
+			// label() is the server NETWORK token (which can decode \xHH escapes);
+			// sanitize before it reaches the renderer.
+			rows = append(rows, t.nicklistTtl.Width(w).Render(truncate(sanitize(b.net.label()), w)))
 			lastNet = b.net
 		}
 
@@ -448,20 +450,25 @@ func renderStatus(m model) string {
 		}
 	}
 	typing := typingNote(m.typingNicks(asciiLower(b.Title)))
-	return defaultTheme.statusLine(network, nick, b.Title, m.searchNote(), scrollNote, typing, m.width)
+	// network and the buffer title are server-controlled; sanitize before they
+	// reach the status bar so an ESC-laden NETWORK token or channel name cannot
+	// inject terminal control sequences.
+	return defaultTheme.statusLine(sanitize(network), nick, sanitize(b.Title), m.searchNote(), scrollNote, typing, m.width)
 }
 
 // typingNote renders the "X is typing…" status segment for the given typers, or
 // "" when nobody is typing. Two names are joined with "and"; more collapse to
 // "N people".
 func typingNote(nicks []string) string {
+	// The nicks come from a TAGMSG source and are server-controlled, so strip
+	// terminal control sequences before they reach the status bar.
 	switch len(nicks) {
 	case 0:
 		return ""
 	case 1:
-		return nicks[0] + " is typing…"
+		return sanitize(nicks[0]) + " is typing…"
 	case 2:
-		return nicks[0] + " and " + nicks[1] + " are typing…"
+		return sanitize(nicks[0]) + " and " + sanitize(nicks[1]) + " are typing…"
 	default:
 		return fmt.Sprintf("%d people are typing…", len(nicks))
 	}
@@ -523,6 +530,11 @@ var prefixOrder = []rune{'~', '&', '@', '%', '+'}
 // inbound event; the view layer owns all formatting (see the message to
 // tui-core agreeing the raw-Event signature).
 func appendLine(m model, b *Buffer, ev client.Event) model {
+	// A nil buffer means the event could not be placed (e.g. its network was
+	// removed); drop it rather than panicking on the deref below.
+	if b == nil {
+		return m
+	}
 	// Self is the nick of the buffer's OWN network, so highlight/own-message
 	// detection is correct even for an event on a background network.
 	self := b.net.nick()
@@ -532,12 +544,23 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 		b.markHistory(defaultTheme)
 	}
 	row, highlight := defaultTheme.formatLine(ev, self, m.highlights)
-	b.addLine(row)
+	drop := b.addLine(row)
 	m.logger.Log(bufferScope(b), b.Title, stripANSI(row))
 
 	active := b == m.activeBuffer()
+	if active {
+		// An active scrollback search holds absolute indices into this buffer's
+		// lines; a front trim must shift them or Ctrl-R jumps to the wrong line.
+		m.shiftSearchMatches(drop)
+	}
 	switch {
 	case active:
+		// A line you're watching arrive is read the instant it lands, so keep the
+		// read marker pinned to the end. Otherwise a later switch-away that set the
+		// marker to an earlier count would leave it lagging behind the live lines,
+		// drawing a spurious "new messages" divider directly above a message you
+		// just saw appear.
+		b.readMarker = len(b.lines)
 		b.refresh()
 	case ev.BatchType() == "chathistory":
 		// Replayed backlog into a background buffer is rendered but is not "new
@@ -558,10 +581,15 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 // to buffer b. Unlike appendLine it is not tied to a protocol event and never
 // raises unread/highlight.
 func appendInfo(m model, b *Buffer, text string) model {
+	if b == nil {
+		return m // unplaceable (e.g. a removed network); drop it
+	}
 	row := defaultTheme.formatInfo(text)
-	b.addLine(row)
+	drop := b.addLine(row)
 	m.logger.Log(bufferScope(b), b.Title, stripANSI(row))
 	if b == m.activeBuffer() {
+		m.shiftSearchMatches(drop)
+		b.readMarker = len(b.lines) // a line added to the focused buffer is read on arrival
 		b.refresh()
 	} else {
 		b.Unread++
@@ -580,9 +608,11 @@ func echoSelf(m model, target, text string) model {
 	}
 	b, _ := m.ensureBuffer(target, kind)
 	row := defaultTheme.formatSelfMessage(currentNick(m), text)
-	b.addLine(row)
+	drop := b.addLine(row)
 	m.logger.Log(bufferScope(b), b.Title, stripANSI(row))
 	if b == m.activeBuffer() {
+		m.shiftSearchMatches(drop)
+		b.readMarker = len(b.lines) // your own echoed line is read on arrival
 		b.refresh()
 	}
 	return m
