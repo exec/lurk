@@ -29,6 +29,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
+	"lurk/chatlog"
 	"lurk/client"
 )
 
@@ -122,6 +123,10 @@ type model struct {
 	// model by value) can mutate them in place. Seeded from the client config.
 	highlights map[string]bool
 	ignored    map[string]bool
+
+	// logger, when non-nil, appends each buffer's lines to a per-target log file.
+	// A nil *chatlog.Logger is a safe no-op, so the logging calls need no guard.
+	logger *chatlog.Logger
 
 	// chanList is the channel-directory modal shown by /list: a filterable,
 	// scrollable list drawn as a centered overlay (channellist.go). chanListOpen

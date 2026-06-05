@@ -88,6 +88,9 @@ The theme follows your terminal: a dark (Catppuccin Mocha) or light (Latte)
 palette is chosen from the detected background, and `NO_COLOR` switches to a
 monochrome theme.
 
+Pass `-log` (or `LURK_LOG=1`) to write per-channel plain-text chat logs under
+`~/.local/share/lurk/logs/` (XDG-aware; override with `LURK_LOG_DIR`).
+
 ## Packages
 
 ```

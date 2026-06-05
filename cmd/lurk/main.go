@@ -47,7 +47,7 @@ var version = "dev"
 func main() {
 	log.SetFlags(log.Ltime)
 
-	cfg, channel, plain, configPath := parseConfig()
+	cfg, channel, plain, configPath, logDir := parseConfig()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -84,14 +84,14 @@ func main() {
 		runPlain(ctx, cancel, regCtx, c, channel)
 		return
 	}
-	runTUI(ctx, regCtx, c, channel)
+	runTUI(ctx, regCtx, c, channel, logDir)
 }
 
 // runTUI connects the client and hands control to the Bubble Tea interface. The
 // TUI consumes the client's event stream (no print handlers are registered);
 // tui.Run owns the program lifecycle and returns when the user quits or the
 // connection ends, after which we tear the client down cleanly.
-func runTUI(ctx, regCtx context.Context, c *client.Client, channel string) {
+func runTUI(ctx, regCtx context.Context, c *client.Client, channel, logDir string) {
 	if err := c.Connect(regCtx); err != nil {
 		log.Fatalf("lurk: connect: %v", err)
 	}
@@ -103,7 +103,7 @@ func runTUI(ctx, regCtx context.Context, c *client.Client, channel string) {
 		}
 	}
 
-	err := tui.Run(ctx, c)
+	err := tui.Run(ctx, c, logDir)
 
 	// tui.Run has restored the primary screen by now; tear down the connection.
 	_ = c.Quit("lurk signing off")
@@ -359,7 +359,7 @@ func (r *repl) command(line string) {
 // parseConfig builds a client.Config from flags backed by environment
 // variables, and returns the channel to join, whether to use the plain client,
 // and the config-file path override (-config / LURK_CONFIG, "" for the default).
-func parseConfig() (cfg client.Config, channel string, plain bool, configPath string) {
+func parseConfig() (cfg client.Config, channel string, plain bool, configPath, logDir string) {
 	var (
 		server     = flag.String("server", env("LURK_SERVER", ""), "server host:port (env LURK_SERVER)")
 		nick       = flag.String("nick", env("LURK_NICK", "lurk"), "nickname (env LURK_NICK)")
@@ -371,6 +371,7 @@ func parseConfig() (cfg client.Config, channel string, plain bool, configPath st
 		channelArg = flag.String("channel", env("LURK_CHANNEL", ""), "channel to join (env LURK_CHANNEL)")
 		plainArg   = flag.Bool("plain", envBool("LURK_PLAIN", false), "use the plain line-mode client instead of the full-screen TUI (env LURK_PLAIN)")
 		configArg  = flag.String("config", env("LURK_CONFIG", ""), "config-file path for the network launcher (env LURK_CONFIG)")
+		logArg     = flag.Bool("log", envBool("LURK_LOG", false), "write per-channel chat logs to disk (env LURK_LOG)")
 
 		saslMech    = flag.String("sasl", env("LURK_SASL", ""), "SASL mechanism: PLAIN or EXTERNAL (env LURK_SASL)")
 		saslUser    = flag.String("sasl-user", env("LURK_SASL_USER", ""), "SASL username (env LURK_SASL_USER)")
@@ -404,7 +405,15 @@ func parseConfig() (cfg client.Config, channel string, plain bool, configPath st
 		// so the REPL suppresses its local echo when it is negotiated.
 		Caps: append(append([]string(nil), client.DefaultCaps...), "echo-message"),
 	}
-	return cfg, *channelArg, *plainArg, *configArg
+
+	if *logArg {
+		dir, err := config.LogDir()
+		if err != nil {
+			log.Fatalf("lurk: resolve log directory: %v", err)
+		}
+		logDir = dir
+	}
+	return cfg, *channelArg, *plainArg, *configArg, logDir
 }
 
 // networkToConfig maps a saved network to a client.Config (falling back to def

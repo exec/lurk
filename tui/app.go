@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
+	"lurk/chatlog"
 	"lurk/client"
 )
 
@@ -20,8 +21,12 @@ import (
 // The caller is responsible for dialing and registering the client (Connect)
 // before calling Run; Run drives the client's Run loop implicitly by consuming
 // its event stream.
-func Run(ctx context.Context, cli *client.Client) error {
+func Run(ctx context.Context, cli *client.Client, logDir string) error {
 	m := newModel(cli, cli.Events())
+	if logDir != "" {
+		m.logger = chatlog.New(logDir)
+		defer m.logger.Close()
+	}
 	// In Bubble Tea v2 the alternate screen and mouse mode are properties of the
 	// rendered tea.View (set in View), not program options, so the program only
 	// needs the cancellation context here.

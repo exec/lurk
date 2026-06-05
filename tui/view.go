@@ -510,6 +510,7 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 	}
 	row, highlight := defaultTheme.formatLine(ev, self, m.highlights)
 	b.addLine(row)
+	m.logger.Log(b.Title, stripANSI(row))
 
 	active := b == m.activeBuffer()
 	switch {
@@ -534,7 +535,9 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 // to buffer b. Unlike appendLine it is not tied to a protocol event and never
 // raises unread/highlight.
 func appendInfo(m model, b *Buffer, text string) model {
-	b.addLine(defaultTheme.formatInfo(text))
+	row := defaultTheme.formatInfo(text)
+	b.addLine(row)
+	m.logger.Log(b.Title, stripANSI(row))
 	if b == m.activeBuffer() {
 		b.refresh()
 	} else {
@@ -553,7 +556,9 @@ func echoSelf(m model, target, text string) model {
 		kind = BufferChannel
 	}
 	b, _ := m.ensureBuffer(target, kind)
-	b.addLine(defaultTheme.formatSelfMessage(currentNick(m), text))
+	row := defaultTheme.formatSelfMessage(currentNick(m), text)
+	b.addLine(row)
+	m.logger.Log(b.Title, stripANSI(row))
 	if b == m.activeBuffer() {
 		b.refresh()
 	}

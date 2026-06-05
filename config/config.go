@@ -78,6 +78,22 @@ func Path() (string, error) {
 	return filepath.Join(home, ".config", "lurk", "config.json"), nil
 }
 
+// LogDir returns the default chat-log directory: $LURK_LOG_DIR if set, else
+// $XDG_DATA_HOME/lurk/logs, else ~/.local/share/lurk/logs.
+func LogDir() (string, error) {
+	if p := os.Getenv("LURK_LOG_DIR"); p != "" {
+		return p, nil
+	}
+	if x := os.Getenv("XDG_DATA_HOME"); x != "" {
+		return filepath.Join(x, "lurk", "logs"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("config: locate home directory: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "lurk", "logs"), nil
+}
+
 // Load reads the config from the resolved Path, returning the document and the
 // path it was read from (so callers can Save back to the same place). A missing
 // file yields an empty *File and no error; malformed JSON is an error.
