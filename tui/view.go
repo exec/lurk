@@ -250,7 +250,10 @@ func renderSidebar(m model, w, h int) string {
 			marker = markUnread
 			st = t.sidebarUnread
 		}
-		label := b.Title
+		// b.Title is a channel name or PM peer nick taken raw from the server, so
+		// sanitize it here (at the render site, leaving the stored Title pristine
+		// for protocol matching) before it reaches truncate/Render.
+		label := sanitize(b.Title)
 		if b.Kind == BufferServer {
 			label = "(server)" // the header already names the network
 		}
@@ -365,15 +368,20 @@ func (t theme) nickRow(mem client.Member, w int, selected, isSelf bool) string {
 	if mem.Prefixes != "" {
 		sym = string(mem.Prefixes[0])
 	}
+	// Both the prefix symbol and the nick are server-controlled; strip terminal
+	// control sequences before they reach the renderer (truncate only drops ANSI
+	// when the string overflows the column, so short malicious nicks would pass).
+	sym = sanitize(sym)
+	nick := sanitize(mem.Nick)
 	badge := ""
 	if mem.Account != "" {
 		badge = "·"
 	}
 	if selected {
 		// Reverse-video bar with an unstyled label so it stays legible.
-		return lipgloss.NewStyle().Reverse(true).Render(truncate(sym+mem.Nick+badge, w))
+		return lipgloss.NewStyle().Reverse(true).Render(truncate(sym+nick+badge, w))
 	}
-	nickText := truncate(sym+mem.Nick, w-lipgloss.Width(badge))
+	nickText := truncate(sym+nick, w-lipgloss.Width(badge))
 	var styled string
 	if mem.Away {
 		styled = t.nicklistAway.Render(nickText)
