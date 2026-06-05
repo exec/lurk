@@ -302,6 +302,12 @@ func (m *model) switchTo(i int) {
 	if i < 0 || i >= len(m.buffers) {
 		return
 	}
+	if i != m.active && m.active >= 0 && m.active < len(m.buffers) {
+		// Mark everything currently in the buffer we're leaving as read, so a
+		// "new messages" divider appears before anything that arrives while away.
+		old := m.buffers[m.active]
+		old.readMarker = len(old.lines)
+	}
 	m.active = i
 	b := m.buffers[i]
 	b.Unread = 0

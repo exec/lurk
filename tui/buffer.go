@@ -81,6 +81,12 @@ type Buffer struct {
 	// gotHistory is set once a chathistory backlog line has been rendered into
 	// this buffer, so the "── history ──" divider is drawn only once.
 	gotHistory bool
+
+	// readMarker is the index into lines where unread content begins: it is set
+	// to the line count when the user switches away from the buffer, so on return
+	// a "new messages" divider can be drawn before everything that arrived since.
+	// It is adjusted when old lines are trimmed (addLine).
+	readMarker int
 }
 
 // newBuffer creates a channel or PM buffer for name. The server buffer is built
@@ -137,7 +143,12 @@ func (b *Buffer) addLine(s string) {
 		// Drop the oldest lines. Re-slice onto a fresh backing array
 		// periodically would be tidier, but the simple re-slice keeps amortized
 		// cost low and the excess is bounded by one line per append.
-		b.lines = b.lines[len(b.lines)-scrollbackLimit:]
+		drop := len(b.lines) - scrollbackLimit
+		b.lines = b.lines[drop:]
+		// Keep the read marker pointing at the same logical line.
+		if b.readMarker -= drop; b.readMarker < 0 {
+			b.readMarker = 0
+		}
 	}
 }
 
@@ -157,21 +168,35 @@ func (b *Buffer) refresh() {
 	}
 }
 
-// wrapped joins the scrollback into the viewport's content, soft-wrapping each
-// row to the content width. An empty buffer renders as the empty string so the
-// pane is blank rather than showing a stray newline.
+// wrapped joins the scrollback into the viewport's content, inserting a "new
+// messages" divider at the read marker when there is unread content below it. An
+// empty buffer renders as the empty string so the pane is blank rather than
+// showing a stray newline. (The viewport soft-wraps each joined row to the width
+// set in layout(); joining here preserves explicit row boundaries.)
 func (b *Buffer) wrapped() string {
 	if len(b.lines) == 0 {
 		return ""
 	}
-	w := b.contentWidth
-	if w <= 0 {
-		return strings.Join(b.lines, "\n")
+	if b.readMarker > 0 && b.readMarker < len(b.lines) {
+		rows := make([]string, 0, len(b.lines)+1)
+		rows = append(rows, b.lines[:b.readMarker]...)
+		rows = append(rows, markerLine(b.contentWidth))
+		rows = append(rows, b.lines[b.readMarker:]...)
+		return strings.Join(rows, "\n")
 	}
-	// Pre-wrap to width using the viewport's own soft-wrap by relying on the
-	// width set in layout(); here we just join. The viewport wraps on render via
-	// its configured width, but joining preserves explicit row boundaries.
 	return strings.Join(b.lines, "\n")
+}
+
+// markerLine renders the "new messages" divider sized to the content width.
+func markerLine(w int) string {
+	const label = " new messages "
+	if w < len(label)+2 {
+		return defaultTheme.dim.Render(strings.TrimSpace(label))
+	}
+	dashes := w - len(label)
+	left := dashes / 2
+	right := dashes - left
+	return defaultTheme.dim.Render(strings.Repeat("─", left) + label + strings.Repeat("─", right))
 }
 
 // memberList returns the channel's members for the nicklist, read live from the
