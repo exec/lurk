@@ -66,17 +66,34 @@ func (c *Client) List(args ...string) error {
 	return c.write(irc.LIST, strings.Join(args, ","))
 }
 
-// maxMessageBytes is the conservative byte budget for a single PRIVMSG/NOTICE
-// text parameter. The 512-byte wire line must also hold our (server-assigned)
-// "<nick>!<user>@<host> PRIVMSG <target> :" prefix and CRLF, whose length we do
-// not know exactly, so the limit leaves generous headroom.
-const maxMessageBytes = 400
+// messageBudget returns the maximum text-parameter byte length for one command
+// line to target so the full wire line "<command> <target> :<text>\r\n" stays
+// within IRC's 512-byte limit. It is target-aware because a long STATUSMSG +
+// large-CHANNELLEN target eats into the budget: a fixed cap that ignored the
+// target could serialize past 512 and be truncated (or rejected with 417).
+//
+// We count only OUR sent line; the server's own "<nick>!<user>@<host>" source
+// prefix it adds when relaying is not part of what we transmit, so it is not
+// counted here.
+func messageBudget(command, target string) int {
+	const wireLimit = 512
+	const crlf = 2
+	// "<command> <target> :" + CRLF: command, one space, target, " :", CRLF.
+	overhead := len(command) + 1 + len(target) + len(" :") + crlf
+	budget := wireLimit - overhead
+	if budget < 1 {
+		budget = 1 // pathological (huge target): still emit minimal chunks
+	}
+	return budget
+}
 
 // Privmsg sends text to target (a channel or nick) as a PRIVMSG, splitting a
 // message longer than a single wire line into multiple PRIVMSGs (on word
 // boundaries where possible) so it is delivered in full rather than truncated.
+// The split budget is target-aware (see messageBudget) so even a long target
+// keeps every line within the 512-byte wire limit.
 func (c *Client) Privmsg(target, text string) error {
-	for _, chunk := range splitMessage(text, maxMessageBytes) {
+	for _, chunk := range splitMessage(text, messageBudget(irc.PRIVMSG, target)) {
 		if err := c.write(irc.PRIVMSG, target, chunk); err != nil {
 			return err
 		}
@@ -86,7 +103,7 @@ func (c *Client) Privmsg(target, text string) error {
 
 // Notice sends a NOTICE to target, split the same way as Privmsg.
 func (c *Client) Notice(target, text string) error {
-	for _, chunk := range splitMessage(text, maxMessageBytes) {
+	for _, chunk := range splitMessage(text, messageBudget(irc.NOTICE, target)) {
 		if err := c.write(irc.NOTICE, target, chunk); err != nil {
 			return err
 		}
@@ -171,12 +188,20 @@ func (c *Client) SetNick(nick string) error {
 // Quit sends a QUIT with an optional reason and lets the server close the
 // connection. It also stops the reconnect supervisor (a deliberate quit must not
 // trigger a re-dial); the caller may still call Close to tear down locally.
+//
+// The QUIT is written BEFORE the supervisor is stopped: closing c.stop wakes the
+// supervisor, which tears the transport down, so stopping first would race (and
+// usually lose) the QUIT write. conn's graceful Close drains the outbound queue,
+// so the already-enqueued QUIT still flushes to the server before teardown.
 func (c *Client) Quit(reason string) error {
-	c.stopOnce.Do(func() { close(c.stop) })
+	var err error
 	if reason == "" {
-		return c.write(irc.QUIT)
+		err = c.write(irc.QUIT)
+	} else {
+		err = c.write(irc.QUIT, reason)
 	}
-	return c.write(irc.QUIT, reason)
+	c.stopOnce.Do(func() { close(c.stop) })
+	return err
 }
 
 // Whois sends a WHOIS query for nick. The reply arrives as the numeric burst

@@ -111,6 +111,10 @@ func TestQuitStopsReconnect(t *testing.T) {
 	var attempts int
 	var mu sync.Mutex
 
+	// gotQuit carries the exact QUIT line the server received, proving the
+	// message was not dropped by stopping the supervisor too early.
+	gotQuit := make(chan string, 1)
+
 	dialer := func(ctx context.Context) (transport, error) {
 		mu.Lock()
 		attempts++
@@ -119,8 +123,9 @@ func TestQuitStopsReconnect(t *testing.T) {
 		srv := newMockServer(t, serverSide)
 		go func() {
 			miniRegister(t, srv, nick)
-			// Wait for the client's QUIT, then drop the link.
-			srv.expectPrefix("QUIT")
+			// Wait for the client's QUIT, capture it, then drop the link.
+			line := srv.expectPrefix("QUIT")
+			gotQuit <- line
 			srv.close()
 		}()
 		return conn.NewConn(clientSide, conn.Options{}), nil
@@ -140,6 +145,17 @@ func TestQuitStopsReconnect(t *testing.T) {
 	// Quit must stop the supervisor: the connection drops and is NOT re-dialed.
 	if err := c.Quit("bye"); err != nil {
 		t.Fatalf("Quit: %v", err)
+	}
+
+	// The QUIT line must actually have reached the server (it is sent before the
+	// supervisor is stopped, so it is not raced away by the teardown).
+	select {
+	case line := <-gotQuit:
+		if want := "QUIT bye"; line != want {
+			t.Errorf("server received %q, want %q", line, want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never received the QUIT line")
 	}
 
 	// Done closes once the client has stopped for good.
