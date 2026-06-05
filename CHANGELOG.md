@@ -16,6 +16,12 @@ semantic versioning.
 - Mention highlights (`/highlight`) now render over the active-buffer blue accent
   instead of red.
 
+### Fixed
+- Remote "X is typing…" indications now clear on time. A self-rescheduling expiry
+  tick prunes and repaints when the typing TTL elapses, so an indication no longer
+  lingers past its timeout on an idle channel with the editor blurred (where the
+  cursor blink wasn't forcing a redraw).
+
 ## [1.0.0] - 2026-06-05
 
 First stable release: the IRCv3 client, the multi-network terminal UI, and the

@@ -115,6 +115,12 @@ type model struct {
 	// to throttle outbound typing notifications (see maybeSendTyping).
 	lastTypingSent time.Time
 
+	// typingTicking is true while a typing-expiry tick is scheduled. The tick
+	// reschedules itself while anyone is typing and stops once they are all done,
+	// so stale "X is typing…" indications clear on time even with no other
+	// traffic and the editor blurred (where the cursor blink isn't repainting).
+	typingTicking bool
+
 	// bell is a one-shot flag set when an inbound message highlighted a buffer
 	// the user is not currently viewing; Update rings the terminal bell and
 	// clears it. It lives on the model so the pure routing path (appendLine) can
@@ -249,6 +255,45 @@ func (m model) typingNicks(key string) []string {
 		}
 	}
 	return nicks
+}
+
+// pruneTyping drops every expired typing entry across all buffers. The expiry
+// tick calls it so a stale indication clears even when nothing else forces a
+// repaint.
+func (m model) pruneTyping(now time.Time) model {
+	for key, entries := range m.typing {
+		out := entries[:0]
+		for _, e := range entries {
+			if e.expiry.After(now) {
+				out = append(out, e)
+			}
+		}
+		if len(out) == 0 {
+			delete(m.typing, key)
+		} else {
+			m.typing[key] = out
+		}
+	}
+	return m
+}
+
+// nextTypingDeadline returns the duration until the earliest typing indication
+// expires (negative if one is already due) and whether any indication exists. It
+// drives the self-rescheduling expiry tick.
+func (m model) nextTypingDeadline(now time.Time) (time.Duration, bool) {
+	var earliest time.Time
+	found := false
+	for _, entries := range m.typing {
+		for _, e := range entries {
+			if !found || e.expiry.Before(earliest) {
+				earliest, found = e.expiry, true
+			}
+		}
+	}
+	if !found {
+		return 0, false
+	}
+	return earliest.Sub(now), true
 }
 
 // serverBufferTitle picks a label for the status buffer: the network name if

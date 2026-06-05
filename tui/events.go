@@ -4,12 +4,44 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/exec/lurk/client"
 	"github.com/exec/lurk/irc"
 )
+
+// typingTickMsg fires when a remote typing indication may have expired, forcing a
+// repaint (and a prune) so "X is typing…" clears on time even with no other
+// traffic — e.g. while the editor is blurred onto the nicklist, where the cursor
+// blink isn't repainting.
+type typingTickMsg struct{}
+
+// typingExpiryTick delivers a typingTickMsg after d (clamped to ≥ 0).
+func typingExpiryTick(d time.Duration) tea.Cmd {
+	if d < 0 {
+		d = 0
+	}
+	return tea.Tick(d, func(time.Time) tea.Msg { return typingTickMsg{} })
+}
+
+// ensureTypingTick schedules an expiry tick when remote typers exist and none is
+// already pending. It self-reschedules from the typingTickMsg handler, so the
+// tick runs only while someone is typing and stops once everyone is done.
+// Returns the model (with the in-flight flag set) and the command to batch, or a
+// nil command when nothing needs scheduling.
+func (m model) ensureTypingTick(now time.Time) (model, tea.Cmd) {
+	if m.typingTicking {
+		return m, nil
+	}
+	d, any := m.nextTypingDeadline(now)
+	if !any {
+		return m, nil
+	}
+	m.typingTicking = true
+	return m, typingExpiryTick(d)
+}
 
 // bellCmd rings the terminal bell by writing a BEL to stderr. stderr is not the
 // stream Bubble Tea's renderer writes to, so the control byte cannot corrupt the

@@ -75,7 +75,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, bellCmd())
 			m.bell = false
 		}
+		// If that event started/refreshed a typing indication, make sure an
+		// expiry tick is running so it clears on time.
+		var tcmd tea.Cmd
+		if m, tcmd = m.ensureTypingTick(time.Now()); tcmd != nil {
+			cmds = append(cmds, tcmd)
+		}
 		return m, tea.Batch(cmds...)
+
+	case typingTickMsg:
+		// A typing indication may have expired: prune and repaint, then keep the
+		// tick alive while anyone is still typing (it stops itself otherwise).
+		m.typingTicking = false
+		now := time.Now()
+		m = m.pruneTyping(now)
+		var cmd tea.Cmd
+		m, cmd = m.ensureTypingTick(now)
+		return m, cmd
 
 	case connectedMsg:
 		// A /connect dial succeeded: fold the new network in and start its pump.
