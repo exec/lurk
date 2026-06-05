@@ -13,12 +13,12 @@ func TestLoggerWritesPerTarget(t *testing.T) {
 	l := New(dir)
 	l.now = func() time.Time { return time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC) }
 
-	l.Log("#go", "15:04 alice hi")
-	l.Log("#go", "15:05 bob yo")
-	l.Log("bob", "15:06 <bob> pm")
+	l.Log("libera", "#go", "15:04 alice hi")
+	l.Log("libera", "#go", "15:05 bob yo")
+	l.Log("libera", "bob", "15:06 <bob> pm")
 	l.Close()
 
-	chanLog, err := os.ReadFile(filepath.Join(dir, "#go.log"))
+	chanLog, err := os.ReadFile(filepath.Join(dir, "libera", "#go.log"))
 	if err != nil {
 		t.Fatalf("read #go log: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestLoggerWritesPerTarget(t *testing.T) {
 		t.Errorf("#go log has %d newlines, want 2 lines (1 separator)", lines)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "bob.log")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "libera", "bob.log")); err != nil {
 		t.Errorf("per-target file for bob not created: %v", err)
 	}
 }
@@ -38,9 +38,9 @@ func TestLoggerWritesPerTarget(t *testing.T) {
 func TestLoggerPerms0600(t *testing.T) {
 	dir := t.TempDir()
 	l := New(dir)
-	l.Log("#x", "line")
+	l.Log("net", "#x", "line")
 	l.Close()
-	fi, err := os.Stat(filepath.Join(dir, "#x.log"))
+	fi, err := os.Stat(filepath.Join(dir, "net", "#x.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestLoggerPerms0600(t *testing.T) {
 
 func TestNilLoggerIsNoop(t *testing.T) {
 	var l *Logger
-	l.Log("#x", "line") // must not panic
+	l.Log("net", "#x", "line") // must not panic
 	l.Close()
 }
 

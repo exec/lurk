@@ -104,6 +104,12 @@ func newBuffer(name string, kind BufferKind) *Buffer {
 	}
 }
 
+// bufferScope returns the log scope (network label) for a buffer, so logs are
+// filed per network: <dir>/<network>/<target>.log.
+func bufferScope(b *Buffer) string {
+	return b.net.label()
+}
+
 // newServerBuffer creates the always-present status buffer (buffers index 0).
 // title is the network name (or a placeholder before it is known).
 func newServerBuffer(title string) *Buffer {

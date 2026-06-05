@@ -525,7 +525,7 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 	}
 	row, highlight := defaultTheme.formatLine(ev, self, m.highlights)
 	b.addLine(row)
-	m.logger.Log(b.Title, stripANSI(row))
+	m.logger.Log(bufferScope(b), b.Title, stripANSI(row))
 
 	active := b == m.activeBuffer()
 	switch {
@@ -552,7 +552,7 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 func appendInfo(m model, b *Buffer, text string) model {
 	row := defaultTheme.formatInfo(text)
 	b.addLine(row)
-	m.logger.Log(b.Title, stripANSI(row))
+	m.logger.Log(bufferScope(b), b.Title, stripANSI(row))
 	if b == m.activeBuffer() {
 		b.refresh()
 	} else {
@@ -573,7 +573,7 @@ func echoSelf(m model, target, text string) model {
 	b, _ := m.ensureBuffer(target, kind)
 	row := defaultTheme.formatSelfMessage(currentNick(m), text)
 	b.addLine(row)
-	m.logger.Log(b.Title, stripANSI(row))
+	m.logger.Log(bufferScope(b), b.Title, stripANSI(row))
 	if b == m.activeBuffer() {
 		b.refresh()
 	}

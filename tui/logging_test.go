@@ -14,6 +14,7 @@ import (
 func TestTUILogsToDisk(t *testing.T) {
 	dir := t.TempDir()
 	m := newTestModel()
+	m.networks[0].name = "testnet" // a clean scope name for the path assertion
 	m.logger = chatlog.New(dir)
 	defer m.logger.Close()
 
@@ -22,7 +23,8 @@ func TestTUILogsToDisk(t *testing.T) {
 	m = layout(m)
 	m = appendLine(m, m.activeBuffer(), evt(t, ":alice!a@h PRIVMSG #go :hello world"))
 
-	data, err := os.ReadFile(filepath.Join(dir, "#go.log"))
+	// Logs are filed per network: <dir>/<network>/<target>.log.
+	data, err := os.ReadFile(filepath.Join(dir, "testnet", "#go.log"))
 	if err != nil {
 		t.Fatalf("read log: %v", err)
 	}

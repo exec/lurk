@@ -30,34 +30,36 @@ func New(dir string) *Logger {
 	return &Logger{dir: dir, files: make(map[string]*os.File), now: time.Now}
 }
 
-// Log appends one line to target's log file, prefixed with the current date. A
-// nil Logger does nothing. Errors (e.g. a full disk) are swallowed: logging must
-// never disrupt the chat session.
-func (l *Logger) Log(target, line string) {
+// Log appends one line to the log file for target within scope (the network),
+// prefixed with the current date: <dir>/<scope>/<target>.log. A nil Logger does
+// nothing. Errors (e.g. a full disk) are swallowed: logging must never disrupt
+// the chat session.
+func (l *Logger) Log(scope, target, line string) {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	f, err := l.fileLocked(target)
+	f, err := l.fileLocked(scope, target)
 	if err != nil {
 		return
 	}
 	_, _ = fmt.Fprintf(f, "%s %s\n", l.now().Format("2006-01-02"), line)
 }
 
-// fileLocked returns the (cached) file for target, opening it if needed. The
-// caller holds l.mu.
-func (l *Logger) fileLocked(target string) (*os.File, error) {
-	key := safeName(target)
+// fileLocked returns the (cached) file for scope/target, opening it (and its
+// per-scope subdirectory) if needed. The caller holds l.mu.
+func (l *Logger) fileLocked(scope, target string) (*os.File, error) {
+	dir := filepath.Join(l.dir, safeName(scope))
+	key := filepath.Join(dir, safeName(target)+".log")
 	if f, ok := l.files[key]; ok {
 		return f, nil
 	}
-	if err := os.MkdirAll(l.dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(l.dir, key+".log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(key, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
 	}
