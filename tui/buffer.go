@@ -44,6 +44,11 @@ const scrollbackLimit = 2000
 // sidebar/switch logic; the unexported fields are the view layer's rendering
 // state and are only touched from Update (via appendLine/layout/render).
 type Buffer struct {
+	// net is the network this buffer belongs to (its client/event stream). It is
+	// nil only in low-level tests that construct a Buffer directly; the helpers
+	// that read it tolerate nil.
+	net *network
+
 	// Title is the buffer's identity: a channel name ("#go"), a PM peer nick,
 	// or the network/status label for the server buffer. Matching is
 	// case-insensitive (see model.bufferIndex).

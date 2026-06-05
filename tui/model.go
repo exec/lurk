@@ -42,14 +42,15 @@ import (
 // value rather than mutating through a pointer, matching the Elm-architecture
 // value semantics Bubble Tea expects.
 type model struct {
-	// cli is the connected IRC client driving the session. It may be nil in
-	// unit tests that exercise pure rendering/buffer logic.
-	cli *client.Client
+	// networks are the connected servers. Each owns a client + event stream; its
+	// buffers live in the flat buffers slice below, grouped contiguously and
+	// tagged with a back-pointer (Buffer.net). There is always at least one.
+	networks []*network
 
-	// sub is the event stream consumed by the waitForIRC bridge (events.go). It
-	// is client.Events(); a nil channel simply means no events ever arrive,
-	// which is fine for tests.
-	sub <-chan client.Event
+	// cli is the ACTIVE network's client — a convenience kept in sync by switchTo
+	// so command/render code that acts on the focused buffer can use it directly.
+	// It may be nil in unit tests that exercise pure rendering/buffer logic.
+	cli *client.Client
 
 	// buffers is the ordered list of open windows. Index 0 is always the
 	// server/status buffer (created in newModel); channels and PMs follow in
@@ -128,6 +129,10 @@ type model struct {
 	// A nil *chatlog.Logger is a safe no-op, so the logging calls need no guard.
 	logger *chatlog.Logger
 
+	// connect dials and registers an additional saved network by name (provided by
+	// cmd/lurk, which owns the config→client mapping). nil disables /connect.
+	connect ConnectFunc
+
 	// Scrollback search state for the active buffer: the lower-cased term, the
 	// matching line indices (ascending), and the position within them. searchTerm
 	// is "" when no search is active. Ctrl-R cycles to the next (older) match.
@@ -160,10 +165,13 @@ const typingTTL = 6 * time.Second
 // tests; sub is typically cli.Events(). It seeds the always-present server
 // buffer (index 0) and delegates editor/keymap setup to the tui-input helpers.
 func newModel(cli *client.Client, sub <-chan client.Event) model {
+	net := &network{name: serverBufferTitle(cli), cli: cli, sub: sub}
+	sb := newServerBuffer(serverBufferTitle(cli))
+	sb.net = net
 	m := model{
+		networks:   []*network{net},
 		cli:        cli,
-		sub:        sub,
-		buffers:    []*Buffer{newServerBuffer(serverBufferTitle(cli))},
+		buffers:    []*Buffer{sb},
 		active:     0,
 		keys:       defaultKeymap(),
 		help:       help.New(),
@@ -267,21 +275,59 @@ func (m *model) activeBuffer() *Buffer {
 // for the Ergo test server (CASEMAPPING=ascii); a future change can route this
 // through the client's casemapping if needed.
 func (m *model) bufferIndex(name string) int {
+	return m.bufferIndexIn(m.activeNet(), name)
+}
+
+// bufferIndexIn returns the index of the buffer named name within network net,
+// or -1. Scoping by network lets two networks host a channel of the same name.
+func (m *model) bufferIndexIn(net *network, name string) int {
 	for i, b := range m.buffers {
-		if equalFold(b.Title, name) {
+		if b.net == net && equalFold(b.Title, name) {
 			return i
 		}
 	}
 	return -1
 }
 
-// buffer returns the open buffer for name, or nil if none. It is a convenience
-// over bufferIndex for read sites that don't need the index.
+// buffer returns the open buffer for name on the active network, or nil.
 func (m *model) buffer(name string) *Buffer {
 	if i := m.bufferIndex(name); i >= 0 {
 		return m.buffers[i]
 	}
 	return nil
+}
+
+// netBuffer returns net's open buffer for name, or nil.
+func (m *model) netBuffer(net *network, name string) *Buffer {
+	if i := m.bufferIndexIn(net, name); i >= 0 {
+		return m.buffers[i]
+	}
+	return nil
+}
+
+// activeNet returns the network owning the focused buffer.
+func (m *model) activeNet() *network {
+	return m.activeBuffer().net
+}
+
+// serverBuffer returns net's server/status buffer (its first buffer).
+func (m *model) serverBuffer(net *network) *Buffer {
+	for _, b := range m.buffers {
+		if b.net == net && b.Kind == BufferServer {
+			return b
+		}
+	}
+	return m.buffers[0]
+}
+
+// targetBuffer returns where a net-scoped reply (WHOIS, LIST, reconnect notice)
+// should render: the focused buffer when it belongs to net, else net's server
+// buffer — so a reply never lands in an unrelated network's window.
+func (m *model) targetBuffer(net *network) *Buffer {
+	if ab := m.activeBuffer(); ab.net == net {
+		return ab
+	}
+	return m.serverBuffer(net)
 }
 
 // maxAutoBuffers caps how many windows inbound traffic may auto-open. A hostile
@@ -299,12 +345,31 @@ const maxAutoBuffers = 512
 // callers that want to switch to it should call switchTo with the returned
 // index.
 func (m *model) ensureBuffer(name string, kind BufferKind) (*Buffer, int) {
-	if i := m.bufferIndex(name); i >= 0 {
+	return m.ensureBufferIn(m.activeNet(), name, kind)
+}
+
+// ensureBufferIn returns net's buffer for name, creating it if absent. A new
+// buffer is inserted immediately after net's last buffer so each network's
+// buffers stay contiguous in the flat list (and thus grouped in the sidebar).
+// The new buffer is NOT focused.
+func (m *model) ensureBufferIn(net *network, name string, kind BufferKind) (*Buffer, int) {
+	if i := m.bufferIndexIn(net, name); i >= 0 {
 		return m.buffers[i], i
 	}
 	b := newBuffer(name, kind)
-	m.buffers = append(m.buffers, b)
-	return b, len(m.buffers) - 1
+	b.net = net
+
+	at := len(m.buffers)
+	for i := range m.buffers {
+		if m.buffers[i].net == net {
+			at = i + 1
+		}
+	}
+	m.buffers = append(m.buffers[:at], append([]*Buffer{b}, m.buffers[at:]...)...)
+	if at <= m.active {
+		m.active++ // keep focus on the same buffer after the insert
+	}
+	return b, at
 }
 
 // switchTo focuses the buffer at index i if it is in range, clearing that
@@ -324,6 +389,10 @@ func (m *model) switchTo(i int) {
 	b := m.buffers[i]
 	b.Unread = 0
 	b.Highlight = false
+	// Keep the active-client convenience pointing at the focused network.
+	if b.net != nil {
+		m.cli = b.net.cli
+	}
 	// A scrollback search is scoped to the buffer it ran in.
 	m.clearSearch()
 }
@@ -370,6 +439,53 @@ func (m *model) closeBuffer(i int) {
 			m.active = len(m.buffers) - 1
 		}
 	}
+	if b := m.activeBuffer(); b.net != nil {
+		m.cli = b.net.cli
+	}
+}
+
+// addNetwork registers a new connected network and its server buffer (appended
+// at the end), returning the network so the caller can start its event pump.
+func (m *model) addNetwork(name string, cli *client.Client) *network {
+	net := &network{name: name, cli: cli, sub: cli.Events()}
+	sb := newServerBuffer(name)
+	sb.net = net
+	m.networks = append(m.networks, net)
+	m.buffers = append(m.buffers, sb)
+	return net
+}
+
+// removeNetwork drops net and all of its buffers (its connection ended for
+// good), re-homing focus onto a surviving buffer. The caller quits when no
+// networks remain.
+func (m model) removeNetwork(net *network) model {
+	kept := make([]*Buffer, 0, len(m.buffers))
+	for _, b := range m.buffers {
+		if b.net != net {
+			kept = append(kept, b)
+		}
+	}
+	m.buffers = kept
+
+	nets := make([]*network, 0, len(m.networks))
+	for _, n := range m.networks {
+		if n != net {
+			nets = append(nets, n)
+		}
+	}
+	m.networks = nets
+
+	if len(m.buffers) == 0 {
+		m.active = 0
+		return m
+	}
+	if m.active >= len(m.buffers) {
+		m.active = len(m.buffers) - 1
+	}
+	if b := m.buffers[m.active]; b.net != nil {
+		m.cli = b.net.cli
+	}
+	return m
 }
 
 // equalFold reports ASCII-case-insensitive equality of a and b. It avoids

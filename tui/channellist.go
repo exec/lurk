@@ -116,9 +116,9 @@ func (m model) handleChannelListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // routeListReply collects the LIST reply numerics into the modal. When the modal
 // is not driving the request (e.g. a raw LIST), it falls back to rendering the
 // reply in the active buffer so the data is not lost.
-func routeListReply(m model, ev client.Event) model {
+func routeListReply(m model, net *network, ev client.Event) model {
 	if !m.chanListLoading {
-		return appendLine(m, m.activeBuffer(), ev)
+		return appendLine(m, m.targetBuffer(net), ev)
 	}
 	switch ev.Command() {
 	case irc.RPL_LIST:

@@ -52,11 +52,18 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Load the saved-network store: it drives the launcher and the runtime
+	// /connect command. A missing file yields an empty store (not an error).
+	store, storePath, err := loadStore(configPath)
+	if err != nil {
+		log.Fatalf("lurk: %v", err)
+	}
+
 	// With no -server, open the launcher: pick (or create) a saved network and
 	// build the connection config from it. The launcher is a self-contained TUI
 	// that runs to completion before we connect.
 	if cfg.Server == "" {
-		net, defaults, err := resolveNetwork(ctx, configPath)
+		net, defaults, err := resolveNetwork(ctx, store, storePath)
 		if err != nil {
 			log.Fatalf("lurk: %v", err)
 		}
@@ -84,14 +91,14 @@ func main() {
 		runPlain(ctx, cancel, regCtx, c, channel)
 		return
 	}
-	runTUI(ctx, regCtx, c, channel, logDir)
+	runTUI(ctx, regCtx, c, channel, logDir, makeConnectFunc(ctx, store))
 }
 
 // runTUI connects the client and hands control to the Bubble Tea interface. The
 // TUI consumes the client's event stream (no print handlers are registered);
 // tui.Run owns the program lifecycle and returns when the user quits or the
 // connection ends, after which we tear the client down cleanly.
-func runTUI(ctx, regCtx context.Context, c *client.Client, channel, logDir string) {
+func runTUI(ctx, regCtx context.Context, c *client.Client, channel, logDir string, connect tui.ConnectFunc) {
 	if err := c.Connect(regCtx); err != nil {
 		log.Fatalf("lurk: connect: %v", err)
 	}
@@ -103,7 +110,7 @@ func runTUI(ctx, regCtx context.Context, c *client.Client, channel, logDir strin
 		}
 	}
 
-	err := tui.Run(ctx, c, logDir)
+	err := tui.Run(ctx, c, logDir, connect)
 
 	// tui.Run has restored the primary screen by now; tear down the connection.
 	_ = c.Quit("lurk signing off")
@@ -454,22 +461,7 @@ func networkToConfig(n config.Network, def config.Identity) (client.Config, []st
 // to: a positional `lurk <name>` argument connects directly to the saved network
 // of that name, otherwise the interactive launcher runs. A nil network with no
 // error means the user quit the launcher without choosing.
-func resolveNetwork(ctx context.Context, configPath string) (*config.Network, config.Identity, error) {
-	var (
-		store *config.File
-		path  string
-		err   error
-	)
-	if configPath != "" {
-		path = configPath
-		store, err = config.LoadFrom(configPath)
-	} else {
-		store, path, err = config.Load()
-	}
-	if err != nil {
-		return nil, config.Identity{}, err
-	}
-
+func resolveNetwork(ctx context.Context, store *config.File, path string) (*config.Network, config.Identity, error) {
 	if args := flag.Args(); len(args) > 0 {
 		name := args[0]
 		n, ok := store.Get(name)
@@ -484,6 +476,41 @@ func resolveNetwork(ctx context.Context, configPath string) (*config.Network, co
 		return nil, config.Identity{}, err
 	}
 	return net, store.Defaults, nil
+}
+
+// loadStore loads the saved-network store from configPath (or the default
+// location), returning it plus the resolved path.
+func loadStore(configPath string) (*config.File, string, error) {
+	if configPath != "" {
+		s, err := config.LoadFrom(configPath)
+		return s, configPath, err
+	}
+	return config.Load()
+}
+
+// makeConnectFunc returns the callback the TUI's /connect command uses to dial an
+// additional saved network at runtime. It resolves the name against store, dials
+// (with a fresh registration timeout derived from ctx), and requests autojoins.
+func makeConnectFunc(ctx context.Context, store *config.File) tui.ConnectFunc {
+	return func(name string) (*client.Client, error) {
+		n, ok := store.Get(name)
+		if !ok {
+			return nil, fmt.Errorf("no saved network named %q", name)
+		}
+		cfg, channels := networkToConfig(n, store.Defaults)
+		c := client.New(cfg)
+		rc, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := c.Connect(rc); err != nil {
+			return nil, err
+		}
+		for _, ch := range channels {
+			if ch != "" {
+				_ = c.Join(ch)
+			}
+		}
+		return c, nil
+	}
 }
 
 // registerHandlers wires the printing handlers used by the smoke test.

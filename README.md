@@ -76,9 +76,14 @@ WezTerm, Alacritty); Terminal.app can't send `Shift-↑/↓`, and macOS reserves
 Slash commands: `/join /part /msg /query /nick /me /away /whois /whowas /list
 /topic /names /mode /op /deop /voice /devoice /kick /ban /unban /invite /notice
 /ctcp /motd /ignore /unignore /highlight /unhighlight /search /clear /close /raw
-/help /quit` — type `/help` in-app for the keys and command list, or
-`/help <command>` for usage. Alt+1…9 jump to a buffer by position; Alt+A jumps to
-the next active buffer; `/search <text>` finds scrollback (Ctrl-R cycles matches).
+/connect /disconnect /help /quit` — type `/help` in-app for the keys and command
+list, or `/help <command>` for usage. Alt+1…9 jump to a buffer by position;
+Alt+A jumps to the next active buffer; `/search <text>` finds scrollback (Ctrl-R
+cycles matches).
+
+Lurk connects to **multiple networks at once**: `/connect <name>` dials another
+saved network and folds it into a unified sidebar grouped by network;
+`/disconnect` drops the current one.
 
 Lurk auto-reconnects (with backoff) after an unexpected disconnect and re-joins
 your channels; a mention in a buffer you're not watching rings the terminal bell;

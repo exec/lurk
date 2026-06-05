@@ -228,8 +228,18 @@ func emptyHint(b *Buffer) string {
 // buffer list (reference/senpai/ui/buffers.go DrawVerticalBufferList).
 func renderSidebar(m model, w, h int) string {
 	t := defaultTheme
+	multi := len(m.networks) > 1
+
 	var rows []string
+	activeRow := 0
+	var lastNet *network
 	for i, b := range m.buffers {
+		// With more than one network, group buffers under a bold network header.
+		if multi && b.net != lastNet {
+			rows = append(rows, t.nicklistTtl.Width(w).Render(truncate(b.net.label(), w)))
+			lastNet = b.net
+		}
+
 		marker := " "
 		st := t.sidebarItem
 		switch {
@@ -241,23 +251,29 @@ func renderSidebar(m model, w, h int) string {
 			st = t.sidebarUnread
 		}
 		label := b.Title
-		if b.Kind == BufferServer && label == "" {
-			label = "(server)"
+		if b.Kind == BufferServer {
+			label = "(server)" // the header already names the network
 		}
 		// Show the unread count on an inactive buffer with pending activity, so a
 		// busy session can be triaged at a glance.
 		if i != m.active && b.Unread > 0 {
 			label = fmt.Sprintf("%s (%d)", label, b.Unread)
 		}
-		line := fmt.Sprintf("%s %s", marker, label)
+		indent := ""
+		if multi {
+			indent = " " // nest buffers under their network header
+		}
+		line := fmt.Sprintf("%s%s %s", indent, marker, label)
 		if i == m.active {
 			st = t.sidebarActive
+			activeRow = len(rows)
 		}
 		rows = append(rows, st.Width(w).Render(truncate(line, w)))
 	}
-	// Window the list around the active buffer so it never scrolls off-screen
-	// when there are more buffers than rows (the same clipping the nicklist had).
-	start := nicklistStart(m.active, len(rows), h, true)
+
+	// Window the display rows around the active buffer's row so it never scrolls
+	// off-screen when there are more rows than fit (the nicklist's clipping fix).
+	start := nicklistStart(activeRow, len(rows), h, true)
 	rows = rows[start:min(start+h, len(rows))]
 	body := strings.Join(rows, "\n")
 	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(body)
@@ -499,10 +515,9 @@ var prefixOrder = []rune{'~', '&', '@', '%', '+'}
 // inbound event; the view layer owns all formatting (see the message to
 // tui-core agreeing the raw-Event signature).
 func appendLine(m model, b *Buffer, ev client.Event) model {
-	self := ""
-	if m.cli != nil {
-		self = m.cli.Nick()
-	}
+	// Self is the nick of the buffer's OWN network, so highlight/own-message
+	// detection is correct even for an event on a background network.
+	self := b.net.nick()
 	// Mark the start of a chathistory backlog with a one-time divider so the user
 	// can tell replayed history from live traffic.
 	if ev.BatchType() == "chathistory" {

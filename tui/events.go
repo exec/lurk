@@ -29,32 +29,34 @@ func bellCmd() tea.Cmd {
 // MUST re-issue waitForIRC or the subscription dies (see docs/TUI-RESEARCH.md
 // §2).
 
-// ircMsg wraps a single inbound client.Event for delivery into Update. It is a
-// distinct type (not a bare client.Event) so the Update type switch can match
-// it unambiguously alongside Bubble Tea's own message types.
+// ircMsg wraps a single inbound client.Event with the network it arrived on, for
+// delivery into Update. It is a distinct type (not a bare client.Event) so the
+// Update type switch can match it unambiguously alongside Bubble Tea's own types.
 type ircMsg struct {
-	ev client.Event
+	net *network
+	ev  client.Event
 }
 
-// ircClosedMsg is delivered once when the event stream closes, which happens
-// when the client's connection ends. Update treats it as a disconnect and
-// quits the program (the line client's behavior, surfaced in the TUI).
-type ircClosedMsg struct{}
+// ircClosedMsg is delivered once a network's event stream closes (its connection
+// ended for good). Update drops that network; when none remain, it quits.
+type ircClosedMsg struct {
+	net *network
+}
 
-// waitForIRC returns a Cmd that blocks on the next event from sub and delivers
-// it as an ircMsg. Bubble Tea runs Cmds on their own goroutines, so the block
-// is safe and does not stall the update loop. When sub is closed (connection
-// ended) it delivers a single ircClosedMsg.
+// waitForIRC returns a Cmd that blocks on the next event from net's stream and
+// delivers it as an ircMsg tagged with net. Bubble Tea runs Cmds on their own
+// goroutines, so the block is safe and does not stall the update loop. When the
+// stream is closed it delivers a single ircClosedMsg.
 //
-// A nil channel blocks forever, which is the correct no-op for tests that build
-// a model without a live client: no events arrive and the Cmd never returns.
-func waitForIRC(sub <-chan client.Event) tea.Cmd {
+// A nil channel blocks forever, the correct no-op for tests that build a model
+// without a live client: no events arrive and the Cmd never returns.
+func waitForIRC(net *network) tea.Cmd {
 	return func() tea.Msg {
-		ev, ok := <-sub
+		ev, ok := <-net.sub
 		if !ok {
-			return ircClosedMsg{}
+			return ircClosedMsg{net: net}
 		}
-		return ircMsg{ev: ev}
+		return ircMsg{net: net, ev: ev}
 	}
 }
 
@@ -72,22 +74,31 @@ func waitForIRC(sub <-chan client.Event) tea.Cmd {
 //     buffer when one is identifiable, else to the server buffer.
 //   - Anything we can't place lands in the server buffer (index 0).
 func routeEvent(m model, ev client.Event) model {
+	return routeEventOn(m, m.activeNet(), ev)
+}
+
+// routeEventOn applies an event that arrived on a specific network, routing into
+// that network's buffers and resolving self/nick state through its client. A nil
+// net falls back to the active network (the path tests using routeEvent take).
+func routeEventOn(m model, net *network, ev client.Event) model {
+	if net == nil {
+		net = m.activeNet()
+	}
 	// A synthetic overflow marker (the client dropped events under backpressure)
 	// carries a nil Message and a non-zero Dropped count. Surface the gap in the
-	// server buffer rather than dereferencing the nil Message below.
+	// network's server buffer rather than dereferencing the nil Message below.
 	if ev.Dropped > 0 || ev.Message == nil {
-		return appendInfo(m, m.buffers[0],
-			pluralEvents(ev.Dropped))
+		return appendInfo(m, m.serverBuffer(net), pluralEvents(ev.Dropped))
 	}
 	switch ev.Command() {
 	case client.EventReconnecting, client.EventReconnected:
 		// Connection-status notices from the reconnect supervisor: show them where
-		// the user is looking so a drop/recovery is visible.
-		return appendInfo(m, m.activeBuffer(), ev.Text())
+		// the user is looking (when on this network), else its server buffer.
+		return appendInfo(m, m.targetBuffer(net), ev.Text())
 	case irc.PRIVMSG, irc.NOTICE:
-		return routeText(m, ev)
+		return routeText(m, net, ev)
 	case irc.JOIN, irc.PART, irc.QUIT, irc.NICK, irc.MODE, irc.TOPIC, irc.KICK:
-		return routeMembership(m, ev)
+		return routeMembership(m, net, ev)
 	case irc.ACCOUNT, irc.AWAY, irc.CHGHOST, irc.SETNAME:
 		// Pure metadata notifications: the client has already folded these into
 		// member state (account/away/host), and the nicklist reflects them live.
@@ -103,11 +114,11 @@ func routeEvent(m model, ev client.Event) model {
 	case irc.TAGMSG:
 		// Client-tag-only messages (e.g. +typing): no body to render. Typing state
 		// is tracked separately and surfaced in the status bar.
-		return routeTagmsg(m, ev)
+		return routeTagmsg(m, net, ev)
 	case irc.FAIL, irc.WARN, irc.NOTE:
-		// Standard replies render where the user is looking (the command that
-		// triggered them was issued from the active buffer).
-		b := m.activeBuffer()
+		// Standard replies render where the user is looking (when on this network),
+		// else the network's server buffer.
+		b := m.targetBuffer(net)
 		b.addLine(defaultTheme.formatStandardReply(ev))
 		b.refresh()
 		return m
@@ -117,21 +128,21 @@ func routeEvent(m model, ev client.Event) model {
 		irc.RPL_WHOISSECURE:
 		// WHOIS replies render in the buffer the user is looking at (the menu /
 		// command was triggered there), not the distant server buffer.
-		return appendLine(m, m.activeBuffer(), ev)
+		return appendLine(m, m.targetBuffer(net), ev)
 	case irc.RPL_LISTSTART, irc.RPL_LIST, irc.RPL_LISTEND:
 		// LIST replies feed the channel-directory modal (channellist.go); when the
 		// modal is not driving the request they fall back to the active buffer.
-		return routeListReply(m, ev)
+		return routeListReply(m, net, ev)
 	default:
-		// Registration burst, MOTD, numerics, errors: server buffer.
-		return appendLine(m, m.buffers[0], ev)
+		// Registration burst, MOTD, numerics, errors: the network's server buffer.
+		return appendLine(m, m.serverBuffer(net), ev)
 	}
 }
 
 // routeText places a PRIVMSG/NOTICE in the right buffer (channel or PM),
 // opening a PM buffer on demand, and marks unread/highlight activity on
 // non-active buffers.
-func routeText(m model, ev client.Event) model {
+func routeText(m model, net *network, ev client.Event) model {
 	// Drop messages from an ignored sender entirely (their own echo aside).
 	if m.isIgnored(ev.Nick()) {
 		return m
@@ -139,9 +150,9 @@ func routeText(m model, ev client.Event) model {
 	target := ev.Param(0)
 	self := ""
 	statusMsg := ""
-	if m.cli != nil {
-		self = m.cli.Nick()
-		statusMsg = m.cli.StatusMsg()
+	if net != nil && net.cli != nil {
+		self = net.cli.Nick()
+		statusMsg = net.cli.StatusMsg()
 	}
 	// A STATUSMSG target ("@#chan", "+#chan") addresses a subset of a channel's
 	// members; route it to the channel's own buffer, not a phantom "@#chan" window.
@@ -163,12 +174,12 @@ func routeText(m model, ev client.Event) model {
 	// already-open buffer is always reused; a new one is created only while under
 	// the maxAutoBuffers ceiling, past which the message lands in the server
 	// buffer rather than growing the list without bound.
-	b := m.buffer(name)
+	b := m.netBuffer(net, name)
 	if b == nil {
 		if len(m.buffers) < maxAutoBuffers {
-			b, _ = m.ensureBuffer(name, kind)
+			b, _ = m.ensureBufferIn(net, name, kind)
 		} else {
-			b = m.buffers[0]
+			b = m.serverBuffer(net)
 		}
 	}
 
@@ -204,15 +215,12 @@ func stripStatusPrefix(target, statusMsg string) string {
 // typing state. "active" (or "paused") marks the sender typing in the relevant
 // buffer; "done" clears it. TAGMSGs without a +typing tag are ignored (there is
 // nothing to display).
-func routeTagmsg(m model, ev client.Event) model {
+func routeTagmsg(m model, net *network, ev client.Event) model {
 	state := ev.Message.Tags.Get("+typing")
 	if state == "" {
 		return m
 	}
-	self := ""
-	if m.cli != nil {
-		self = m.cli.Nick()
-	}
+	self := net.nick()
 	// Never show our own typing: with echo-message the server reflects our
 	// +typing TAGMSGs back to us, and we don't indicate to ourselves that we're
 	// typing.
@@ -240,7 +248,7 @@ func typingBufferKey(target, sender, self string) string {
 // routeMembership routes JOIN/PART/QUIT/NICK/TOPIC/etc. to a channel buffer
 // when one is identifiable, else the server buffer. State (membership) is
 // already tracked by the client; here we only render the notice.
-func routeMembership(m model, ev client.Event) model {
+func routeMembership(m model, net *network, ev client.Event) model {
 	// QUIT and NICK name no channel of their own. The client attaches the
 	// channels the subject was in (captured before the membership change) so the
 	// notice lands in each of those channel buffers — not the distant server
@@ -248,7 +256,7 @@ func routeMembership(m model, ev client.Event) model {
 	if chans := ev.Channels(); len(chans) > 0 {
 		shown := false
 		for _, ch := range chans {
-			if b := m.buffer(ch); b != nil {
+			if b := m.netBuffer(net, ch); b != nil {
 				m = appendLine(m, b, ev)
 				shown = true
 			}
@@ -257,16 +265,16 @@ func routeMembership(m model, ev client.Event) model {
 			return m
 		}
 		// No buffer open for any shared channel: fall back to the server buffer.
-		return appendLine(m, m.buffers[0], ev)
+		return appendLine(m, m.serverBuffer(net), ev)
 	}
 
 	target := ev.Param(0)
 	if isChannel(target) {
-		if b := m.buffer(target); b != nil {
+		if b := m.netBuffer(net, target); b != nil {
 			return appendLine(m, b, ev)
 		}
 	}
-	return appendLine(m, m.buffers[0], ev)
+	return appendLine(m, m.serverBuffer(net), ev)
 }
 
 // pluralEvents formats the dropped-events overflow notice.

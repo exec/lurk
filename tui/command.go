@@ -244,6 +244,18 @@ func init() {
 			desc:   "search scrollback (Ctrl-R cycles matches; no arg clears)",
 			handle: cmdSearch,
 		},
+		"CONNECT": {
+			minArgs: 1, maxArgs: 1,
+			usage:  "<network>",
+			desc:   "connect to another saved network (added to the sidebar)",
+			handle: cmdConnect,
+		},
+		"DISCONNECT": {
+			minArgs: 0, maxArgs: argsUnlimited,
+			usage:  "[reason]",
+			desc:   "disconnect the current network",
+			handle: cmdDisconnect,
+		},
 		"IGNORE": {
 			minArgs: 0, maxArgs: 1,
 			usage:  "[nick]",
@@ -698,6 +710,28 @@ func sortedSetKeys(set map[string]bool) []string {
 // persist the model's search state. The trailing text is the term ("" clears).
 func cmdSearch(m model, args []string, rest string) (action, tea.Cmd) {
 	return action{kind: actionSearch, text: rest}, nil
+}
+
+// cmdConnect dials another saved network in the background (the connect happens
+// off the Update loop; success folds the network into the sidebar).
+func cmdConnect(m model, args []string, rest string) (action, tea.Cmd) {
+	if m.connect == nil {
+		return infoAction("connecting more networks isn't available in this session"), nil
+	}
+	name := args[0]
+	return infoAction("connecting to " + name + "…"), connectCmd(m.connect, name)
+}
+
+// cmdDisconnect quits the active network. With more than one network connected
+// its buffers are removed; the last network's disconnect ends the program.
+func cmdDisconnect(m model, args []string, rest string) (action, tea.Cmd) {
+	net := m.activeNet()
+	if net == nil || net.cli == nil {
+		return infoAction("no active connection"), nil
+	}
+	_ = net.cli.Quit(rest)
+	_ = net.cli.Close()
+	return infoAction("disconnecting " + net.label() + "…"), nil
 }
 
 // cmdClear empties the active buffer's scrollback (a local view action; no

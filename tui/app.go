@@ -21,8 +21,9 @@ import (
 // The caller is responsible for dialing and registering the client (Connect)
 // before calling Run; Run drives the client's Run loop implicitly by consuming
 // its event stream.
-func Run(ctx context.Context, cli *client.Client, logDir string) error {
+func Run(ctx context.Context, cli *client.Client, logDir string, connect ConnectFunc) error {
 	m := newModel(cli, cli.Events())
+	m.connect = connect
 	if logDir != "" {
 		m.logger = chatlog.New(logDir)
 		defer m.logger.Close()
@@ -39,13 +40,17 @@ func Run(ctx context.Context, cli *client.Client, logDir string) error {
 // in-flight waitForIRC Cmd is the heartbeat of the IRC->UI bridge; it is
 // re-issued after every ircMsg in Update.
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
-		waitForIRC(m.sub),
+	cmds := []tea.Cmd{
 		textinput.Blink,
 		// Ask the terminal for its background color so the theme can match a light
 		// or dark terminal (answered via tea.BackgroundColorMsg in Update).
 		tea.RequestBackgroundColor,
-	)
+	}
+	// One event pump per connected network.
+	for _, n := range m.networks {
+		cmds = append(cmds, waitForIRC(n))
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update handles one message and returns the next model and command. tui-core
@@ -61,16 +66,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case ircMsg:
-		// Apply the event to model state (view layer owns the buffer mutation),
-		// then immediately re-subscribe to keep the stream alive. A highlight in an
-		// unfocused buffer also rings the terminal bell.
-		m = routeEvent(m, msg.ev)
-		cmds := []tea.Cmd{waitForIRC(m.sub)}
+		// Apply the event to its network's buffers, then re-subscribe to that
+		// network's stream to keep it alive. A highlight in an unfocused buffer
+		// also rings the terminal bell.
+		m = routeEventOn(m, msg.net, msg.ev)
+		cmds := []tea.Cmd{waitForIRC(msg.net)}
 		if m.bell {
 			cmds = append(cmds, bellCmd())
 			m.bell = false
 		}
 		return m, tea.Batch(cmds...)
+
+	case connectedMsg:
+		// A /connect dial succeeded: fold the new network in and start its pump.
+		return m.addConnected(msg.name, msg.cli)
+
+	case connectErrMsg:
+		m = appendInfo(m, m.activeBuffer(), fmt.Sprintf("connect %s failed: %v", msg.name, msg.err))
+		return m, nil
 
 	case tea.BackgroundColorMsg:
 		// The terminal answered our background-color query: match the theme to a
@@ -79,9 +92,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ircClosedMsg:
-		// The connection ended; mirror the line client and exit.
-		m.quitting = true
-		return m, tea.Quit
+		// One network's connection ended for good: drop it. Quit only when no
+		// networks remain.
+		m = m.removeNetwork(msg.net)
+		if len(m.networks) == 0 {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		return m, nil
 
 	default:
 		// While the channel-list modal is open it owns ancillary messages (its
