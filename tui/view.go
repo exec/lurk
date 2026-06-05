@@ -508,7 +508,7 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 	if ev.BatchType() == "chathistory" {
 		b.markHistory(defaultTheme)
 	}
-	row, highlight := defaultTheme.formatLine(ev, self)
+	row, highlight := defaultTheme.formatLine(ev, self, m.highlights)
 	b.addLine(row)
 
 	active := b == m.activeBuffer()

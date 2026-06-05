@@ -103,6 +103,11 @@ type Config struct {
 	// query. Defaults to "lurk" when empty.
 	Version string
 
+	// Highlights are extra words (besides the nick) that, when they appear in a
+	// message, a front-end should treat as a highlight/mention. The client only
+	// carries them so the UI can read them back via Highlights().
+	Highlights []string
+
 	// AutoReconnect, when true, makes a connection established via Connect
 	// transparently re-dial and re-register (with backoff) after an unexpected
 	// disconnect, re-joining the channels it was in. A user-initiated Quit/Close

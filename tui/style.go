@@ -317,7 +317,7 @@ func (t theme) styledNick(nick string, self bool) string {
 // Formatting is per-command: PRIVMSG/NOTICE render a "<nick> body" head+body;
 // CTCP ACTION renders as "* nick body"; JOIN/PART/QUIT/NICK/MODE/TOPIC render as
 // dim meta lines; numerics and anything else fall back to the trailing text.
-func (t theme) formatLine(ev client.Event, self string) (text string, highlight bool) {
+func (t theme) formatLine(ev client.Event, self string, highlights map[string]bool) (text string, highlight bool) {
 	ts := t.timestamp.Render(ev.Time().Local().Format("15:04"))
 	// Every server-derived field below is sanitized before it is rendered: the
 	// values are attacker-controlled and the wire parser only strips NUL/CR/LF,
@@ -335,18 +335,18 @@ func (t theme) formatLine(ev client.Event, self string) (text string, highlight 
 		if action, ok := ctcpAction(ev.Text()); ok {
 			action = sanitize(action)
 			line := fmt.Sprintf("%s %s %s", ts, t.action.Render("*"), t.action.Render(nick+" "+action))
-			return t.applyHighlight(line, action, self, isSelf)
+			return t.applyHighlight(line, action, self, isSelf, highlights)
 		}
 		body := sanitize(ev.Text())
 		head := t.styledNick(nick, isSelf)
 		line := fmt.Sprintf("%s %s %s", ts, head, t.text.Render(body))
-		return t.applyHighlight(line, body, self, isSelf)
+		return t.applyHighlight(line, body, self, isSelf, highlights)
 
 	case "NOTICE":
 		body := sanitize(ev.Text())
 		head := lipgloss.NewStyle().Foreground(t.nickColor(nick, isSelf)).Render("-" + nick + "-")
 		line := fmt.Sprintf("%s %s %s", ts, head, t.notice.Render(body))
-		return t.applyHighlight(line, body, self, isSelf)
+		return t.applyHighlight(line, body, self, isSelf, highlights)
 
 	case "JOIN":
 		return fmt.Sprintf("%s %s", ts, t.dim.Render(symJoin+" "+nick+" joined "+sanitize(ev.Param(0)))), false
@@ -505,8 +505,20 @@ func idleSummary(secs, signon string) string {
 // applyHighlight checks whether body mentions self and, if so, re-renders the
 // whole line over the highlight background and reports the highlight. A nil/own
 // message never highlights (you don't get pinged by yourself).
-func (t theme) applyHighlight(line, body, self string, isSelf bool) (string, bool) {
-	if isSelf || self == "" || !mentions(body, self) {
+func (t theme) applyHighlight(line, body, self string, isSelf bool, highlights map[string]bool) (string, bool) {
+	if isSelf {
+		return line, false // you don't get pinged by yourself
+	}
+	hit := self != "" && mentions(body, self)
+	if !hit {
+		for w := range highlights {
+			if mentions(body, w) {
+				hit = true
+				break
+			}
+		}
+	}
+	if !hit {
 		return line, false
 	}
 	// Re-render the visible content (stripped of existing ANSI) over the

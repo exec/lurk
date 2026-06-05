@@ -85,7 +85,7 @@ func TestFormatLineNeutralizesEscapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	line, _ := tm.formatLine(client.Event{Message: m}, "me")
+	line, _ := tm.formatLine(client.Event{Message: m}, "me", nil)
 
 	// The styled line legitimately contains the renderer's own ESC-based SGR
 	// codes; stripping those (which only wrap our own styling) must leave no ESC

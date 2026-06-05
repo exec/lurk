@@ -21,6 +21,7 @@
 package tui
 
 import (
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -115,6 +116,13 @@ type model struct {
 	// request a bell without reaching for I/O.
 	bell bool
 
+	// highlights are extra mention words (besides the nick), and ignored are the
+	// nicks whose messages are suppressed. Both are keyed by ASCII-folded form and
+	// are reference-type maps, so the slash-command handlers (which receive the
+	// model by value) can mutate them in place. Seeded from the client config.
+	highlights map[string]bool
+	ignored    map[string]bool
+
 	// chanList is the channel-directory modal shown by /list: a filterable,
 	// scrollable list drawn as a centered overlay (channellist.go). chanListOpen
 	// gates the overlay and its key capture; chanListLoading is true between the
@@ -141,16 +149,31 @@ const typingTTL = 6 * time.Second
 // buffer (index 0) and delegates editor/keymap setup to the tui-input helpers.
 func newModel(cli *client.Client, sub <-chan client.Event) model {
 	m := model{
-		cli:     cli,
-		sub:     sub,
-		buffers: []*Buffer{newServerBuffer(serverBufferTitle(cli))},
-		active:  0,
-		keys:    defaultKeymap(),
-		help:    help.New(),
-		input:   newInput(),
-		typing:  make(map[string][]typingEntry),
+		cli:        cli,
+		sub:        sub,
+		buffers:    []*Buffer{newServerBuffer(serverBufferTitle(cli))},
+		active:     0,
+		keys:       defaultKeymap(),
+		help:       help.New(),
+		input:      newInput(),
+		typing:     make(map[string][]typingEntry),
+		highlights: make(map[string]bool),
+		ignored:    make(map[string]bool),
+	}
+	// Seed extra highlight words from the client config.
+	if cli != nil {
+		for _, w := range cli.Highlights() {
+			if w = strings.TrimSpace(w); w != "" {
+				m.highlights[asciiLower(w)] = true
+			}
+		}
 	}
 	return m
+}
+
+// isIgnored reports whether messages from nick are suppressed.
+func (m *model) isIgnored(nick string) bool {
+	return m.ignored[asciiLower(nick)]
 }
 
 // noteTyping records that nick is composing in the buffer keyed by key,

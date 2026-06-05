@@ -42,7 +42,8 @@ type Network struct {
 	Realname          string   `json:"realname,omitempty"`
 	Pass              string   `json:"pass,omitempty"` // server PASS
 	SASL              SASL     `json:"sasl,omitempty"`
-	Channels          []string `json:"channels,omitempty"` // autojoin
+	Channels          []string `json:"channels,omitempty"`   // autojoin
+	Highlights        []string `json:"highlights,omitempty"` // extra mention words
 }
 
 // Identity holds default nick/user/realname used to prefill a new network form

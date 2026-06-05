@@ -238,6 +238,30 @@ func init() {
 			desc:   "clear the current buffer's scrollback",
 			handle: cmdClear,
 		},
+		"IGNORE": {
+			minArgs: 0, maxArgs: 1,
+			usage:  "[nick]",
+			desc:   "hide messages from a nick (no arg lists ignores)",
+			handle: cmdIgnore,
+		},
+		"UNIGNORE": {
+			minArgs: 1, maxArgs: 1,
+			usage:  "<nick>",
+			desc:   "stop ignoring a nick",
+			handle: cmdUnignore,
+		},
+		"HIGHLIGHT": {
+			minArgs: 0, maxArgs: 1,
+			usage:  "[word]",
+			desc:   "add an extra mention word (no arg lists them)",
+			handle: cmdHighlight,
+		},
+		"UNHIGHLIGHT": {
+			minArgs: 1, maxArgs: 1,
+			usage:  "<word>",
+			desc:   "remove an extra mention word",
+			handle: cmdUnhighlight,
+		},
 		"AWAY": {
 			minArgs: 0, maxArgs: argsUnlimited,
 			usage:  "[reason]",
@@ -614,6 +638,54 @@ func cmdCTCP(m model, args []string, rest string) (action, tea.Cmd) {
 		_ = m.cli.Privmsg(args[0], "\x01"+payload+"\x01")
 	}
 	return action{kind: actionNone}, nil
+}
+
+// cmdIgnore hides messages from a nick. With no argument it lists the current
+// ignores. The ignore set is session-only (a reference-type map shared with the
+// model, so this mutation sticks).
+func cmdIgnore(m model, args []string, rest string) (action, tea.Cmd) {
+	if len(args) == 0 {
+		if len(m.ignored) == 0 {
+			return infoAction("not ignoring anyone"), nil
+		}
+		return infoAction("ignoring: " + strings.Join(sortedSetKeys(m.ignored), " ")), nil
+	}
+	m.ignored[asciiLower(args[0])] = true
+	return infoAction("ignoring " + args[0]), nil
+}
+
+// cmdUnignore stops ignoring a nick.
+func cmdUnignore(m model, args []string, rest string) (action, tea.Cmd) {
+	delete(m.ignored, asciiLower(args[0]))
+	return infoAction("no longer ignoring " + args[0]), nil
+}
+
+// cmdHighlight adds an extra mention word. With no argument it lists the words.
+func cmdHighlight(m model, args []string, rest string) (action, tea.Cmd) {
+	if len(args) == 0 {
+		if len(m.highlights) == 0 {
+			return infoAction("no extra highlight words"), nil
+		}
+		return infoAction("highlight words: " + strings.Join(sortedSetKeys(m.highlights), " ")), nil
+	}
+	m.highlights[asciiLower(args[0])] = true
+	return infoAction("highlighting " + args[0]), nil
+}
+
+// cmdUnhighlight removes an extra mention word.
+func cmdUnhighlight(m model, args []string, rest string) (action, tea.Cmd) {
+	delete(m.highlights, asciiLower(args[0]))
+	return infoAction("no longer highlighting " + args[0]), nil
+}
+
+// sortedSetKeys returns the keys of a set map, sorted, for stable listing output.
+func sortedSetKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // cmdClear empties the active buffer's scrollback (a local view action; no

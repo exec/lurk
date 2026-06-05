@@ -430,6 +430,7 @@ func networkToConfig(n config.Network, def config.Identity) (client.Config, []st
 		AllowInsecureAuth:  n.AllowInsecureAuth,
 		AutoReconnect:      true,
 		Version:            "lurk " + version,
+		Highlights:         n.Highlights,
 		SASL: client.SASLConfig{
 			Mechanism: strings.ToUpper(n.SASL.Mechanism),
 			Username:  n.SASL.Username,

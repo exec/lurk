@@ -132,6 +132,10 @@ func routeEvent(m model, ev client.Event) model {
 // opening a PM buffer on demand, and marks unread/highlight activity on
 // non-active buffers.
 func routeText(m model, ev client.Event) model {
+	// Drop messages from an ignored sender entirely (their own echo aside).
+	if m.isIgnored(ev.Nick()) {
+		return m
+	}
 	target := ev.Param(0)
 	self := ""
 	statusMsg := ""

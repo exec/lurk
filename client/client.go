@@ -137,6 +137,11 @@ func (c *Client) Members(channel string) []Member {
 	return out
 }
 
+// Highlights returns a copy of the configured extra highlight words.
+func (c *Client) Highlights() []string {
+	return append([]string(nil), c.cfg.Highlights...)
+}
+
 // CommonChannels returns the channels the client currently shares with nick —
 // channels we are in where nick is a member — sorted. It is most useful read
 // just before a QUIT/NICK removes or renames the member everywhere, to fan the
