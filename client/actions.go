@@ -3,6 +3,7 @@ package client
 import (
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"lurk/irc"
 )
@@ -65,22 +66,69 @@ func (c *Client) List(args ...string) error {
 	return c.write(irc.LIST, strings.Join(args, ","))
 }
 
-// Privmsg sends a PRIVMSG to target (a channel or nick).
+// maxMessageBytes is the conservative byte budget for a single PRIVMSG/NOTICE
+// text parameter. The 512-byte wire line must also hold our (server-assigned)
+// "<nick>!<user>@<host> PRIVMSG <target> :" prefix and CRLF, whose length we do
+// not know exactly, so the limit leaves generous headroom.
+const maxMessageBytes = 400
+
+// Privmsg sends text to target (a channel or nick) as a PRIVMSG, splitting a
+// message longer than a single wire line into multiple PRIVMSGs (on word
+// boundaries where possible) so it is delivered in full rather than truncated.
 func (c *Client) Privmsg(target, text string) error {
-	return c.write(irc.PRIVMSG, target, text)
+	for _, chunk := range splitMessage(text, maxMessageBytes) {
+		if err := c.write(irc.PRIVMSG, target, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// Notice sends a NOTICE to target.
+// Notice sends a NOTICE to target, split the same way as Privmsg.
 func (c *Client) Notice(target, text string) error {
-	return c.write(irc.NOTICE, target, text)
+	for _, chunk := range splitMessage(text, maxMessageBytes) {
+		if err := c.write(irc.NOTICE, target, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Action sends a CTCP ACTION to target (a channel or nick) — the "/me" form,
 // conventionally rendered as "* nick <text>". It wraps text in the CTCP framing
-// (\x01ACTION …\x01) and sends it as a PRIVMSG, so it travels like any other
-// message (and is echoed back under echo-message).
+// (\x01ACTION …\x01) and sends it as a PRIVMSG. It does NOT go through the
+// splitting Privmsg, since the \x01 framing must stay intact in a single line.
 func (c *Client) Action(target, text string) error {
-	return c.Privmsg(target, "\x01ACTION "+text+"\x01")
+	return c.write(irc.PRIVMSG, target, "\x01ACTION "+text+"\x01")
+}
+
+// splitMessage breaks s into pieces each at most max bytes, preferring to cut at
+// a space and never splitting a UTF-8 rune. A message already within the limit
+// is returned as a single piece (including the empty string).
+func splitMessage(s string, max int) []string {
+	if len(s) <= max {
+		return []string{s}
+	}
+	var out []string
+	for len(s) > max {
+		cut := max
+		if i := strings.LastIndexByte(s[:max], ' '); i > 0 {
+			cut = i // break at the last space within the budget
+		} else {
+			for cut > 0 && !utf8.RuneStart(s[cut]) {
+				cut-- // back up to a rune boundary on a word with no spaces
+			}
+			if cut == 0 {
+				cut = max // pathological (single huge rune run): hard cut
+			}
+		}
+		out = append(out, strings.TrimRight(s[:cut], " "))
+		s = strings.TrimLeft(s[cut:], " ")
+	}
+	if s != "" {
+		out = append(out, s)
+	}
+	return out
 }
 
 // SetTopic changes channel's topic. An empty topic clears the channel topic (the

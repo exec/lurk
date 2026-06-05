@@ -91,9 +91,10 @@ type action struct {
 func newInput() textinput.Model {
 	ti := textinput.New()
 	ti.Prompt = "> "
-	// IRC lines are bounded by the 512-byte wire limit; leave generous headroom
-	// for the prompt/target the client prepends. 0 would mean unlimited.
-	ti.CharLimit = 450
+	// Allow composing/pasting a long message; the client splits anything over a
+	// single wire line into multiple PRIVMSGs on send (client.Privmsg). The cap
+	// just bounds pathological input.
+	ti.CharLimit = 4000
 	ti.Focus()
 	return ti
 }

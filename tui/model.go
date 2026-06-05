@@ -294,6 +294,19 @@ func (m *model) prevBuffer() {
 	m.switchTo((m.active - 1 + len(m.buffers)) % len(m.buffers))
 }
 
+// jumpToActive focuses the next buffer (after the current one, wrapping) that
+// has unread activity or a highlight. It is a no-op when nothing is active.
+func (m *model) jumpToActive() {
+	n := len(m.buffers)
+	for off := 1; off <= n; off++ {
+		i := (m.active + off) % n
+		if m.buffers[i].Unread > 0 || m.buffers[i].Highlight {
+			m.switchTo(i)
+			return
+		}
+	}
+}
+
 // closeBuffer closes the buffer at index i and focuses a neighbour. The server
 // buffer (index 0) cannot be closed and the call is ignored for it, so a
 // /close on the status window is harmless. Closing the active buffer moves

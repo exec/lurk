@@ -139,6 +139,24 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleNickFocusKey(msg)
 	}
 
+	// Alt-based buffer navigation, matched on Mod/Code directly because String()
+	// drops the modifier for a printable key (so key.Matches is unreliable here):
+	// Alt+1…9 jump by position, Alt+A jumps to the next buffer with activity.
+	if msg.Mod == tea.ModAlt {
+		if idx, ok := altDigitIndex(msg); ok {
+			if idx < len(m.buffers) {
+				m.switchTo(idx)
+				m = layout(m)
+			}
+			return m, nil
+		}
+		if msg.Code == 'a' {
+			m.jumpToActive()
+			m = layout(m)
+			return m, nil
+		}
+	}
+
 	switch {
 	case key_matches(m.keys.FocusNicks, msg):
 		m = m.enterNickFocus()
@@ -160,6 +178,20 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m = applyAction(m, act)
 	m = m.maybeSendTyping(before, act)
 	return m, cmd
+}
+
+// altDigitIndex reports whether msg is Alt+1…9 and, if so, the zero-based buffer
+// index it selects (Alt+1 → 0). Alt+0 is intentionally unmapped. It reads the
+// Mod/Code fields directly because KeyPressMsg.String() omits the modifier for a
+// printable key.
+func altDigitIndex(msg tea.KeyPressMsg) (int, bool) {
+	if msg.Mod != tea.ModAlt {
+		return 0, false
+	}
+	if msg.Code >= '1' && msg.Code <= '9' {
+		return int(msg.Code - '1'), true
+	}
+	return 0, false
 }
 
 // scrollLines is how many lines a single Shift/Ctrl+↑/↓ press moves the

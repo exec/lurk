@@ -32,9 +32,12 @@ type keymap struct {
 	// Quit ends the program (also reachable via /quit).
 	Quit key.Binding
 
-	// NextBuffer / PrevBuffer cycle the focused window.
+	// NextBuffer / PrevBuffer cycle the focused window; JumpActive jumps to the
+	// next buffer with unread activity. Alt+1…9 jump directly to a buffer by
+	// position (handled by string in app.go, not a key.Binding).
 	NextBuffer key.Binding
 	PrevBuffer key.Binding
+	JumpActive key.Binding
 
 	// FocusNicks moves keyboard focus to the nicklist so a user can be selected
 	// and acted on via the context menu (Esc returns focus to the editor).
@@ -80,6 +83,10 @@ func defaultKeymap() keymap {
 		PrevBuffer: key.NewBinding(
 			key.WithKeys("ctrl+p"),
 			key.WithHelp("ctrl+p", "prev buf"),
+		),
+		JumpActive: key.NewBinding(
+			key.WithKeys("alt+a"),
+			key.WithHelp("alt+a", "next active"),
 		),
 		FocusNicks: key.NewBinding(
 			key.WithKeys("ctrl+u"),
@@ -144,7 +151,7 @@ func (k keymap) ShortHelp() []key.Binding {
 // help model is toggled open. Bindings are grouped by column.
 func (k keymap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.NextBuffer, k.PrevBuffer, k.FocusNicks},
+		{k.NextBuffer, k.PrevBuffer, k.JumpActive, k.FocusNicks},
 		{k.ScrollUp, k.ScrollDown, k.PageUp, k.PageDown},
 		{k.Complete, k.HistPrev, k.HistNext},
 		{k.Help, k.Quit},
@@ -157,7 +164,7 @@ func (k keymap) FullHelp() [][]key.Binding {
 // own help text so it stays in sync with defaultKeymap.
 func (k keymap) summary() string {
 	order := []key.Binding{
-		k.NextBuffer, k.PrevBuffer, k.FocusNicks,
+		k.NextBuffer, k.PrevBuffer, k.JumpActive, k.FocusNicks,
 		k.ScrollUp, k.ScrollDown, k.PageUp, k.PageDown,
 		k.Complete, k.HistPrev, k.Quit,
 	}
