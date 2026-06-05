@@ -6,6 +6,11 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-05
+
+First stable release: the IRCv3 client, the multi-network terminal UI, and the
+native packaging are feature-complete and hardened.
+
 ### Security
 - Sanitize every server-controlled identifier before display — member nicks in
   the nicklist, channel/PM titles in the sidebar, the typing indicator, the
@@ -121,7 +126,8 @@ Initial release.
 - Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
   `-version` flag.
 
-[Unreleased]: https://github.com/exec/lurk/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/exec/lurk/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/exec/lurk/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/exec/lurk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/exec/lurk/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/exec/lurk/compare/v0.2.4...v0.2.5
