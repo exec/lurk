@@ -45,7 +45,7 @@ func TestStateNamReplyPrefixes(t *testing.T) {
 }
 
 // TestStateMultiPrefix5Level mirrors Ergo's PREFIX=(qaohv)~&@%+ (five
-// membership levels). Cross-checked against reference/ergo/irc/modes/modes.go,
+// membership levels). Cross-checked against ergo/irc/modes/modes.go,
 // where ChannelUserModes is ordered founder>admin>op>halfop>voice and
 // ChannelModePrefixes maps them to ~&@%+ — so a member holding several modes is
 // advertised with prefixes in that descending order under multi-prefix.
@@ -83,7 +83,7 @@ func TestStateMultiPrefix5Level(t *testing.T) {
 // TestStateModeFounderPrefix exercises the auto-grant MODE a client receives
 // when it creates/joins an unregistered channel on Ergo: after the JOIN echo the
 // server sends "MODE #chan +o <nick>" (or +q for a registered founder). See
-// reference/ergo/irc/channel.go (the join handler sends MODE chname modestr nick
+// ergo/irc/channel.go (the join handler sends MODE chname modestr nick
 // right after the JOIN). The 'o'->'@' and 'q'->'~' mapping comes from PREFIX.
 func TestStateModeFounderPrefix(t *testing.T) {
 	s := newTestState("PREFIX=(qaohv)~&@%+", "CHANTYPES=#", "CASEMAPPING=ascii")

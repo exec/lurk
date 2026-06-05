@@ -17,7 +17,7 @@ import (
 //
 // The decomposition — per-buffer scrollback, unread/highlight counters, a
 // stick-to-bottom scroll model — follows senpai's buffer concept
-// (reference/senpai/ui/buffers.go), reimplemented on Bubble Tea's viewport.
+// (senpai/ui/buffers.go), reimplemented on Bubble Tea's viewport.
 
 // BufferKind distinguishes the three window types so the view can label and
 // route them differently (a channel has a nicklist; a PM and the server buffer
@@ -170,7 +170,7 @@ func (b *Buffer) addLine(s string) int {
 
 // refresh re-renders the scrollback into the viewport. It wraps each stored line
 // to the current viewport width (the viewport itself does not wrap styled
-// content reliably, so we pre-wrap per docs/TUI-RESEARCH.md §3) and sticks to
+// content reliably, so we pre-wrap each stored row) and sticks to
 // the bottom unless the user has scrolled up. atBottom is sampled before
 // SetContent because SetContent can change the offset.
 func (b *Buffer) refresh() {

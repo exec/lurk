@@ -249,7 +249,7 @@ func TestTokensFromMessage(t *testing.T) {
 }
 
 // ergoBatches are the RPL_ISUPPORT tokens our live Ergo server actually emits,
-// transcribed from reference/ergo/irc/config.go generateISupport (PREFIX,
+// transcribed from ergo/irc/config.go generateISupport (PREFIX,
 // CHANMODES, STATUSMSG, TARGMAX, CASEMAPPING in particular). This exercises the
 // quirks of a real modern ircd: a 5-level PREFIX, a TARGMAX entry with an empty
 // (unlimited) value (KICK:), an EXTBAN value that begins with a comma, a

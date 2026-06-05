@@ -1,0 +1,133 @@
+# Changelog
+
+All notable changes to Lurk are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/); the project aims to follow
+semantic versioning.
+
+## [Unreleased]
+
+### Security
+- Sanitize every server-controlled identifier before display — member nicks in
+  the nicklist, channel/PM titles in the sidebar, the typing indicator, the
+  NETWORK label, and the per-user menu title — closing the remaining
+  terminal-escape injection paths in the TUI.
+
+### Fixed
+- **Concurrency:** guard the session transport and capability negotiator against
+  the reconnect supervisor (a dedicated mutex for the `tr`/`neg` pointers, an
+  internal lock in the cap negotiator) and synchronize the registration signal,
+  so a `Close`/`Quit` landing mid-reconnect can't race the supervisor. Confirmed
+  clean under `go test -race`.
+- `Quit` now sends the QUIT line before stopping the reconnect supervisor, so it
+  isn't raced away by teardown; the supervisor also skips a stray dial when a
+  stop arrives during backoff.
+- PRIVMSG / NOTICE / CTCP ACTION are split with a target-aware budget, so a long
+  target can no longer push a line past the 512-byte wire limit.
+- TUI: the "new messages" divider no longer appears above live messages;
+  scrollback-search indices survive a scrollback trim; cross-network `/part` and
+  `/close` act on the owning network's server; re-homed buffers clear stale
+  activity markers.
+- Protocol: reconcile channel membership on `RPL_ENDOFNAMES` (no ghost members
+  after a re-issued `NAMES`); only enable capabilities actually requested on
+  `CAP ACK`.
+
+### Changed
+- Module path is now `github.com/exec/lurk` so `go install` resolves.
+- Documentation consolidated: stale planning/research notes removed; the
+  architecture docs refreshed; this changelog added.
+
+## [0.4.0] - 2026-06-05
+
+### Added
+- **Multiple networks at once:** a unified sidebar grouped by network;
+  `/connect <name>` dials another saved network at runtime, `/disconnect` drops
+  one. Event routing, the nicklist, and commands are all network-scoped.
+- **Auto-reconnect** with capped backoff and channel re-join after an unexpected
+  drop.
+- **Theming:** dark (Catppuccin Mocha) / light (Latte) chosen from the terminal
+  background; `NO_COLOR` selects a monochrome theme.
+- CTCP auto-replies (VERSION/PING/TIME/CLIENTINFO) and a highlight bell.
+- Scrollback search (`/search`, Ctrl-R), a read marker, custom highlight words,
+  `/ignore`, and per-network chat logging (`-log`).
+- Buffer navigation (`Alt+1`–`9`, `Alt+A`); long messages split across lines.
+- Op/channel command surface: `/mode /kick /ban /op /deop /voice /devoice
+  /invite /notice /ctcp /whowas /motd /clear`, plus empty-state hints and unread
+  counts.
+
+## [0.3.0] - 2026-06-04
+
+### Added
+- Network launcher: run `lurk` with no `-server` to pick / add / edit / delete
+  saved networks (each bundling its own identity and SASL), persisted to a 0600
+  JSON config.
+- `/list` channel directory in a filterable modal overlay.
+- On-screen key-hint footer and a channel topic bar; compact WHOIS rendering.
+
+### Fixed
+- Nicklist scroll follows the selection (no longer clips off-screen).
+- QUIT/NICK now show in the channels you share with the user, not the server
+  buffer.
+- `/help` preserves intentional newlines; macOS scroll-key guidance corrected.
+
+## [0.2.5] - 2026-06-03
+### Fixed
+- WHOIS replies render their data, not just the trailing label.
+- Added regression coverage against known IRC-client crash/CVE classes.
+
+## [0.2.4] - 2026-06-03
+### Added
+- AWAY / CTCP ACTION / TOPIC helpers and `/away`, `/whois` commands.
+### Security
+- Strip Unicode bidi controls (Trojan Source) from displayed text.
+- Bound the advertised/enabled capability sets on CAP LS/LIST/ACK.
+
+## [0.2.3] - 2026-06-03
+### Security
+- Malicious-server fuzz harness; fixed a `Serialize` round-trip misframing.
+- Cap auto-opened TUI buffers to bound hostile-server window growth.
+### Fixed
+- STATUSMSG-target routing and CASEMAPPING-change re-keying.
+
+## [0.2.2] - 2026-06-03
+### Security
+- Extend terminal-escape sanitization to the `-plain` line client via the shared
+  `client.SanitizeTerminal`.
+
+## [0.2.1] - 2026-06-03
+### Security
+- Refuse to send cleartext credentials to an untrusted server; bound
+  BATCH/CAP/channel-map growth against a hostile server.
+
+## [0.2.0] - 2026-06-03
+### Security
+- Terminal-escape sanitization in the TUI.
+### Added
+- GitHub Actions release workflow; Windows `.msi` (wixl) and `.msix` (makeappx).
+- TUI keybinding and scrollback improvements.
+
+## [0.1.0] - 2026-06-02
+
+Initial release.
+
+### Added
+- IRCv3 client library — `irc`, `conn`, `cap`, `sasl`, `isupport`, `client` —
+  with full message-tag support, TCP/TLS transport, capability negotiation, SASL
+  (PLAIN/EXTERNAL), `RPL_ISUPPORT` + casemapping, and a high-level client with
+  registration, an event stream, and channel/user state tracking. Standard
+  library only.
+- IRCv3 features: `away-notify`, `account-notify`/`extended-join`, `chghost`,
+  `batch`, `draft/chathistory`, `+typing`, and `standard-replies`.
+- Bubble Tea terminal UI and a `-plain` line client.
+- Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
+  `-version` flag.
+
+[Unreleased]: https://github.com/exec/lurk/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/exec/lurk/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/exec/lurk/compare/v0.2.5...v0.3.0
+[0.2.5]: https://github.com/exec/lurk/compare/v0.2.4...v0.2.5
+[0.2.4]: https://github.com/exec/lurk/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/exec/lurk/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/exec/lurk/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/exec/lurk/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/exec/lurk/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/exec/lurk/releases/tag/v0.1.0

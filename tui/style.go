@@ -22,7 +22,7 @@ import (
 //
 // The colorization approach (FNV-hash a nick into a fixed palette, render own
 // nick distinctly, dim joins/parts, highlight lines that mention the user) is
-// modeled on senpai's reference/senpai/ui/colors.go and buffers.go — studied,
+// modeled on senpai's senpai/ui/colors.go and buffers.go — studied,
 // not copied: senpai is tcell/vaxis-based, so the rendering here is a fresh
 // Lip Gloss implementation of the same UX ideas.
 

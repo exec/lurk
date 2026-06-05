@@ -17,7 +17,7 @@ import (
 // Join{Horizontal,Vertical}. All sizes derive from the model's width/height,
 // recomputed in layout() on every resize and buffer switch.
 //
-// Layout (target from docs/TUI-RESEARCH.md §4):
+// Layout:
 //
 //	┌──────────┬─────────────────────────────┬────────┐
 //	│ buffers  │  message scrollback         │ nicks  │
@@ -225,7 +225,7 @@ func emptyHint(b *Buffer) string {
 // renderSidebar renders the buffer list with per-buffer activity markers: a
 // highlight ("!") buffer in the highlight style, an unread ("•") buffer bold,
 // the active buffer reverse-highlighted. The layout mirrors senpai's vertical
-// buffer list (reference/senpai/ui/buffers.go DrawVerticalBufferList).
+// buffer list (senpai/ui/buffers.go DrawVerticalBufferList).
 func renderSidebar(m model, w, h int) string {
 	t := defaultTheme
 	multi := len(m.networks) > 1

@@ -116,8 +116,13 @@ go build ./...
 go test -race ./...
 ```
 
-An optional live test runs against a real server when `LURK_TEST_SERVER` is set
-(see `docs/`). Without it the suite is fully hermetic.
+An optional live test runs against a real server when `LURK_TEST_SERVER` is set;
+otherwise it skips and the suite is fully hermetic.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
+[`docs/ARCHITECTURE-TUI.md`](docs/ARCHITECTURE-TUI.md) for the design,
+[`docs/PACKAGING.md`](docs/PACKAGING.md) for building and releases, and
+[`CHANGELOG.md`](CHANGELOG.md) for the release history.
 
 ## Credits
 

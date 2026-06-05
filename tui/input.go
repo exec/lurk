@@ -41,7 +41,7 @@ func inputCursor(m model) *tea.Cursor {
 // on the input line (submit, history recall, tab-completion), and the action
 // value the core applies. The editor itself is the bubbles textinput component
 // (single-line, the right fit for IRC); history and completion are layered on
-// top, modeled on senpai's editor (reference/senpai/ui/editor.go and
+// top, modeled on senpai's editor (senpai/ui/editor.go and
 // completions.go) but reimplemented against textinput's runes.
 
 // actionKind enumerates the control actions the input layer asks the core to

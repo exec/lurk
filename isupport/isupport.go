@@ -288,7 +288,7 @@ func (s ISupport) TopicLen() (int, bool) { return s.intToken("TOPICLEN") }
 // unlimited) reports ok=false, matching the "no limit" semantics.
 //
 // The empty-value case is not hypothetical: Ergo emits entries such as "KICK:"
-// to mean "no per-command target limit" (see reference/ergo/irc/config.go's
+// to mean "no per-command target limit" (see ergo/irc/config.go's
 // generateISupport), so callers must treat ok=false as "unlimited", distinct
 // from "command absent" which also reports ok=false.
 //

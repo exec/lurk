@@ -11,8 +11,8 @@ import (
 )
 
 // nickmenu.go adds interactive selection of users in the nicklist and a
-// per-user context menu (Message, Whois, op actions, …). It is the Phase-1
-// "reach over to a user and act on them" feature (docs/PLAN-CYCLE3.md §A).
+// per-user context menu (Message, Whois, op actions, …) — the "reach over to
+// a user and act on them" feature.
 //
 // Two pieces of model state drive it (declared in model.go): `focus` selects
 // whether navigation keys drive the editor or the nicklist, and the menu* fields

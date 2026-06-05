@@ -7,7 +7,7 @@ Docker is needed.
 ## Build all artifacts
 
 ```sh
-scripts/package.sh 0.1.0      # version is embedded via -ldflags main.version
+scripts/package.sh 1.0.0      # version is embedded via -ldflags main.version
 ```
 
 Outputs land in `dist/` (git-ignored):
@@ -36,11 +36,11 @@ Missing tools are skipped with a notice; the script never hard-fails on them.
 
 ```sh
 # Debian/Ubuntu
-sudo dpkg -i lurk_0.1.0_amd64.deb
+sudo dpkg -i lurk_1.0.0_amd64.deb
 # Fedora/RHEL
-sudo rpm -i lurk-0.1.0-1.x86_64.rpm
+sudo rpm -i lurk-1.0.0-1.x86_64.rpm
 # macOS
-sudo installer -pkg lurk_0.1.0_macos.pkg -target /
+sudo installer -pkg lurk_1.0.0_macos.pkg -target /
 # Windows: unzip and put lurk.exe on PATH
 ```
 
@@ -74,7 +74,7 @@ runners and publishes to the GitHub release:
 Trigger it by pushing a `v*` tag, or manually from the Actions tab / CLI:
 
 ```sh
-gh workflow run release.yml -f version=0.1.0     # manual, attaches to v0.1.0
+gh workflow run release.yml -f version=1.0.0     # manual, attaches to v1.0.0
 # or
 git tag v0.2.0 && git push origin v0.2.0         # tag-driven
 ```
@@ -85,6 +85,6 @@ combined `SHA256SUMS`.
 ## Cutting a release locally
 
 ```sh
-scripts/package.sh 0.1.0
-gh release create v0.1.0 dist/* --title "lurk 0.1.0" --notes "…"
+scripts/package.sh 1.0.0
+gh release create v1.0.0 dist/* --title "lurk 1.0.0" --notes "…"
 ```

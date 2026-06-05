@@ -1,127 +1,88 @@
-# Lurk — Architecture & Cycle 1 Contracts
+# Architecture
 
-Lurk is an IRCv3 client library (and demo CLI) written in Go. This document is
-the **shared contract** for the team. Every agent owns one package and must
-honor the interfaces below so the pieces compose without rework. When in doubt
-about a boundary, **message the owning agent** rather than guessing.
+Lurk is an IRCv3 client written in Go (module `github.com/exec/lurk`, Go 1.26).
+It is split into a standard-library-only protocol stack and a Bubble Tea terminal
+UI layered on top. This document covers the packages, how they depend on each
+other, and the few contracts that hold the whole thing together. For the UI
+internals see [`ARCHITECTURE-TUI.md`](ARCHITECTURE-TUI.md).
 
-Module path: `lurk` (Go 1.26).
-
-## Package layout & ownership
+## Packages
 
 ```
-lurk/
-├── irc/        Wire protocol: Message, parsing, serialization, tags, numerics.   [owner: parser]
-├── conn/       Transport: TCP/TLS dial, framed line read/write, send queue.       [owner: transport]
-├── cap/        Capability negotiation logic (CAP LS/REQ/ACK/NAK/NEW/DEL).         [owner: capneg]
-├── sasl/       SASL mechanisms (PLAIN, EXTERNAL) + AUTHENTICATE chunking.         [owner: sasl]
-├── isupport/   RPL_ISUPPORT token parsing + CASEMAPPING folding.                  [owner: state]
-├── client/     High-level Client: orchestration, registration, events, tracking. [owner: client]
-└── cmd/lurk/   Demo CLI that drives the client library.                           [owner: client]
+irc/        Wire protocol: Message, parse/serialize, message tags, numerics, command names.
+conn/       Transport: TCP/TLS dial, framed line read/write, bounded read buffer, outbound send queue.
+cap/        IRCv3 capability negotiation state machine (CAP LS/REQ/ACK/NAK/NEW/DEL, SASL gating).
+sasl/       SASL mechanisms (PLAIN, EXTERNAL) and AUTHENTICATE base64 chunking.
+isupport/   RPL_ISUPPORT (005) token parsing and CASEMAPPING folding.
+client/     High-level client: registration, the Events() stream, channel/user state tracking,
+            auto-reconnect, CTCP auto-replies, terminal-escape sanitization.
+config/     On-disk network/identity configuration (JSON, 0600) with XDG path resolution.
+chatlog/    Append-only per-target plain-text chat logs.
+tui/        Bubble Tea v2 terminal UI.
+cmd/lurk/   The binary: TUI by default, -plain for the line client, network launcher when no -server.
 ```
 
-Dependency direction (no cycles): `irc` depends on nothing. `conn`, `cap`,
-`sasl`, `isupport` depend only on `irc` (and stdlib). `client` depends on all of
-them. Nobody imports `client`.
+## Dependency direction
 
-## The central contract: `irc.Message`
+There are no import cycles; dependencies point "downward":
 
-Defined in `irc/message.go` (already written, do not change its shape without
-team agreement). It is the ONLY type that crosses every boundary:
+- `irc` depends on nothing but the standard library.
+- `conn`, `cap`, `sasl`, `isupport` depend only on `irc` (plus stdlib).
+- `client` depends on the protocol packages above.
+- `config` and `chatlog` are standalone (stdlib only) and import neither `client`
+  nor any UI library.
+- `tui` depends on `client`, `config`, `chatlog`, and `irc`.
+- `cmd/lurk` wires `client`, `config`, and `tui` together.
 
-- Transport reads bytes → hands a raw line (`[]byte`/`string`) to the parser.
-- `irc.Parse(line) (*Message, error)` → `*Message`.
-- `irc.Message.Serialize() ([]byte, error)` (or `String()`) → bytes for transport.
-- `cap`, `sasl`, `isupport`, `client` all consume/produce `*irc.Message`.
+**Dependency rule (enforced by review):** only `tui/` and `cmd/lurk` may import the
+charm libraries (`charm.land/{bubbletea,bubbles,lipgloss}/v2`). Every protocol
+package stays standard-library only, so `client` is usable as a library without
+pulling in a terminal UI.
 
-## Per-package interface contracts (Cycle 1)
+## The central type: `irc.Message`
 
-### `irc` (parser)
-- `func Parse(line string) (*Message, error)` — tolerant of missing tags/source.
-- `func (m *Message) Serialize() (string, error)` — round-trips Parse; chooses
-  the trailing (`:`) parameter correctly (last param if it is empty, contains a
-  space, or starts with `:`). Enforce no CR/LF/NUL in non-tag fields.
-- Tag escaping per spec: `\:`→`;`, `\s`→space, `\\`→`\`, `\r`→CR, `\n`→LF;
-  lone trailing `\` drops; unknown `\x`→`x`. Round-trip safe.
-- `numerics.go`: named constants for numerics used in Cycle 1 (RPL_WELCOME=`"001"`
-  … RPL_ISUPPORT=`"005"`, RPL_NAMREPLY=`"353"`, ERR_NICKNAMEINUSE=`"433"`,
-  SASL 900–908, ERR_INPUTTOOLONG=`"417"`, etc.).
-- `commands.go`: string constants for CAP, AUTHENTICATE, NICK, USER, PASS, PING,
-  PONG, PRIVMSG, NOTICE, JOIN, PART, QUIT, MODE, NAMES, BATCH, TAGMSG.
+`irc.Message{Tags, Source, Command, Params}` is the one type that crosses every
+boundary. Transport frames a line and `irc.Parse` produces a `*Message`;
+`Message.Serialize` turns one back into a wire line — choosing the trailing (`:`)
+parameter correctly and rejecting CR/LF/NUL in non-tag fields. Message tags are
+parsed and unescaped per the IRCv3 spec, so `@time`, `@batch`, and `@+typing`
+are available everywhere downstream. The 512-byte message budget and the
+separate 8191-byte tag budget are enforced at the transport.
 
-### `conn` (transport)
-- `type Conn` with a constructor like
-  `func Dial(ctx, network, addr string, opts Options) (*Conn, error)` where
-  `Options{ TLS bool; TLSConfig *tls.Config; ... }`.
-- Read side: expose a channel or `ReadMessage() (*irc.Message, error)` that
-  frames on `\r\n` (also tolerate bare `\n`), enforces the 8191-byte tag budget
-  + 512-byte message budget, and parses via `irc.Parse`. Decide channel-vs-call
-  with the client owner — **coordinate**, the client run-loop consumes this.
-- Write side: `WriteMessage(*irc.Message) error` (serializes) and/or
-  `Send(line string)`. Include a simple outbound send queue so the client can
-  hand off without blocking. Flood/rate limiting can be a stub in Cycle 1 but
-  leave the seam.
-- TLS support via stdlib `crypto/tls`. Verify certs by default; allow opt-out.
+## The client and its event stream
 
-### `cap` (capability negotiation)
-- A pure-ish state machine that does NOT do I/O. It takes parsed CAP messages
-  and the set of caps the client *wants*, and emits the lines to send.
-- `type Negotiator` with methods to: record `CAP LS` (handle multiline `*`
-  continuation and `key=value` values), compute the `CAP REQ` payload(s) from
-  the intersection of available∩wanted, process `ACK`/`NAK`, and report when
-  negotiation is done so the client can send `CAP END` (or proceed to SASL).
-- Track enabled caps; handle `CAP NEW`/`CAP DEL` post-registration.
-- Expose `Available()`, `Enabled()`, and the SASL mechanism list (from
-  `sasl=...` value) so the `sasl` flow can consume it.
+`client.Client` wires conn + cap + sasl + isupport together. It drives
+registration (CAP LS 302 → optional SASL → CAP END → 001 → 005), answers PING,
+and tracks channels, members (with prefixes/metadata), and topics keyed through
+the server's CASEMAPPING. Everything surfaces as events:
 
-### `sasl` (authentication)
-- `type Mechanism interface { Name() string; Start() ([]byte, bool); Next(challenge []byte) ([]byte, error) }`
-  (final shape is the sasl owner's call — coordinate with capneg & client).
-- `PLAIN` (authzid\0authcid\0passwd, base64) and `EXTERNAL` (cert-based, usually
-  empty `+`).
-- Helper to chunk a base64 payload into ≤400-byte `AUTHENTICATE` lines, emitting
-  a trailing `AUTHENTICATE +` when the payload length is a multiple of 400 (and
-  for empty payloads send `AUTHENTICATE +`).
-- Consumes numerics 900/903 (success), 904/905/906/907/908 (fail/abort/mechs).
+- `client.Events() <-chan Event` is the buffered stream the front-ends consume.
+  It never blocks the read loop: a slow consumer gets drop-oldest with a
+  synthetic overflow marker. `Event` exposes `Time()`, `Nick()/User()/Host()`,
+  `Param(i)`, `Text()`, `Command()`, and the underlying `Tags`. Registered
+  handlers (`On`/`Handle*`) see the same events.
+- **Auto-reconnect** (`Config.AutoReconnect`): a supervisor goroutine re-dials
+  with capped backoff after an unexpected drop, re-registers, and re-joins
+  channels — all over the same `Events()` stream, so a UI survives the gap. A
+  user Quit/Close stops the supervisor. See `client/reconnect.go`.
+- **Terminal-escape safety:** all server-controlled text the front-ends display
+  passes through `client.SanitizeTerminal`, which strips C0/C1/DEL/bidi control
+  runes so a hostile server cannot inject terminal escape sequences.
 
-### `isupport` (server features + casemapping)
-- `func Parse(tokens []string) ISupport` accumulating across multiple 005 lines;
-  handle `KEY=value`, bare `KEY`, and `-KEY` (negation).
-- Typed accessors: `PrefixModes()`/`PrefixSymbols()` (from `PREFIX=(ov)@+`),
-  `ChanTypes()`, `ChanModes()` (4 categories A,B,C,D), `NickLen()`,
-  `ChannelLen()`, `Network()`, `StatusMsg()`, `CaseMapping()`.
-- `type CaseMapping` with `Fold(string) string` implementing `ascii` and
-  `rfc1459` (`[]\^` ↔ `{}|~`). The client uses Fold for ALL nick/channel
-  comparisons (map keys for channel/user tracking).
+## The front-ends
 
-### `client` (orchestration + public API)
-- `type Client` wiring conn + cap + sasl + isupport + state + event dispatch.
-- `type Config{ Nick, User, Realname, Pass, Server string; TLS bool; SASL ...; Caps []string }`.
-- Registration state machine: on connect send `CAP LS 302`, `NICK`, `USER`
-  (+`PASS` if set); run cap negotiation; if `sasl` enabled+configured run SASL;
-  send `CAP END`; wait for `001`; parse `005` into isupport; ready.
-- Always auto-respond to `PING` with `PONG`.
-- Event dispatch: `func (c *Client) On(command string, h Handler)` plus a small
-  set of semantic events (Connected, Message, Join, Part, Quit, Nick). Handler
-  signature TBD by client owner — keep it simple (`func(*Event)`).
-- State tracking: channels the client is in, members per channel with prefixes,
-  self nick (updated on NICK/433). Keyed via `isupport.CaseMapping.Fold`.
-- `cmd/lurk/main.go`: connect to a server from flags/env, request common caps,
-  optionally SASL, join a channel, print messages — a living smoke test.
+`cmd/lurk` is the binary. With no `-server` it runs the **network launcher**
+(`tui/launcher*.go`) — a list of saved `config.Network`s — then hands the chosen
+network to the chat UI. The full-screen TUI is the default; `-plain` runs a
+line-mode client against the same `client` API. The TUI can hold **multiple
+networks at once** (see [`ARCHITECTURE-TUI.md`](ARCHITECTURE-TUI.md)).
 
 ## Conventions
-- Standard library only for Cycle 1 (no external deps). `crypto/tls`,
-  `encoding/base64`, `bufio`, `context`, `net`.
-- Every package ships `_test.go` with table-driven tests. The parser and
-  isupport packages especially need thorough spec-derived test vectors.
-- `gofmt` clean; `go vet ./...` clean; `go test ./...` green before "done".
-- Errors wrapped with `%w`; no panics in library code paths.
-- Keep godoc on exported identifiers.
 
-## How we coordinate
-- Parser (`irc`) is the keystone — it should land first and be announced to all.
-- If you need to change a cross-package contract, message the affected owners
-  AND the lead before editing. Prefer additive changes.
-- The client owner integrates last; transport/cap/sasl/isupport should message
-  the client owner to confirm the exact call shapes (channel vs method) they
-  expose, so integration is mechanical.
+- Protocol packages are standard-library only; errors are wrapped with `%w`;
+  no panics in library paths; exported identifiers carry godoc.
+- Tests are hermetic — an in-process `net.Pipe` mock server plus unit tests.
+  The one live test is environment-gated (`LURK_TEST_SERVER`) and skips by
+  default. There are also Go fuzz targets for the hostile-input sinks.
+- Definition of done: `go build ./...`, `go vet ./...`, `gofmt` clean, and
+  `go test -race ./...` green.

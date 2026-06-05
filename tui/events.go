@@ -23,11 +23,11 @@ func bellCmd() tea.Cmd {
 
 // This file bridges the client's event stream into the Bubble Tea update loop.
 // The design follows the idiomatic "channel + re-subscribing Cmd" subscription
-// from reference/bubbletea/examples/realtime/main.go: the model holds the
-// channel (not the *Program), so it stays pure and testable, and exactly one
-// waitForIRC Cmd is in flight at a time. After handling each ircMsg, Update
-// MUST re-issue waitForIRC or the subscription dies (see docs/TUI-RESEARCH.md
-// §2).
+// (a pattern from Bubble Tea's realtime example): the model holds the channel,
+// not the *Program, so it stays pure and testable, and exactly one waitForIRC
+// Cmd is in flight at a time. After handling each ircMsg, Update MUST re-issue
+// waitForIRC or the subscription dies — see docs/ARCHITECTURE-TUI.md, "The
+// event bridge".
 
 // ircMsg wraps a single inbound client.Event with the network it arrived on, for
 // delivery into Update. It is a distinct type (not a bare client.Event) so the

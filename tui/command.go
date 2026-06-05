@@ -23,7 +23,7 @@ import (
 //   - /quit returns the tea.Quit Cmd (after sending QUIT) so the program exits.
 //
 // The command set and the // literal-escape are modeled on senpai
-// (reference/senpai/commands.go); the parsing is reimplemented for our action
+// (senpai/commands.go); the parsing is reimplemented for our action
 // model rather than copied.
 
 // command describes one slash command: how many arguments it takes, a usage

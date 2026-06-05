@@ -82,7 +82,7 @@ func (c *Conn) readLoop() {
 // so a peer that withholds the newline cannot force unbounded buffering — once
 // the buffer fills, ReadSlice returns bufio.ErrBufferFull and we surface
 // ErrLineTooLong rather than growing memory. This bounded-readQ design follows
-// Ergo's ircreader (reference/ergo/.../ircreader/ircreader.go), adapted to
+// Ergo's ircreader (ergo/.../ircreader/ircreader.go), adapted to
 // stdlib bufio.
 func (c *Conn) readLine() (string, error) {
 	if c.opts.ReadTimeout > 0 {
