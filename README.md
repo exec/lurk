@@ -12,7 +12,9 @@
 - **Terminal UI** (`tui`, `cmd/lurk`) — a [Bubble Tea](https://github.com/charmbracelet/bubbletea)
   full-screen client: buffer sidebar, scrollback, nicklist, status bar, input
   editor with history and tab-completion, slash commands, and an interactive
-  nicklist with a per-user context menu (message, whois, op/voice/kick).
+  nicklist with a per-user context menu (message, whois, and a Status sub-menu
+  that grants/revokes any membership mode the server offers — op, half-op, voice,
+  founder/admin — plus kick and ban).
 - **IRCv3 features** — capability negotiation plus live handling of
   `away-notify`, `account-notify`/`extended-join`, and `chghost` (away users are
   dimmed and logged-in users badged in the nicklist); `batch`; `draft/chathistory`

@@ -57,12 +57,74 @@ func TestMenuKeyNavigationAndClose(t *testing.T) {
 
 func TestApplyMenuInsertNick(t *testing.T) {
 	m := baseMenuModel()
-	nm, _ := m.applyMenu(menuEntry{"Insert nick", miInsertNick})
+	nm, _ := m.applyMenu(menuEntry{label: "Insert nick", act: miInsertNick})
 	m = nm.(model)
 	if got := m.input.Value(); got != "alice: " {
 		t.Errorf("insert nick into empty editor = %q, want %q", got, "alice: ")
 	}
 	if m.menuOpen || m.focus != focusInput {
 		t.Errorf("applyMenu should close the menu and refocus input")
+	}
+}
+
+func TestModeName(t *testing.T) {
+	cases := map[byte]string{'q': "Founder", 'a': "Admin", 'o': "Op", 'h': "Half-op", 'v': "Voice", 'x': "+x"}
+	for in, want := range cases {
+		if got := modeName(in); got != want {
+			t.Errorf("modeName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestHighestPrefixIndex(t *testing.T) {
+	const symbols = "~&@%+" // founder, admin, op, half-op, voice
+	cases := []struct {
+		have string
+		want int
+	}{
+		{"", 5},   // hold nothing → past the end
+		{"+", 4},  // voice
+		{"@", 2},  // op
+		{"@+", 2}, // op is the highest held
+		{"~@", 0}, // founder
+		{"%+", 3}, // half-op
+	}
+	for _, c := range cases {
+		if got := highestPrefixIndex(c.have, symbols); got != c.want {
+			t.Errorf("highestPrefixIndex(%q) = %d, want %d", c.have, got, c.want)
+		}
+	}
+}
+
+// TestStatusSubmenuBackOut drives the sub-menu state machine: the "Status…" level
+// always ends with Kick + Ban, Esc backs out to the top menu (not closed), and a
+// second Esc closes it.
+func TestStatusSubmenuBackOut(t *testing.T) {
+	m := baseMenuModel()
+	m.menuStatus = true
+	m.menuSel = 1
+
+	got := currentMenuEntries(m)
+	if n := len(got); n < 2 || got[n-2].act != miKick || got[n-1].act != miBan {
+		t.Fatalf("status sub-menu should end with Kick, Ban; got %+v", got)
+	}
+
+	nm, _ := m.handleMenuKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = nm.(model)
+	if m.menuStatus || !m.menuOpen {
+		t.Fatalf("esc in sub-menu should return to the top menu, got menuStatus=%v menuOpen=%v", m.menuStatus, m.menuOpen)
+	}
+
+	nm, _ = m.handleMenuKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = nm.(model)
+	if m.menuOpen {
+		t.Fatalf("a second esc should close the menu")
+	}
+}
+
+func TestBanMaskFallback(t *testing.T) {
+	m := baseMenuModel() // nil client → member host unknown
+	if got := banMask(m, "bob"); got != "bob!*@*" {
+		t.Errorf("banMask fallback = %q, want %q", got, "bob!*@*")
 	}
 }

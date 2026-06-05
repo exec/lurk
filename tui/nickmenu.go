@@ -35,17 +35,18 @@ const (
 	miMessage menuActionID = iota
 	miWhois
 	miInsertNick
-	miOp
-	miDeop
-	miVoice
-	miDevoice
+	miStatus  // open the grant/revoke status sub-menu
+	miSetMode // grant or revoke one prefix mode (entry.mode is e.g. "+o")
 	miKick
+	miBan
 )
 
-// menuEntry is one row in the context menu: a label and the action it performs.
+// menuEntry is one row in the context menu: a label, the action it performs, and
+// (for miSetMode) the signed mode change to apply.
 type menuEntry struct {
 	label string
 	act   menuActionID
+	mode  string // for miSetMode: e.g. "+o" / "-v"
 }
 
 // sortedMembers returns the active channel's members in the exact order the
@@ -129,6 +130,7 @@ func (m model) handleNickFocusKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.nickSel = len(members) - 1
 	case "enter", "right":
 		m.menuOpen = true
+		m.menuStatus = false
 		m.menuNick = members[m.nickSel].Nick
 		m.menuSel = 0
 	}
@@ -138,11 +140,20 @@ func (m model) handleNickFocusKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // handleMenuKey processes a key while the context menu is open: arrows/jk move
 // the highlighted entry, Enter runs it, Esc closes the menu (back to the editor).
 func (m model) handleMenuKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	entries := menuEntries(m)
+	entries := currentMenuEntries(m)
+	if m.menuSel >= len(entries) {
+		m.menuSel = len(entries) - 1
+	}
 	switch msg.String() {
 	case "esc", "left":
-		m.menuOpen = false
-		m = m.refocusInput()
+		// In the sub-menu, back out to the top-level menu; otherwise close it.
+		if m.menuStatus {
+			m.menuStatus = false
+			m.menuSel = 0
+		} else {
+			m.menuOpen = false
+			m = m.refocusInput()
+		}
 	case "up", "k":
 		if m.menuSel > 0 {
 			m.menuSel--
@@ -153,6 +164,12 @@ func (m model) handleMenuKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter", "right":
 		if m.menuSel >= 0 && m.menuSel < len(entries) {
+			// "Status…" opens the sub-menu rather than acting.
+			if e := entries[m.menuSel]; e.act == miStatus {
+				m.menuStatus = true
+				m.menuSel = 0
+				return m, nil
+			}
 			return m.applyMenu(entries[m.menuSel])
 		}
 		m.menuOpen = false
@@ -168,30 +185,97 @@ func (m model) handleMenuKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // target's current status.
 func menuEntries(m model) []menuEntry {
 	entries := []menuEntry{
-		{"Message", miMessage},
-		{"Whois", miWhois},
-		{"Insert nick", miInsertNick},
+		{label: "Message", act: miMessage},
+		{label: "Whois", act: miWhois},
+		{label: "Insert nick", act: miInsertNick},
 	}
 	b := m.activeBuffer()
 	if b.Kind != BufferChannel || m.cli == nil {
 		return entries
 	}
-	// Operator-only actions, shown only when we can actually perform them.
+	// The Status… sub-menu (grant/revoke modes, kick, ban) is offered only when we
+	// hold operator privileges and can actually act.
 	if strings.ContainsAny(m.cli.SelfPrefixes(b.Title), "~&@") {
-		target := memberPrefixes(m, m.menuNick)
-		if strings.Contains(target, "@") {
-			entries = append(entries, menuEntry{"Deop", miDeop})
-		} else {
-			entries = append(entries, menuEntry{"Op", miOp})
-		}
-		if strings.Contains(target, "+") {
-			entries = append(entries, menuEntry{"Devoice", miDevoice})
-		} else {
-			entries = append(entries, menuEntry{"Voice", miVoice})
-		}
-		entries = append(entries, menuEntry{"Kick", miKick})
+		entries = append(entries, menuEntry{label: "Status…", act: miStatus})
 	}
 	return entries
+}
+
+// currentMenuEntries returns the rows for whichever menu level is showing.
+func currentMenuEntries(m model) []menuEntry {
+	if m.menuStatus {
+		return statusEntries(m)
+	}
+	return menuEntries(m)
+}
+
+// statusEntries builds the "Status…" sub-menu: a grant/revoke toggle for each
+// membership mode the server advertises (limited to those at or below our own
+// level, since you cannot set a status above your own), then Kick and Ban.
+func statusEntries(m model) []menuEntry {
+	var entries []menuEntry
+	b := m.activeBuffer()
+	if m.cli != nil && b.Kind == BufferChannel {
+		modes := m.cli.PrefixModes()
+		symbols := m.cli.PrefixSymbols()
+		target := memberPrefixes(m, m.menuNick)
+		selfHigh := highestPrefixIndex(m.cli.SelfPrefixes(b.Title), symbols)
+		for i := 0; i < min(len(modes), len(symbols)); i++ {
+			if i < selfHigh {
+				continue // above our own level — can't manage it
+			}
+			letter := string(modes[i])
+			if strings.IndexByte(target, symbols[i]) >= 0 {
+				entries = append(entries, menuEntry{label: "Revoke " + modeName(modes[i]), act: miSetMode, mode: "-" + letter})
+			} else {
+				entries = append(entries, menuEntry{label: "Grant " + modeName(modes[i]), act: miSetMode, mode: "+" + letter})
+			}
+		}
+	}
+	entries = append(entries, menuEntry{label: "Kick", act: miKick})
+	entries = append(entries, menuEntry{label: "Ban", act: miBan})
+	return entries
+}
+
+// modeName maps a membership-mode letter to a friendly label for the menu.
+func modeName(letter byte) string {
+	switch letter {
+	case 'q':
+		return "Founder"
+	case 'a':
+		return "Admin"
+	case 'o':
+		return "Op"
+	case 'h':
+		return "Half-op"
+	case 'v':
+		return "Voice"
+	default:
+		return "+" + string(letter)
+	}
+}
+
+// highestPrefixIndex returns the index into symbols of the highest-privilege
+// symbol present in have (lower index = higher privilege), or len(symbols) when
+// none are held — used to hide modes above our own level from the sub-menu.
+func highestPrefixIndex(have, symbols string) int {
+	for i := 0; i < len(symbols); i++ {
+		if strings.IndexByte(have, symbols[i]) >= 0 {
+			return i
+		}
+	}
+	return len(symbols)
+}
+
+// banMask returns the +b mask for nick: a host ban (*!*@host) when the member's
+// host is known, otherwise a nick ban (nick!*@*).
+func banMask(m model, nick string) string {
+	for _, mem := range m.activeBuffer().memberList(m.cli) {
+		if equalFold(mem.Nick, nick) && mem.Host != "" {
+			return "*!*@" + mem.Host
+		}
+	}
+	return nick + "!*@*"
 }
 
 // applyMenu performs the selected action against m.menuNick, closes the menu,
@@ -201,6 +285,7 @@ func (m model) applyMenu(e menuEntry) (tea.Model, tea.Cmd) {
 	nick := m.menuNick
 	ch := m.activeBuffer().Title
 	m.menuOpen = false
+	m.menuStatus = false
 	m = m.refocusInput()
 
 	switch e.act {
@@ -221,25 +306,17 @@ func (m model) applyMenu(e menuEntry) (tea.Model, tea.Cmd) {
 		if m.cli != nil {
 			_ = m.cli.Whois(nick)
 		}
-	case miOp:
+	case miSetMode:
 		if m.cli != nil {
-			_ = m.cli.ChannelMode(ch, "+o", nick)
-		}
-	case miDeop:
-		if m.cli != nil {
-			_ = m.cli.ChannelMode(ch, "-o", nick)
-		}
-	case miVoice:
-		if m.cli != nil {
-			_ = m.cli.ChannelMode(ch, "+v", nick)
-		}
-	case miDevoice:
-		if m.cli != nil {
-			_ = m.cli.ChannelMode(ch, "-v", nick)
+			_ = m.cli.ChannelMode(ch, e.mode, nick)
 		}
 	case miKick:
 		if m.cli != nil {
 			_ = m.cli.Kick(ch, nick, "")
+		}
+	case miBan:
+		if m.cli != nil {
+			_ = m.cli.ChannelMode(ch, "+b", banMask(m, nick))
 		}
 	}
 	return m, nil
@@ -250,19 +327,27 @@ func (m model) applyMenu(e menuEntry) (tea.Model, tea.Cmd) {
 // compositing over the frame while putting the menu right where the user is
 // looking. The subject nick is the title; the selected entry is highlighted.
 func renderNickMenu(m model, w, h int) string {
-	entries := menuEntries(m)
+	entries := currentMenuEntries(m)
 	// menuNick is a raw member nick from the server; sanitize before it reaches the
 	// renderer so an ESC-laden nick cannot inject control sequences into the title.
 	rows := []string{defaultTheme.nicklistTtl.Render(truncate(sanitize(m.menuNick), w))}
 	sel := lipgloss.NewStyle().Reverse(true)
 	for i, e := range entries {
+		// In the status sub-menu, rule the mode toggles off from Kick/Ban.
+		if m.menuStatus && e.act == miKick && i > 0 {
+			rows = append(rows, defaultTheme.dim.Render(strings.Repeat("─", w)))
+		}
 		if i == m.menuSel {
 			rows = append(rows, sel.Render(truncate("▸ "+e.label, w)))
 		} else {
 			rows = append(rows, truncate("  "+e.label, w))
 		}
 	}
-	rows = append(rows, "", truncate("↑↓ ⏎ esc", w))
+	hint := "↑↓ ⏎ esc"
+	if m.menuStatus {
+		hint = "↑↓ ⏎ ←back"
+	}
+	rows = append(rows, "", truncate(hint, w))
 	body := strings.Join(rows, "\n")
 	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(body)
 }

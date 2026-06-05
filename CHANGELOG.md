@@ -6,6 +6,16 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+- The per-user nicklist menu gains a **Status…** sub-menu that grants/revokes any
+  membership mode the server advertises via PREFIX — op, half-op, voice, and
+  founder/admin where supported — alongside Kick and Ban. Modes above your own
+  level are hidden.
+
+### Changed
+- Mention highlights (`/highlight`) now render over the active-buffer blue accent
+  instead of red.
+
 ## [1.0.0] - 2026-06-05
 
 First stable release: the IRCv3 client, the multi-network terminal UI, and the

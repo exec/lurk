@@ -96,10 +96,13 @@ type model struct {
 	nickSel int
 
 	// menuOpen is true while a per-user context menu is shown; menuNick is the
-	// subject nick and menuSel the highlighted menu entry.
-	menuOpen bool
-	menuNick string
-	menuSel  int
+	// subject nick and menuSel the highlighted menu entry. menuStatus is true
+	// while the "Status…" sub-menu (grant/revoke modes + Kick/Ban) is showing
+	// instead of the top-level menu.
+	menuOpen   bool
+	menuNick   string
+	menuSel    int
+	menuStatus bool
 
 	// typing tracks remote typing notifications (the +typing client tag),
 	// keyed by the ASCII-folded buffer the typer is composing in (a channel name

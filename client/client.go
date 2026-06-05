@@ -219,6 +219,23 @@ func (c *Client) StatusMsg() string {
 	return c.st.feat.StatusMsg()
 }
 
+// PrefixModes returns the channel-membership mode letters the server advertises
+// via PREFIX, highest privilege first (e.g. "qaohv"); it defaults to "ov" when
+// PREFIX is unadvertised. PrefixModes()[i] corresponds to PrefixSymbols()[i].
+func (c *Client) PrefixModes() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.st.feat.PrefixModes()
+}
+
+// PrefixSymbols returns the membership prefix symbols aligned with PrefixModes
+// (e.g. "~&@%+"); it defaults to "@+" when PREFIX is unadvertised.
+func (c *Client) PrefixSymbols() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.st.feat.PrefixSymbols()
+}
+
 // CapEnabled reports whether the named IRCv3 capability was successfully
 // negotiated (server-ACKed and not since removed). It returns false before
 // connecting or for caps the server did not grant. Cap names are case-sensitive.
