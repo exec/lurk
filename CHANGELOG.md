@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-05
+
 ### Added
 - The per-user nicklist menu gains a **Status…** sub-menu that grants/revokes any
   membership mode the server advertises via PREFIX — op, half-op, voice, and
@@ -142,7 +144,8 @@ Initial release.
 - Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
   `-version` flag.
 
-[Unreleased]: https://github.com/exec/lurk/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/exec/lurk/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/exec/lurk/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/exec/lurk/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/exec/lurk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/exec/lurk/compare/v0.2.5...v0.3.0
