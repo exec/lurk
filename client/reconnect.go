@@ -78,6 +78,13 @@ func (c *Client) reconnectLoop() chan struct{} {
 			return nil
 		case <-time.After(backoff):
 		}
+		// time.After and c.stop can both be ready at once and select picks at
+		// random, so re-check: a stop that arrived during the backoff must not
+		// trigger one last wasteful dial (which would spin up, then immediately
+		// tear down, a fresh session).
+		if c.stopped() {
+			return nil
+		}
 
 		dialCtx, cancel := context.WithTimeout(context.Background(), reconnectDialTimeout)
 		tr, err := c.dial(dialCtx)

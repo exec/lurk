@@ -379,9 +379,9 @@ func (c *Client) startSession(tr transport, sessionDone chan struct{}, ctx conte
 }
 
 // resetRegistration re-arms the one-shot registration state for a fresh session
-// (the initial connect, or a reconnect). It is only called between sessions,
-// when no run goroutine is active, so it needs no extra synchronization beyond
-// the state mutex it already takes.
+// (the initial connect, or a reconnect). It reassigns registered/regOnce/regErr
+// under c.mu; signalRegistered takes the same lock, so an external Close/Quit
+// landing mid-reconnect cannot race this reassignment.
 func (c *Client) resetRegistration() {
 	c.mu.Lock()
 	c.registered = make(chan struct{})
@@ -420,6 +420,8 @@ func (c *Client) sendOpening() error {
 // signalRegistered closes the registered channel exactly once, recording err as
 // the registration outcome. A non-nil err means registration failed fatally.
 func (c *Client) signalRegistered(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.regOnce.Do(func() {
 		c.regErr = err
 		close(c.registered)
