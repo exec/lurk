@@ -97,12 +97,10 @@ var (
 	ctpOverlay0  = lipgloss.Color("#6c7086")
 	ctpSurface0  = lipgloss.Color("#313244")
 
-	// statusAccent is the muted blue backing the status bar and the active
-	// buffer — a darkened Catppuccin blue that keeps white text readable.
+	// statusAccent is the muted blue backing the status bar, the active buffer,
+	// and mention highlights — a darkened Catppuccin blue that keeps white text
+	// readable.
 	statusAccent = lipgloss.Color("#3a4669")
-	// highlightBg backs a mention banner: a deep, desaturated red so the white
-	// foreground stays legible (and downsamples to a dark-red 256 cell).
-	highlightBg = lipgloss.Color("#6c2e3e")
 )
 
 // Catppuccin Latte palette — the light counterpart of Mocha, used when the
@@ -126,22 +124,21 @@ var (
 	latOverlay0  = lipgloss.Color("#9ca0b0")
 	latSurface0  = lipgloss.Color("#ccd0da")
 
-	// Light status/highlight backings: a blue bar with near-white text, and a
-	// soft-pink mention banner with dark text.
+	// Light status backing: a blue bar with near-white text that also backs the
+	// active buffer and mention highlights.
 	latStatusAccent = lipgloss.Color("#1e66f5")
 	latStatusFg     = lipgloss.Color("#eff1f5")
-	latHighlightBg  = lipgloss.Color("#f2aebb")
 )
 
 // themeColors is the variant-specific color set buildTheme assembles a theme
 // from; dark (Mocha) and light (Latte) supply different values, the monochrome
 // theme is built separately.
 type themeColors struct {
-	overlay0, subtext0, text                color.Color // greys → fg
-	notice, action, red, teal               color.Color // accents
-	accentFg, accentBg, highlightFg, highBg color.Color // status/highlight backings
-	rule                                    color.Color
-	nicks                                   []color.Color
+	overlay0, subtext0, text  color.Color // greys → fg
+	notice, action, red, teal color.Color // accents
+	accentFg, accentBg        color.Color // status-bar / active-buffer / highlight backing
+	rule                      color.Color
+	nicks                     []color.Color
 }
 
 // defaultTheme is the theme the view renders with. It is resolved once from the
@@ -163,7 +160,7 @@ func darkColors() themeColors {
 	return themeColors{
 		overlay0: ctpOverlay0, subtext0: ctpSubtext0, text: ctpText,
 		notice: ctpYellow, action: ctpMauve, red: ctpRed, teal: ctpTeal,
-		accentFg: ctpText, accentBg: statusAccent, highlightFg: ctpRosewater, highBg: highlightBg,
+		accentFg: ctpText, accentBg: statusAccent,
 		rule:  ctpSurface0,
 		nicks: []color.Color{ctpGreen, ctpYellow, ctpBlue, ctpPink, ctpTeal, ctpPeach, ctpSapphire, ctpMauve, ctpSky, ctpLavender, ctpFlamingo, ctpRosewater},
 	}
@@ -173,7 +170,7 @@ func lightColors() themeColors {
 	return themeColors{
 		overlay0: latOverlay0, subtext0: latSubtext0, text: latText,
 		notice: latYellow, action: latMauve, red: latRed, teal: latTeal,
-		accentFg: latStatusFg, accentBg: latStatusAccent, highlightFg: latText, highBg: latHighlightBg,
+		accentFg: latStatusFg, accentBg: latStatusAccent,
 		rule:  latSurface0,
 		nicks: []color.Color{latGreen, latYellow, latBlue, latPink, latTeal, latPeach, latSapphire, latMauve, latSky, latLavender, latFlamingo, latRosewater},
 	}
@@ -188,7 +185,7 @@ func buildTheme(c themeColors) theme {
 		dim:       s().Foreground(c.overlay0),
 		notice:    s().Foreground(c.notice),
 		action:    s().Foreground(c.action).Italic(true),
-		highlight: s().Foreground(c.highlightFg).Background(c.highBg).Bold(true),
+		highlight: s().Foreground(c.accentFg).Background(c.accentBg).Bold(true),
 		info:      s().Foreground(c.subtext0).Italic(true),
 
 		statusBar: s().Foreground(c.accentFg).Background(c.accentBg),
