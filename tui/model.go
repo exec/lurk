@@ -128,6 +128,13 @@ type model struct {
 	// A nil *chatlog.Logger is a safe no-op, so the logging calls need no guard.
 	logger *chatlog.Logger
 
+	// Scrollback search state for the active buffer: the lower-cased term, the
+	// matching line indices (ascending), and the position within them. searchTerm
+	// is "" when no search is active. Ctrl-R cycles to the next (older) match.
+	searchTerm    string
+	searchMatches []int
+	searchPos     int
+
 	// chanList is the channel-directory modal shown by /list: a filterable,
 	// scrollable list drawn as a centered overlay (channellist.go). chanListOpen
 	// gates the overlay and its key capture; chanListLoading is true between the
@@ -317,6 +324,8 @@ func (m *model) switchTo(i int) {
 	b := m.buffers[i]
 	b.Unread = 0
 	b.Highlight = false
+	// A scrollback search is scoped to the buffer it ran in.
+	m.clearSearch()
 }
 
 // nextBuffer focuses the next buffer in order, wrapping around. With a single

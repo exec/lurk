@@ -128,6 +128,13 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleChannelListKey(msg)
 	}
 
+	// Ctrl-R cycles to the next (older) scrollback-search match when a search is
+	// active. It is consumed here so the editor never sees it.
+	if msg.String() == "ctrl+r" && len(m.searchMatches) > 0 {
+		m.cycleSearch()
+		return m, nil
+	}
+
 	// Scrollback navigation works in any focus mode: its keys (Shift/Ctrl+arrows,
 	// PgUp/PgDn) don't collide with menu/nicklist/editor keys, so it is handled
 	// before the focus-specific branches.
@@ -313,6 +320,13 @@ func applyAction(m model, act action) model {
 		// Open the channel-directory modal in its loading state; the LIST replies
 		// (already requested by the command) populate it (channellist.go).
 		m = openChannelList(m)
+
+	case actionSearch:
+		// Run a scrollback search and report a status line when there is one
+		// (a successful jump reports nothing; the status bar shows the position).
+		if note := runSearch(&m, act.text); note != "" {
+			m = appendInfo(m, m.activeBuffer(), note)
+		}
 	}
 	return m
 }

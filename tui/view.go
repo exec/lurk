@@ -424,7 +424,7 @@ func renderStatus(m model) string {
 		}
 	}
 	typing := typingNote(m.typingNicks(asciiLower(b.Title)))
-	return defaultTheme.statusLine(network, nick, b.Title, scrollNote, typing, m.width)
+	return defaultTheme.statusLine(network, nick, b.Title, m.searchNote(), scrollNote, typing, m.width)
 }
 
 // typingNote renders the "X is typing…" status segment for the given typers, or

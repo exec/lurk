@@ -238,6 +238,12 @@ func init() {
 			desc:   "clear the current buffer's scrollback",
 			handle: cmdClear,
 		},
+		"SEARCH": {
+			minArgs: 0, maxArgs: argsUnlimited,
+			usage:  "[text]",
+			desc:   "search scrollback (Ctrl-R cycles matches; no arg clears)",
+			handle: cmdSearch,
+		},
 		"IGNORE": {
 			minArgs: 0, maxArgs: 1,
 			usage:  "[nick]",
@@ -686,6 +692,12 @@ func sortedSetKeys(set map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// cmdSearch runs a scrollback search via the core (actionSearch), which can
+// persist the model's search state. The trailing text is the term ("" clears).
+func cmdSearch(m model, args []string, rest string) (action, tea.Cmd) {
+	return action{kind: actionSearch, text: rest}, nil
 }
 
 // cmdClear empties the active buffer's scrollback (a local view action; no

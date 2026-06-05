@@ -72,6 +72,10 @@ const (
 	// has already been sent; the core opens the modal in its loading state and
 	// the RPL_LIST replies populate it (channellist.go).
 	actionListOpen
+	// actionSearch runs a scrollback search with the text in the action; the core
+	// applies it (mutating the model's search state, which a command handler
+	// cannot persist).
+	actionSearch
 )
 
 // action is the control value handleInput returns for the core to apply. Its
