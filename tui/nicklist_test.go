@@ -6,7 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"lurk/client"
+	"github.com/exec/lurk/client"
 )
 
 func TestNickRowAccountBadge(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // ReadMessage blocks until the next protocol message is available, returning it

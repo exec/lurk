@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"lurk/client"
-	"lurk/irc"
+	"github.com/exec/lurk/client"
+	"github.com/exec/lurk/irc"
 )
 
 // TestSanitizeStripsControlBytes checks that sanitize removes the control bytes a

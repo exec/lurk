@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"lurk/conn"
-	"lurk/irc"
+	"github.com/exec/lurk/conn"
+	"github.com/exec/lurk/irc"
 )
 
 // recordTransport is a minimal transport that records every line the client

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // pipeConn wraps one end of net.Pipe in a Conn and returns both the Conn and

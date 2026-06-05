@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // IRCv3 line-length budgets, in bytes, applied per received line (excluding the

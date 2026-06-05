@@ -31,7 +31,7 @@ import (
 	"strings"
 	"sync"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // lineBudget is the classic IRC message length limit including the trailing

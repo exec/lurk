@@ -5,8 +5,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"lurk/client"
-	"lurk/irc"
+	"github.com/exec/lurk/client"
+	"github.com/exec/lurk/irc"
 )
 
 // FuzzUpdate throws arbitrary inbound IRC events at the TUI update + render path

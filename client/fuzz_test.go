@@ -3,8 +3,8 @@ package client
 import (
 	"testing"
 
-	"lurk/cap"
-	"lurk/irc"
+	"github.com/exec/lurk/cap"
+	"github.com/exec/lurk/irc"
 )
 
 // nopTransport is a do-nothing transport for driving the client's inbound

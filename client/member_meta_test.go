@@ -3,7 +3,7 @@ package client
 import (
 	"testing"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // newTrackClient builds a Client whose state carries the given 005 tokens, for

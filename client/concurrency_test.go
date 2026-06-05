@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"lurk/conn"
+	"github.com/exec/lurk/conn"
 )
 
 // TestReconnectRaceAgainstReaders drives several reconnect cycles while caller

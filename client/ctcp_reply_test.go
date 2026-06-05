@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // ctcpClient builds a registered-enough client wired to a record transport so a

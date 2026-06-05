@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // mustParse parses a wire line into a Message, failing the test on error.

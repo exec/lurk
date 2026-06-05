@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // reconnect.go implements transparent auto-reconnect for a Connect-established

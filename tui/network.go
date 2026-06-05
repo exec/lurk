@@ -1,6 +1,6 @@
 package tui
 
-import "lurk/client"
+import "github.com/exec/lurk/client"
 
 // network is one connected IRC server within the TUI: its client, its event
 // stream, and a display name. The model holds a slice of these; each Buffer

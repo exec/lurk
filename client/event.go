@@ -3,7 +3,7 @@ package client
 import (
 	"time"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // Event carries a single inbound IRC message to handlers, along with a back

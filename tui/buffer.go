@@ -5,7 +5,7 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 
-	"lurk/client"
+	"github.com/exec/lurk/client"
 )
 
 // buffer.go defines the Buffer type: one window per channel, private message,

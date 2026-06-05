@@ -3,7 +3,7 @@ package cap
 import (
 	"strings"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // Receive feeds one parsed message into the Negotiator and returns the lines

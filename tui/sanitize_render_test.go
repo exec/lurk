@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"lurk/client"
+	"github.com/exec/lurk/client"
 )
 
 // escNick is a malicious nick/channel fragment: a benign-looking prefix followed

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"lurk/client"
-	"lurk/irc"
+	"github.com/exec/lurk/client"
+	"github.com/exec/lurk/irc"
 )
 
 // evt builds a client.Event from a raw line for routing tests.

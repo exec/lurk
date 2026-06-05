@@ -8,7 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"lurk/client"
+	"github.com/exec/lurk/client"
 )
 
 // view.go owns the on-screen composition: the classic IRC layout of a buffer

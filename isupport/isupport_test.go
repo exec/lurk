@@ -3,7 +3,7 @@ package isupport
 import (
 	"testing"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // Real Libera.Chat 005 token lines, split as the server actually sends them.

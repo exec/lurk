@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"testing"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // feed merges 005-style tokens into a fresh state and returns it, for tests that

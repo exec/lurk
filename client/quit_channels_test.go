@@ -3,7 +3,7 @@ package client
 import (
 	"testing"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // findEvent returns the first dispatched event with the given command, or nil.

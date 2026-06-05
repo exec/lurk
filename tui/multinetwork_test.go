@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"lurk/client"
+	"github.com/exec/lurk/client"
 )
 
 func twoNetModel(t *testing.T) (model, *network, *network) {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"lurk/chatlog"
+	"github.com/exec/lurk/chatlog"
 )
 
 // TestTUILogsToDisk verifies the model writes buffer lines to the logger when one

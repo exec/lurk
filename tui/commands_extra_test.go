@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"lurk/client"
-	"lurk/irc"
+	"github.com/exec/lurk/client"
+	"github.com/exec/lurk/irc"
 )
 
 // channelModel returns a test model focused on a channel buffer named #go.

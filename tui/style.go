@@ -11,8 +11,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"lurk/client"
-	"lurk/irc"
+	"github.com/exec/lurk/client"
+	"github.com/exec/lurk/irc"
 )
 
 // style.go owns the visual identity of the TUI: the Lip Gloss theme, stable

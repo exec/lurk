@@ -23,7 +23,7 @@
 ## Install
 
 ```sh
-go install lurk/cmd/lurk@latest   # or: go build ./cmd/lurk
+go install github.com/exec/lurk/cmd/lurk@latest   # or: go build ./cmd/lurk
 ```
 
 ## Run

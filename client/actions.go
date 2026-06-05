@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // Wait blocks until the connection has ended (the run loop exited), returning

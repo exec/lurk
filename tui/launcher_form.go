@@ -6,7 +6,7 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 
-	"lurk/config"
+	"github.com/exec/lurk/config"
 )
 
 // launcher_form.go is the add/edit-network form used by the launcher: a list of

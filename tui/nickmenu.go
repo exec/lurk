@@ -7,7 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"lurk/client"
+	"github.com/exec/lurk/client"
 )
 
 // nickmenu.go adds interactive selection of users in the nicklist and a

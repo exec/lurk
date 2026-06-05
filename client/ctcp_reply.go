@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // ctcp_reply.go implements automatic responses to the standard CTCP *queries*

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"lurk/irc"
-	"lurk/isupport"
+	"github.com/exec/lurk/irc"
+	"github.com/exec/lurk/isupport"
 )
 
 // Member is one member of a channel as tracked by the client: the nickname and

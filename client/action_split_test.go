@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"lurk/conn"
-	"lurk/irc"
+	"github.com/exec/lurk/conn"
+	"github.com/exec/lurk/irc"
 )
 
 // TestActionSplitsWithinWireLimit drives a long CTCP ACTION ("/me") to a long

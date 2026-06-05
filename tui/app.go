@@ -9,8 +9,8 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"lurk/chatlog"
-	"lurk/client"
+	"github.com/exec/lurk/chatlog"
+	"github.com/exec/lurk/client"
 )
 
 // Run builds the TUI model around an already-connected client and runs the

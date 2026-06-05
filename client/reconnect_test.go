@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"lurk/conn"
+	"github.com/exec/lurk/conn"
 )
 
 // miniRegister drives the smallest possible registration on the mock server's

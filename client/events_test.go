@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // drainEvent reads one event from the stream with a timeout, failing on stall.

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"lurk/client"
+	"github.com/exec/lurk/client"
 )
 
 // TestCustomHighlightWord verifies an extra highlight word triggers a mention

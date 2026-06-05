@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // SASL result numerics (sasl-3.1 / 3.2), aliased from package irc's numerics so

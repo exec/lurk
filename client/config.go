@@ -10,7 +10,7 @@
 // raw commands and with the typed Handle* helpers for semantic events.
 package client
 
-import "lurk/sasl"
+import "github.com/exec/lurk/sasl"
 
 // SASLConfig configures SASL authentication during registration. It is used
 // only when Mechanism is non-empty (and the server advertises the sasl

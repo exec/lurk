@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 func TestSplitMessage(t *testing.T) {

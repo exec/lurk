@@ -7,7 +7,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"lurk/config"
+	"github.com/exec/lurk/config"
 )
 
 // launcher.go is the pre-connection network picker shown when `lurk` is run with

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"lurk/client"
-	"lurk/irc"
+	"github.com/exec/lurk/client"
+	"github.com/exec/lurk/irc"
 )
 
 func TestFormatStandardReply(t *testing.T) {

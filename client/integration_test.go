@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"lurk/conn"
+	"github.com/exec/lurk/conn"
 )
 
 // mockServer is a scripted IRC server backed by one end of a net.Pipe. It reads

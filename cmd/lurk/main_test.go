@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"lurk/config"
+	"github.com/exec/lurk/config"
 )
 
 // TestNetworkToConfig checks field mapping, Defaults fallback, SASL uppercasing,

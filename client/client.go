@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"lurk/cap"
-	"lurk/conn"
-	"lurk/irc"
-	"lurk/sasl"
+	"github.com/exec/lurk/cap"
+	"github.com/exec/lurk/conn"
+	"github.com/exec/lurk/irc"
+	"github.com/exec/lurk/sasl"
 )
 
 // transport is the subset of *conn.Conn the Client depends on. Keeping it as an

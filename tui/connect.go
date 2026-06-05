@@ -3,7 +3,7 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 
-	"lurk/client"
+	"github.com/exec/lurk/client"
 )
 
 // connect.go adds runtime multi-network support: /connect <name> dials an

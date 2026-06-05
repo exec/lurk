@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // authMsg builds a server AUTHENTICATE message with the given single payload.

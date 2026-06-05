@@ -1,4 +1,4 @@
-module lurk
+module github.com/exec/lurk
 
 go 1.26
 

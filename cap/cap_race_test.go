@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // TestNegotiatorConcurrentIsEnabled exercises the data race the internal mutex

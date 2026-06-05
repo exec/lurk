@@ -5,7 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"lurk/config"
+	"github.com/exec/lurk/config"
 )
 
 // press feeds one key string ("enter", "a", "esc", …) to the launcher model and

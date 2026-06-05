@@ -29,8 +29,8 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"lurk/chatlog"
-	"lurk/client"
+	"github.com/exec/lurk/chatlog"
+	"github.com/exec/lurk/client"
 )
 
 // model is the root Bubble Tea model and the single piece of shared state the

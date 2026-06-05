@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"strings"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // ISupport holds the accumulated RPL_ISUPPORT tokens advertised by a server.

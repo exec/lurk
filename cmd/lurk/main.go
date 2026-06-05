@@ -34,10 +34,10 @@ import (
 	"syscall"
 	"time"
 
-	"lurk/client"
-	"lurk/config"
-	"lurk/irc"
-	"lurk/tui"
+	"github.com/exec/lurk/client"
+	"github.com/exec/lurk/config"
+	"github.com/exec/lurk/irc"
+	"github.com/exec/lurk/tui"
 )
 
 // version is the build version, overridden at release time via

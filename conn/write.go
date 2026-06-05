@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // WriteMessage serializes m and enqueues it for sending. It does not block on

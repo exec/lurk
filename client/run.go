@@ -4,9 +4,9 @@ import (
 	"strings"
 	"time"
 
-	"lurk/irc"
-	"lurk/isupport"
-	"lurk/sasl"
+	"github.com/exec/lurk/irc"
+	"github.com/exec/lurk/isupport"
+	"github.com/exec/lurk/sasl"
 )
 
 // Topic-related command/numerics. The irc package does not yet export these as

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"lurk/conn"
+	"github.com/exec/lurk/conn"
 )
 
 // TestNamesReconcileOn366 drives two NAMES bursts for the same channel through a

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"lurk/irc"
+	"github.com/exec/lurk/irc"
 )
 
 // capMsg builds a CAP *irc.Message from its parameters, mirroring what the
