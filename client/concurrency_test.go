@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ func TestReconnectRaceAgainstReaders(t *testing.T) {
 	var attempts int
 	const maxSessions = 3
 	testDone := make(chan struct{})
+	var down atomic.Bool // set at teardown to silence post-shutdown scripted failures
 
 	c := New(Config{
 		Nick: nick, User: "u", Realname: "r", Server: "x:1",
@@ -47,6 +49,7 @@ func TestReconnectRaceAgainstReaders(t *testing.T) {
 
 		clientSide, serverSide := net.Pipe()
 		srv := newMockServer(t, serverSide)
+		srv.down = &down
 		go func() {
 			// Registration that actually negotiates caps (writer side of Fix 2).
 			srv.expect("CAP LS 302")
@@ -107,6 +110,7 @@ func TestReconnectRaceAgainstReaders(t *testing.T) {
 	// Give the final session a moment to register, then stop everything.
 	waitFor(func() bool { return c.Nick() == nick }, 2*time.Second)
 
+	down.Store(true) // entering teardown
 	close(stop)
 	wg.Wait()
 	close(testDone)
@@ -125,6 +129,7 @@ func TestCapEnabledDuringReconnectSwap(t *testing.T) {
 	var attempts int
 	const maxSessions = 3
 	testDone := make(chan struct{})
+	var down atomic.Bool // set at teardown to silence post-shutdown scripted failures
 
 	c := New(Config{
 		Nick: nick, User: "u", Realname: "r", Server: "x:1",
@@ -137,6 +142,7 @@ func TestCapEnabledDuringReconnectSwap(t *testing.T) {
 		mu.Unlock()
 		clientSide, serverSide := net.Pipe()
 		srv := newMockServer(t, serverSide)
+		srv.down = &down
 		go func() {
 			miniRegister(t, srv, nick)
 			if n < maxSessions {
@@ -177,6 +183,7 @@ func TestCapEnabledDuringReconnectSwap(t *testing.T) {
 	}, 8*time.Second)
 	waitFor(func() bool { return c.Nick() == nick }, 2*time.Second)
 
+	down.Store(true) // entering teardown
 	close(stop)
 	wg.Wait()
 	close(testDone)

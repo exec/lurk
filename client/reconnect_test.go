@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ func TestAutoReconnect(t *testing.T) {
 
 	var mu sync.Mutex
 	var attempts int
+	var down atomic.Bool
 	testDone := make(chan struct{})
 	defer close(testDone)
 
@@ -45,6 +47,7 @@ func TestAutoReconnect(t *testing.T) {
 
 		clientSide, serverSide := net.Pipe()
 		srv := newMockServer(t, serverSide)
+		srv.down = &down
 		go func() {
 			miniRegister(t, srv, nick)
 			srv.expect("JOIN #x")
@@ -63,6 +66,7 @@ func TestAutoReconnect(t *testing.T) {
 	c.HandleReconnecting(func(*Event) { reconnecting <- struct{}{} })
 	c.HandleReconnected(func(*Event) { reconnected <- struct{}{} })
 	defer c.Close()
+	defer down.Store(true) // registered after c.Close so it runs first (LIFO)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -110,6 +114,7 @@ func TestQuitStopsReconnect(t *testing.T) {
 	const nick = "qbot"
 	var attempts int
 	var mu sync.Mutex
+	var down atomic.Bool
 
 	// gotQuit carries the exact QUIT line the server received, proving the
 	// message was not dropped by stopping the supervisor too early.
@@ -121,6 +126,7 @@ func TestQuitStopsReconnect(t *testing.T) {
 		mu.Unlock()
 		clientSide, serverSide := net.Pipe()
 		srv := newMockServer(t, serverSide)
+		srv.down = &down
 		go func() {
 			miniRegister(t, srv, nick)
 			// Wait for the client's QUIT, capture it, then drop the link.
@@ -133,6 +139,7 @@ func TestQuitStopsReconnect(t *testing.T) {
 
 	c := New(Config{Nick: nick, User: "u", Realname: "r", Server: "x:1", Caps: []string{}, AutoReconnect: true})
 	c.dial = dialer
+	defer down.Store(true) // teardown: silence post-assertion scripted failures
 
 	events := c.Events()
 

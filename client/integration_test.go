@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,11 @@ type mockServer struct {
 	c    net.Conn
 	br   *bufio.Reader
 	once sync.Once
+
+	// down, when non-nil and set, silences scripted failures once the owning
+	// test enters teardown (so a reconnect dial fired just before shutdown does
+	// not call t.Errorf on a finished test). Single-session tests leave it nil.
+	down *atomic.Bool
 }
 
 func newMockServer(t *testing.T, serverSide net.Conn) *mockServer {
@@ -32,6 +38,12 @@ func newMockServer(t *testing.T, serverSide net.Conn) *mockServer {
 // connection close (so the client side unblocks) rather than Fatalf (which is
 // only legal on the test goroutine), then Goexits to stop the script.
 func (s *mockServer) fail(format string, args ...any) {
+	if s.down != nil && s.down.Load() {
+		// Test is tearing down; an expected post-shutdown failure. Exit silently
+		// instead of failing an already-finished test.
+		s.close()
+		runtime.Goexit()
+	}
 	s.t.Helper()
 	s.t.Errorf(format, args...)
 	s.close()
