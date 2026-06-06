@@ -375,6 +375,7 @@ func parseConfig() (cfg client.Config, channel string, plain bool, configPath, l
 		pass       = flag.String("pass", env("LURK_PASS", ""), "server password (env LURK_PASS)")
 		useTLS     = flag.Bool("tls", envBool("LURK_TLS", false), "connect with TLS (env LURK_TLS)")
 		insecure   = flag.Bool("insecure", envBool("LURK_INSECURE", false), "skip TLS certificate verification (env LURK_INSECURE)")
+		insAuth    = flag.Bool("insecure-auth", envBool("LURK_INSECURE_AUTH", false), "allow sending credentials (PASS/SASL) over a plaintext connection (env LURK_INSECURE_AUTH)")
 		channelArg = flag.String("channel", env("LURK_CHANNEL", ""), "channel to join (env LURK_CHANNEL)")
 		plainArg   = flag.Bool("plain", envBool("LURK_PLAIN", false), "use the plain line-mode client instead of the full-screen TUI (env LURK_PLAIN)")
 		configArg  = flag.String("config", env("LURK_CONFIG", ""), "config-file path for the network launcher (env LURK_CONFIG)")
@@ -400,6 +401,7 @@ func parseConfig() (cfg client.Config, channel string, plain bool, configPath, l
 		Server:             *server,
 		TLS:                *useTLS,
 		InsecureSkipVerify: *insecure,
+		AllowInsecureAuth:  *insAuth,
 		AutoReconnect:      true,
 		Version:            "lurk " + version,
 		SASL: client.SASLConfig{
@@ -614,8 +616,10 @@ func envBool(key string, def bool) bool {
 	switch strings.ToLower(v) {
 	case "1", "true", "yes", "on":
 		return true
-	default:
+	case "0", "false", "no", "off":
 		return false
+	default:
+		return def // unrecognized value: keep the documented default
 	}
 }
 

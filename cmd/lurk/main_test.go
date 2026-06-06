@@ -7,6 +7,50 @@ import (
 	"github.com/exec/lurk/config"
 )
 
+// TestEnvBool checks the env-var boolean parser: recognized true/false spellings,
+// and — crucially — that an unset or unrecognized value yields the caller's
+// default rather than silently collapsing to false.
+func TestEnvBool(t *testing.T) {
+	const key = "LURK_TEST_BOOL"
+
+	t.Run("unset returns the default", func(t *testing.T) {
+		if envBool(key, true) != true {
+			t.Errorf("unset with def=true returned false")
+		}
+		if envBool(key, false) != false {
+			t.Errorf("unset with def=false returned true")
+		}
+	})
+
+	for _, v := range []string{"1", "true", "TRUE", "yes", "on"} {
+		t.Run("true/"+v, func(t *testing.T) {
+			t.Setenv(key, v)
+			if !envBool(key, false) {
+				t.Errorf("envBool(%q) = false, want true", v)
+			}
+		})
+	}
+	for _, v := range []string{"0", "false", "no", "off"} {
+		t.Run("false/"+v, func(t *testing.T) {
+			t.Setenv(key, v)
+			if envBool(key, true) {
+				t.Errorf("envBool(%q) with def=true = true, want false", v)
+			}
+		})
+	}
+	for _, v := range []string{"maybe", "2", "yep"} {
+		t.Run("unrecognized/"+v, func(t *testing.T) {
+			t.Setenv(key, v)
+			if envBool(key, true) != true {
+				t.Errorf("unrecognized %q with def=true did not keep the default", v)
+			}
+			if envBool(key, false) != false {
+				t.Errorf("unrecognized %q with def=false did not keep the default", v)
+			}
+		})
+	}
+}
+
 // TestNetworkToConfig checks field mapping, Defaults fallback, SASL uppercasing,
 // and the "lurk" nick fallback.
 func TestNetworkToConfig(t *testing.T) {
