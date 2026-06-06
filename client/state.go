@@ -241,6 +241,21 @@ func (s *state) rekey(newFold isupport.CaseMapping) {
 		channels[newFold.Fold(cs.name)] = cs
 	}
 	s.channels = channels
+
+	// Re-key the monitor watch set under the new fold. The display-case nicks
+	// are the map values; use them to derive the new keys. Online status is
+	// cleared: the server will re-report it via 730/731, and attempting to
+	// preserve it while the key space changes would require an additional
+	// pass that buys nothing (the re-MONITOR after a reconnect resets it
+	// anyway). This matches the reconnect path in remonitorNicks.
+	if len(s.monitored) > 0 {
+		monitored := make(map[string]string, len(s.monitored))
+		for _, displayNick := range s.monitored {
+			monitored[newFold.Fold(displayNick)] = displayNick
+		}
+		s.monitored = monitored
+	}
+	s.monitorOnline = make(map[string]bool)
 }
 
 // foldKey returns the canonical map key for a nick or channel name.

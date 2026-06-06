@@ -216,6 +216,45 @@ func TestStateRekeyOnCasemappingChange(t *testing.T) {
 	}
 }
 
+// TestStateMonitorRekeyOnCasemappingChange verifies that the monitored watch set
+// is re-keyed when the server changes CASEMAPPING, so setMonitorOnline and
+// isMonitoredOnline continue to resolve nicks under the new fold.
+func TestStateMonitorRekeyOnCasemappingChange(t *testing.T) {
+	// Start under ascii: '[' and ']' do NOT fold, so "Alice[X]" keys as "alice[x]".
+	s := newTestState("CASEMAPPING=ascii", "CHANTYPES=#")
+	s.addMonitor("Alice[X]")
+	s.setMonitorOnline("Alice[X]", true)
+
+	// Sanity: online under ascii fold before the change.
+	if !s.isMonitoredOnline("alice[x]") {
+		t.Fatal("alice[x] should be online before casemapping change")
+	}
+
+	// Server switches to rfc1459, where '[' folds to '{' and ']' to '}'.
+	s.mergeISupport([]string{"CASEMAPPING=rfc1459"})
+
+	// The online set is cleared on rekey (status unknown until 730/731).
+	if s.isMonitoredOnline("alice{x}") {
+		t.Error("online status should be cleared after casemapping rekey")
+	}
+
+	// But the nick is still in the monitored set under the new fold.
+	if _, ok := s.monitored[s.foldKey("alice{x}")]; !ok {
+		t.Error("Alice[X] not found in monitored set after casemapping change (rekey failed)")
+	}
+
+	// After the rekey, setMonitorOnline works correctly under the new fold.
+	s.setMonitorOnline("ALICE{X}", true) // uppercase, should fold to alice{x}
+	if !s.isMonitoredOnline("alice{x}") {
+		t.Error("alice{x} should be online after setMonitorOnline under rfc1459 fold")
+	}
+	// Display nick preserved.
+	nicks := s.monitoredNicks()
+	if len(nicks) != 1 || nicks[0] != "Alice[X]" {
+		t.Errorf("monitoredNicks() = %v, want [Alice[X]]", nicks)
+	}
+}
+
 // TestStateOpenBatchCap verifies that a flood of never-closed BATCH opens cannot
 // grow the batches map without bound, while updates to an already-open ref still
 // take effect.
