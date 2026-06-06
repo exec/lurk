@@ -200,16 +200,17 @@ func (s *session) handleBouncerADDNETWORK(cmd bouncer.Cmd) error {
 
 // handleBouncerCHANGENETWORK handles "BOUNCER CHANGENETWORK <netid> <attrs>".
 // Updates the named network's config fields, persists, and broadcasts notify.
-// Connection-critical attribute changes (host/port/tls) are noted as a TODO
-// for Phase 6b reconnect; the config is updated now.
+// If Addr or TLS changed, the live upstream is restarted so the new address
+// takes effect without a daemon restart.
 func (s *session) handleBouncerCHANGENETWORK(cmd bouncer.Cmd) error {
 	if err := s.gateManagementOp("CHANGENETWORK"); err != nil {
 		return err
 	}
 
-	// Find, apply, and persist under cfgMu. changeNetwork returns a COPY of the
-	// updated network, safe to use after the lock is released.
-	updated, ok, err := s.srv.changeNetwork(cmd.NetID, func(n *Network) {
+	// Find, apply, and persist under cfgMu. changeNetwork returns both the
+	// pre-apply snapshot and the post-apply copy, both safe to use after the
+	// lock is released.
+	old, updated, ok, err := s.srv.changeNetwork(cmd.NetID, func(n *Network) {
 		applyAttrsToNetwork(cmd.Attrs, n)
 	})
 	if !ok {
@@ -221,7 +222,17 @@ func (s *session) handleBouncerCHANGENETWORK(cmd bouncer.Cmd) error {
 			fmt.Sprintf("CHANGENETWORK: persist failed: %v", err))
 	}
 
-	// TODO(Phase 6b): reconnect the upstream if host/port/tls changed.
+	// Reconnect the upstream when the connection address or TLS flag changed.
+	// Remove tears down the live client; Add re-dials against the new address.
+	// Both calls are made OUTSIDE cfgMu (already released above). A connect
+	// failure is non-fatal: the config is already persisted and the upstream
+	// will retry via auto-reconnect.
+	if s.srv.mgr != nil && (updated.Addr != old.Addr || updated.TLS != old.TLS) {
+		s.srv.mgr.Remove(cmd.NetID)
+		if err := s.srv.mgr.Add(context.Background(), &updated); err != nil {
+			log.Printf("server: CHANGENETWORK: reconnect network %d: %v", cmd.NetID, err)
+		}
+	}
 
 	ni := networkToInfo(&updated, s.srv.mgr)
 	attrs := bouncer.EncodeAttrs(bouncer.NetworkInfoToAttrs(ni))
@@ -347,12 +358,13 @@ func (s *Server) addNetwork(nw Network) (Network, error) {
 }
 
 // changeNetwork finds the network with the given netid, applies apply to it in
-// place, and persists. It returns a COPY of the updated network, whether the
-// network was found, and any Save error. NOTE: on a Save failure the in-memory
-// mutation is NOT rolled back (the apply has already run); the caller surfaces
-// the error and the admin can restart to resync from disk. This matches the v1
-// limitation documented for CHANGENETWORK.
-func (s *Server) changeNetwork(netid int, apply func(*Network)) (Network, bool, error) {
+// place, persists, and returns both the pre-apply snapshot (old) and the
+// post-apply copy (updated), whether the network was found, and any Save error.
+// On a Save failure the in-memory mutation is rolled back to old so that disk
+// and memory stay consistent; the caller receives the error and surfaces it to
+// the client. The returned old and updated values are safe to use after the
+// lock is released.
+func (s *Server) changeNetwork(netid int, apply func(*Network)) (old, updated Network, found bool, err error) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
 
@@ -364,23 +376,30 @@ func (s *Server) changeNetwork(netid int, apply func(*Network)) (Network, bool, 
 		}
 	}
 	if idx < 0 {
-		return Network{}, false, nil
+		return Network{}, Network{}, false, nil
 	}
+
+	// Snapshot the original before mutation so we can roll back on Save failure
+	// and return it for reconnect comparison.
+	old = s.cfg.Networks[idx]
 
 	apply(&s.cfg.Networks[idx])
 
 	if s.cfgPath != "" {
-		if err := Save(s.cfg, s.cfgPath); err != nil {
-			return s.cfg.Networks[idx], true, err
+		if saveErr := Save(s.cfg, s.cfgPath); saveErr != nil {
+			// Roll back: restore the pre-apply entry so memory matches disk.
+			s.cfg.Networks[idx] = old
+			return old, Network{}, true, saveErr
 		}
 	}
 
-	return s.cfg.Networks[idx], true, nil
+	return old, s.cfg.Networks[idx], true, nil
 }
 
 // delNetwork removes the network with the given netid and persists. It returns
-// whether the network was found and any Save error. The caller stops the
-// upstream (mgr.Remove) OUTSIDE the lock.
+// whether the network was found and any Save error. On a Save failure the
+// removal is rolled back so that disk and memory stay consistent. The caller
+// stops the upstream (mgr.Remove) OUTSIDE the lock.
 func (s *Server) delNetwork(netid int) (bool, error) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
@@ -396,11 +415,19 @@ func (s *Server) delNetwork(netid int) (bool, error) {
 		return false, nil
 	}
 
+	// Snapshot the entry before removal so we can restore it on Save failure.
+	removed := s.cfg.Networks[idx]
 	s.cfg.Networks = append(s.cfg.Networks[:idx], s.cfg.Networks[idx+1:]...)
 
 	if s.cfgPath != "" {
-		if err := Save(s.cfg, s.cfgPath); err != nil {
-			return true, err
+		if saveErr := Save(s.cfg, s.cfgPath); saveErr != nil {
+			// Roll back: re-insert the removed entry at its original index so
+			// memory matches the unchanged disk.
+			tail := make([]Network, len(s.cfg.Networks)-idx)
+			copy(tail, s.cfg.Networks[idx:])
+			s.cfg.Networks = append(s.cfg.Networks[:idx], removed)
+			s.cfg.Networks = append(s.cfg.Networks, tail...)
+			return true, saveErr
 		}
 	}
 

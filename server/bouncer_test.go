@@ -1,6 +1,6 @@
 package server
 
-// Phase 6a hermetic tests for the soju.im/bouncer-networks control surface.
+// Hermetic tests for the soju.im/bouncer-networks control surface.
 //
 // Test coverage:
 //  - BOUNCER BIND <valid netid> during registration → 005 has BOUNCER_NETID=<netid>
@@ -11,6 +11,9 @@ package server
 //                         broadcasts -notify to a second connected control client
 //  - BOUNCER DELNETWORK → removes, persists, notifies
 //  - BOUNCER CHANGENETWORK → updates, persists, notifies
+//  - BOUNCER CHANGENETWORK host/port change → live upstream is restarted (reconnect)
+//  - changeNetwork Save failure → in-memory rollback, config unchanged
+//  - delNetwork Save failure → in-memory rollback, removed entry restored
 //  - Malformed BOUNCER subcommand → FAIL not panic
 //  - Double-BIND → FAIL ALREADY_BOUND
 //  - BIND after registration → FAIL
@@ -983,6 +986,230 @@ func drainFor(t *testing.T, c *conn.Conn, d time.Duration) {
 		case <-deadline:
 			return
 		}
+	}
+}
+
+// ─── Parse helper for tests ───────────────────────────────────────────────────
+
+// ─── Rollback tests (CHANGE/DEL save failure) ────────────────────────────────
+
+// TestChangeNetworkRollbackOnSaveFailure verifies that when changeNetwork's
+// Save call fails (unwritable path), the in-memory config is unchanged — the
+// rolled-back entry has the original name, not the applied one.
+func TestChangeNetworkRollbackOnSaveFailure(t *testing.T) {
+	cfg := &Config{
+		Networks: []Network{
+			{NetID: 1, Name: "Original", Addr: "irc.example.com:6697",
+				Identity: Identity{Nick: "n", User: "u", Realname: "r"}},
+		},
+	}
+	srv := New(cfg)
+	// Point cfgPath at a path that can never be written (directory, not file).
+	srv.WithConfigPath(t.TempDir())
+
+	_, _, found, err := srv.changeNetwork(1, func(n *Network) {
+		n.Name = "ShouldNotStick"
+	})
+	if !found {
+		t.Fatal("changeNetwork: network 1 not found")
+	}
+	if err == nil {
+		t.Fatal("changeNetwork: expected Save error, got nil")
+	}
+
+	// In-memory state must be rolled back: name still "Original".
+	nets := srv.snapshotNetworks()
+	if len(nets) != 1 {
+		t.Fatalf("network count = %d, want 1", len(nets))
+	}
+	if nets[0].Name != "Original" {
+		t.Errorf("in-memory name = %q after Save failure, want Original (rollback failed)", nets[0].Name)
+	}
+}
+
+// TestDelNetworkRollbackOnSaveFailure verifies that when delNetwork's Save call
+// fails, the removed entry is re-inserted and in-memory config is unchanged.
+func TestDelNetworkRollbackOnSaveFailure(t *testing.T) {
+	cfg := &Config{
+		Networks: []Network{
+			{NetID: 1, Name: "Keep", Addr: "irc.example.com:6697",
+				Identity: Identity{Nick: "n", User: "u", Realname: "r"}},
+			{NetID: 2, Name: "ToDelete", Addr: "irc.other.com:6697",
+				Identity: Identity{Nick: "m", User: "u", Realname: "r"}},
+			{NetID: 3, Name: "AlsoKeep", Addr: "irc.third.com:6697",
+				Identity: Identity{Nick: "o", User: "u", Realname: "r"}},
+		},
+	}
+	srv := New(cfg)
+	// Point cfgPath at a directory so Save always fails.
+	srv.WithConfigPath(t.TempDir())
+
+	found, err := srv.delNetwork(2)
+	if !found {
+		t.Fatal("delNetwork: network 2 not found")
+	}
+	if err == nil {
+		t.Fatal("delNetwork: expected Save error, got nil")
+	}
+
+	// In-memory state must be rolled back: all three networks present with
+	// correct order.
+	nets := srv.snapshotNetworks()
+	if len(nets) != 3 {
+		t.Fatalf("network count = %d after rollback, want 3", len(nets))
+	}
+	// Verify all three netids are present.
+	netids := map[int]string{}
+	for _, n := range nets {
+		netids[n.NetID] = n.Name
+	}
+	if netids[1] != "Keep" {
+		t.Errorf("netid 1 name = %q, want Keep", netids[1])
+	}
+	if netids[2] != "ToDelete" {
+		t.Errorf("netid 2 name = %q after rollback, want ToDelete", netids[2])
+	}
+	if netids[3] != "AlsoKeep" {
+		t.Errorf("netid 3 name = %q, want AlsoKeep", netids[3])
+	}
+}
+
+// ─── CHANGENETWORK reconnect test ─────────────────────────────────────────────
+
+// TestCHANGENETWORKReconnect verifies that when BOUNCER CHANGENETWORK changes
+// the upstream host, the live upstream is torn down and re-dialed against the
+// new address. The test uses two scripted mock upstreams:
+//
+//   - oldUpstream: the initial connection, expects to be closed (sees EOF/dial drop)
+//   - newUpstream: registers after the reconnect
+//
+// After CHANGENETWORK the new upstream must have received a registration and the
+// manager must report ConnConnected for the netid.
+func TestCHANGENETWORKReconnect(t *testing.T) {
+	const (
+		netid    = 20
+		nick     = "rcnick"
+		oldAddr  = "old.example.com:6697"
+		newAddr  = "new.example.com:6697"
+		oldNetID = netid
+	)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	cfg := &Config{
+		Networks: []Network{
+			{NetID: netid, Name: "RCNet", Addr: oldAddr,
+				Identity: Identity{Nick: nick, User: "u", Realname: "r"}},
+		},
+	}
+	if err := Save(cfg, cfgPath); err != nil {
+		t.Fatalf("save initial config: %v", err)
+	}
+
+	testDone := make(chan struct{})
+	var down atomic.Bool
+	t.Cleanup(func() {
+		down.Store(true)
+		close(testDone)
+	})
+
+	// newConnected is closed when the new upstream completes its registration.
+	newConnected := make(chan struct{})
+	var newConnectedOnce sync.Once
+
+	var dialCount atomic.Int32
+	dialFn := func(_ context.Context) (net.Conn, error) {
+		n := dialCount.Add(1)
+		clientSide, serverSide := net.Pipe()
+		su := newScriptedUpstream(t, serverSide)
+		su.down = &down
+		go func() {
+			defer su.close()
+			su.register(nick)
+			if n >= 2 {
+				// Second (and later) dial is the reconnect after CHANGENETWORK.
+				newConnectedOnce.Do(func() { close(newConnected) })
+			}
+			<-testDone
+		}()
+		return clientSide, nil
+	}
+
+	sink := &collectSink{}
+	mgr := NewManager(cfg, sink)
+	mgr.dialers = map[int]dialer{netid: dialFn}
+
+	// Start the manager so the initial upstream connects.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Manager.Start: %v", err)
+	}
+	t.Cleanup(func() { mgr.Close() })
+
+	// Wait for the initial upstream registration (001 in the sink).
+	if ev := sink.waitForCommand(netid, "001", 3*time.Second); ev == nil {
+		t.Fatal("timed out waiting for initial upstream 001")
+	}
+
+	// Build a server wired to this manager.
+	srv := New(cfg)
+	srv.WithManager(mgr)
+	srv.WithConfigPath(cfgPath)
+
+	c := pipeServerWithManager(t, cfg, mgr, cfgPath)
+
+	// Override the server's cfg pointer — pipeServerWithManager creates its own
+	// Server from cfg, but the manager was already started against cfg, so we
+	// need the server to use the same cfg pointer for cfgMu coordination.
+	// Instead, use the server created by pipeServerWithManager and inject the
+	// manager + cfgPath after the fact, which pipeServerWithManager already does.
+	// We just need to register and issue CHANGENETWORK.
+
+	doRegisterSimple(t, c, "rcuser")
+
+	// Issue CHANGENETWORK to switch host.
+	sendLine(t, c, fmt.Sprintf("BOUNCER CHANGENETWORK %d host=new.example.com;port=6697", netid))
+
+	chgReply := recvUntilCmd(t, c, "BOUNCER", 3*time.Second)
+	if chgReply.Param(0) != "NETWORK" || chgReply.Param(1) != fmt.Sprintf("%d", netid) {
+		t.Fatalf("CHANGENETWORK reply unexpected: %v", chgReply)
+	}
+
+	// The new upstream should connect. Wait for it.
+	select {
+	case <-newConnected:
+		// Good: new upstream registered.
+	case <-time.After(5 * time.Second):
+		t.Fatal("new upstream did not connect after CHANGENETWORK within 5s")
+	}
+
+	// The manager must report ConnConnected for the netid after the reconnect.
+	if !waitForUpstreamState(mgr, netid, ConnConnected, 3*time.Second) {
+		st, _ := mgr.UpstreamState(netid)
+		t.Errorf("upstream state = %v after CHANGENETWORK reconnect, want ConnConnected", st)
+	}
+
+	// The dial count must be at least 2: initial connect + reconnect.
+	if dialCount.Load() < 2 {
+		t.Errorf("dial count = %d, want >= 2 (initial + reconnect)", dialCount.Load())
+	}
+
+	// Persisted config must reflect the new address.
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	var diskCfg Config
+	if err := json.Unmarshal(data, &diskCfg); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if len(diskCfg.Networks) == 0 {
+		t.Fatal("no networks in persisted config after CHANGENETWORK")
+	}
+	if diskCfg.Networks[0].Addr != newAddr {
+		t.Errorf("persisted addr = %q, want %q", diskCfg.Networks[0].Addr, newAddr)
 	}
 }
 
