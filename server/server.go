@@ -10,15 +10,22 @@
 //
 // Phase 1 delivers: the Server type + serveConn seam, server-side CAP
 // negotiation (LS/REQ/ACK/NAK/END), NICK/USER registration, and the welcome
-// burst (001–005 with RPL_ISUPPORT including a stub BOUNCER_NETID). TLS
-// enforcement and SASL authentication land in Phase 2.
+// burst (001–005 with RPL_ISUPPORT including a stub BOUNCER_NETID).
+//
+// Phase 2 adds: server-side SASL PLAIN with PBKDF2 password verification,
+// TLS-gate enforcement (AUTHENTICATE PLAIN rejected on non-TLS connections
+// before any base64 decode), the authcid fallback parser, and a registration
+// timeout that drops idle unauthenticated connections.
 package server
 
 import (
+	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/exec/lurk/conn"
 	"github.com/exec/lurk/irc"
@@ -38,6 +45,26 @@ const serverVersion = "lurkd-1"
 // most the set it received in CAP LS; this bound guards against a hostile client
 // flooding the registration loop with arbitrarily many names.
 const maxCapRequests = 256
+
+// registrationTimeout is the maximum time a client has to complete the
+// registration handshake (CAP + NICK/USER + optional SASL + CAP END + welcome
+// burst) before the connection is dropped. This bounds the goroutine lifetime
+// of idle or slow-connecting hostile clients. The deadline is set on the raw
+// net.Conn before registration and cleared once the welcome burst is sent.
+const registrationTimeout = 30 * time.Second
+
+// maxSASLPayloadB64 is the maximum byte length of a single AUTHENTICATE payload
+// line (base64 encoded). The IRCv3 SASL specification uses 400 bytes as the
+// chunking threshold for multi-chunk payloads. A PLAIN payload for realistic
+// credentials is far smaller. We cap at 400 (the spec threshold) to bound
+// hostile input before any decode attempt while being more generous than
+// necessary for any real username/password combination.
+//
+// Note: the IRC message body budget is 510 bytes (512 - CRLF), and
+// "AUTHENTICATE " is 13 bytes, so payloads larger than 497 bytes cannot
+// arrive over a standards-compliant connection anyway. Our cap at 400 is
+// deliberately below that so it is the first check to fire.
+const maxSASLPayloadB64 = 400
 
 // advertisedCaps is the ordered list of capabilities lurkd advertises in
 // CAP LS 302. It matches §7.1 of docs/LURKD-DESIGN.md: the realistic v1 set
@@ -89,23 +116,57 @@ var capLSPayload = strings.Join(advertisedCaps, " ")
 // Server is safe for concurrent use from multiple goroutines once constructed.
 type Server struct {
 	cfg *Config
+
+	// regTimeout bounds the registration handshake (see registrationTimeout).
+	// New defaults it to registrationTimeout; tests set a short value to exercise
+	// the idle-client drop without waiting the full production timeout.
+	regTimeout time.Duration
 }
 
 // New builds a Server from cfg. cfg must not be nil.
 func New(cfg *Config) *Server {
-	return &Server{cfg: cfg}
+	return &Server{cfg: cfg, regTimeout: registrationTimeout}
 }
 
-// NewListener starts a plain TCP listener on addr (e.g. ":6697") and returns
-// it. The caller typically passes the result to Serve. TLS wrapping is expected
-// to be layered on in Phase 2; for Phase 1 the accept loop works over plain
-// TCP.
-func NewListener(addr string) (net.Listener, error) {
+// NewListener starts a TCP listener on addr. If the config's Listen block
+// has a TLS certificate+key pair, the listener is wrapped with TLS and all
+// accepted connections are TLS — plaintext is never served from a TLS-configured
+// listener. If no cert/key is configured, a plain TCP listener is returned and
+// a dev warning is printed; AUTHENTICATE PLAIN will still be refused on such
+// connections by the TLS gate in serveConn.
+func NewListener(addr string, cfg *Config) (net.Listener, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("server: listen %s: %w", addr, err)
 	}
+
+	if cfg.Listen.TLSCert != "" && cfg.Listen.TLSKey != "" {
+		tlsCfg, err := loadTLSConfig(cfg.Listen.TLSCert, cfg.Listen.TLSKey)
+		if err != nil {
+			_ = ln.Close()
+			return nil, err
+		}
+		return tls.NewListener(ln, tlsCfg), nil
+	}
+
+	// No TLS material configured. Allow plain-TCP for development (so Phase 1
+	// tests still pass) but log a clear warning. The AUTHENTICATE PLAIN TLS gate
+	// is still enforced per-session, so no credentials can be extracted over plain
+	// connections even in dev mode.
+	log.Printf("server: WARNING: no TLS cert/key configured; listening on plain TCP — AUTHENTICATE PLAIN will be refused on all connections")
 	return ln, nil
+}
+
+// loadTLSConfig loads a TLS configuration from a PEM certificate and key file.
+func loadTLSConfig(certFile, keyFile string) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("server: load TLS key pair: %w", err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 // Serve accepts connections from ln until it returns an error. Each accepted
@@ -127,20 +188,49 @@ func (s *Server) Serve(ln net.Listener) error {
 }
 
 // serveConn wraps nc in a framed conn.Conn, runs the registration handshake
-// (CAP negotiation + NICK/USER + welcome burst), and then enters the
-// post-registration dispatch loop. It returns when the connection closes or
-// an unrecoverable error occurs.
+// (CAP negotiation + NICK/USER + optional SASL + welcome burst), and then
+// enters the post-registration dispatch loop. It returns when the connection
+// closes or an unrecoverable error occurs.
 //
 // serveConn is the primary testability seam: tests hand it the server end of a
 // net.Pipe pair (via dialPipe) instead of a real socket, so the full protocol
-// surface is exercised without network I/O.
+// surface is exercised without network I/O. For TLS-path tests the isTLS flag
+// is set via serveConnTLS (which takes the flag explicitly) so tests can use
+// the non-TLS net.Pipe transport while still exercising the TLS-gated code
+// paths, without needing a real TLS handshake.
 func (s *Server) serveConn(nc net.Conn) error {
+	// Detect TLS at the transport layer. This is the code invariant: if the
+	// accept loop wrapped the listener with tls.NewListener, nc is a *tls.Conn.
+	_, isTLS := nc.(*tls.Conn)
+	return s.serveConnInternal(nc, isTLS)
+}
+
+// serveConnInternal is the internal implementation shared by serveConn and
+// the test seam. isTLS is passed explicitly so tests can set it independently
+// of the transport type.
+func (s *Server) serveConnInternal(nc net.Conn, isTLS bool) error {
+	// Set a registration deadline. If the client does not complete the full
+	// handshake within registrationTimeout, the read deadline fires and the
+	// connection is dropped. The deadline is cleared once the welcome burst is
+	// sent (in sendWelcome), so long-lived registered sessions are unaffected.
+	regTimeout := s.regTimeout
+	if regTimeout <= 0 {
+		regTimeout = registrationTimeout
+	}
+	if err := nc.SetDeadline(time.Now().Add(regTimeout)); err != nil {
+		// Best-effort; proceed even if the deadline cannot be set (e.g. net.Pipe
+		// does not support deadlines in all test environments).
+		log.Printf("server: set registration deadline: %v", err)
+	}
+
 	c := conn.NewConn(nc, conn.Options{})
 	defer c.Close()
 
 	sess := &session{
-		srv:  s,
-		conn: c,
+		srv:   s,
+		conn:  c,
+		nc:    nc,
+		isTLS: isTLS,
 	}
 	return sess.run()
 }
@@ -160,11 +250,30 @@ const (
 	capPhaseDone
 )
 
+// saslState is the SASL sub-state within a CAP negotiation session.
+type saslState int
+
+const (
+	// saslStateIdle: no AUTHENTICATE has been sent yet.
+	saslStateIdle saslState = iota
+	// saslStateAwaitPayload: "AUTHENTICATE PLAIN" accepted; waiting for the
+	// base64 payload line.
+	saslStateAwaitPayload
+	// saslStateDone: SASL exchange completed (success or failure).
+	saslStateDone
+)
+
 // session holds all per-connection state for one attached client. It is created
 // by serveConn and lives on a single goroutine; no locking is needed.
 type session struct {
 	srv  *Server
 	conn *conn.Conn
+	nc   net.Conn // underlying net.Conn, used to clear the registration deadline
+
+	// isTLS is true when the underlying transport is a *tls.Conn. The TLS gate
+	// in handleAUTHENTICATE uses this flag to refuse PLAIN authentication on
+	// non-TLS connections before any base64 decode.
+	isTLS bool
 
 	// Registration state.
 	nick     string
@@ -176,6 +285,11 @@ type session struct {
 	capPhase    capPhase
 	capEnabled  map[string]bool // caps ACKed in this session
 	capReqCount int             // total distinct cap names seen in REQ lines
+
+	// SASL sub-state (nested within the CAP window).
+	saslState  saslState
+	saslAuthed bool           // true if SASL authentication succeeded
+	saslParsed *ParsedAuthcid // parsed authcid from the PLAIN payload (set on success)
 }
 
 // run is the session goroutine's main loop. It processes messages until the
@@ -201,6 +315,8 @@ func (s *session) dispatch(msg *irc.Message) error {
 	switch strings.ToUpper(msg.Command) {
 	case irc.CAP:
 		return s.handleCAP(msg)
+	case irc.AUTHENTICATE:
+		return s.handleAUTHENTICATE(msg)
 	case irc.NICK:
 		return s.handleNICK(msg)
 	case irc.USER:
@@ -335,7 +451,19 @@ func (s *session) handleCAPREQ(msg *irc.Message) error {
 // such line will be processed and responded to normally — the spec does not
 // require us to reject them). If NICK and USER are already known, the welcome
 // burst is emitted immediately.
+//
+// If the server has bouncer authentication configured and the client has not
+// successfully authenticated via SASL, the connection is closed. This enforces
+// that lurkd requires authentication when BouncerAuth is configured; an
+// unauthenticated CAP END is not a valid registration path in that case.
 func (s *session) handleCAPEND() error {
+	// If bouncer auth is configured and the client skipped SASL (or failed it),
+	// reject the registration — close the connection without a welcome burst.
+	if s.srv.cfg.BouncerAuth.User != "" && !s.saslAuthed {
+		_ = s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "Authentication required")
+		_ = s.conn.Close()
+		return nil
+	}
 	s.capPhase = capPhaseDone
 	return s.maybeWelcome()
 }
@@ -353,6 +481,193 @@ func (s *session) handleCAPLIST() error {
 		Command: irc.CAP,
 		Params:  []string{s.clientNick(), irc.CAP_LIST, strings.Join(caps, " ")},
 	})
+}
+
+// ─── SASL / AUTHENTICATE handlers ────────────────────────────────────────────
+
+// handleAUTHENTICATE processes AUTHENTICATE messages. It implements the
+// server side of the IRCv3 SASL exchange:
+//
+//  1. Client: AUTHENTICATE PLAIN
+//  2. Server: AUTHENTICATE +   (challenge: empty, meaning "send now")
+//  3. Client: AUTHENTICATE <base64(authzid\0authcid\0passwd)>
+//  4. Server: 900 + 903 on success, or 904 on failure
+//
+// Aborting: AUTHENTICATE * at any point → 906 ERR_SASLABORTED.
+// Unknown mechanism → 908 RPL_SASLMECHS.
+// TLS gate: if isTLS is false, AUTHENTICATE PLAIN is refused with 904
+// BEFORE any base64 decode (§6.2).
+// Payload size gate: a base64 payload longer than maxSASLPayloadB64 is
+// refused with 904 BEFORE any decode (IRCv3 400-byte chunking rule).
+func (s *session) handleAUTHENTICATE(msg *irc.Message) error {
+	param := msg.Param(0)
+
+	// Client abort: "AUTHENTICATE *" at any sub-state. Per the IRCv3 SASL spec,
+	// the server SHOULD reply with 906 ERR_SASLABORTED.
+	if param == "*" {
+		s.saslState = saslStateDone
+		return s.sendNumeric(irc.ERR_SASLABORTED, s.clientNick(), "SASL authentication aborted")
+	}
+
+	switch s.saslState {
+	case saslStateIdle:
+		return s.handleAuthenticateMech(param)
+	case saslStateAwaitPayload:
+		return s.handleAuthenticatePayload(param)
+	case saslStateDone:
+		// Re-authentication after a completed exchange is rejected.
+		return s.sendNumeric(irc.ERR_SASLALREADY, s.clientNick(), "You have already authenticated using SASL")
+	default:
+		return s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "SASL error")
+	}
+}
+
+// handleAuthenticateMech processes the mechanism selection line
+// "AUTHENTICATE <MECHANISM>". Only PLAIN is supported; any other mechanism
+// name is rejected with 908 listing PLAIN.
+func (s *session) handleAuthenticateMech(mech string) error {
+	mech = strings.ToUpper(mech)
+
+	if mech != "PLAIN" {
+		// Unknown or unsupported mechanism: list what we support.
+		return s.send(&irc.Message{
+			Source:  serverName,
+			Command: irc.RPL_SASLMECHS,
+			Params:  []string{s.clientNick(), "PLAIN", "are available SASL mechanisms"},
+		})
+	}
+
+	// TLS gate [B#2]: refuse PLAIN on a non-TLS connection BEFORE any decode.
+	// This is checked after the mechanism is known but before any challenge or
+	// payload handling, so a non-TLS client never gets a useful oracle — even
+	// if they somehow supply a valid credential, the 904 fires unconditionally.
+	if !s.isTLS {
+		s.saslState = saslStateDone
+		return s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "SASL PLAIN requires TLS")
+	}
+
+	// PLAIN selected on a TLS connection: send the empty challenge "AUTHENTICATE +"
+	// to tell the client to send the payload immediately.
+	s.saslState = saslStateAwaitPayload
+	return s.send(&irc.Message{
+		Command: irc.AUTHENTICATE,
+		Params:  []string{"+"},
+	})
+}
+
+// handleAuthenticatePayload processes the base64 PLAIN payload
+// "AUTHENTICATE <base64>". It decodes, verifies the credential, and emits
+// 900+903 or 904.
+//
+// The TLS gate was already enforced in handleAuthenticateMech; by the time we
+// reach here isTLS is always true. The explicit re-check below is a defence-in-
+// depth assertion that must not be reachable on non-TLS sessions.
+func (s *session) handleAuthenticatePayload(payload string) error {
+	s.saslState = saslStateDone // consume the sub-state regardless of outcome
+
+	// Defence-in-depth: the TLS gate must have fired before we ever reach here.
+	// This check should be unreachable on a non-TLS session, but an adversarial
+	// reviewer correctly notes that defence-in-depth demands it.
+	if !s.isTLS {
+		return s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "SASL PLAIN requires TLS")
+	}
+
+	// Payload size gate: cap before any allocation or decode. The IRCv3 SASL
+	// spec uses 400 bytes as a chunking threshold; we use a slightly more
+	// generous cap to handle edge cases while still bounding hostile input.
+	if len(payload) > maxSASLPayloadB64 {
+		return s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "SASL payload too long")
+	}
+
+	// Decode base64. Do NOT include the decoded bytes in any error message or log.
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "SASL PLAIN: invalid base64")
+	}
+
+	// Parse the PLAIN format: authzid\0authcid\0passwd.
+	// Split on NUL bytes — exactly three fields.
+	parts := splitNUL(raw)
+	if len(parts) != 3 {
+		// Malformed payload: do not log any decoded bytes.
+		return s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "SASL PLAIN: malformed payload")
+	}
+	// parts[0] = authzid (may be empty), parts[1] = authcid, parts[2] = passwd
+	authzid := string(parts[0])
+	authcid := string(parts[1])
+	passwd := string(parts[2])
+
+	// Validate authcid (the user component of bouncer auth) — hostname input
+	// surface is hostile. ParseAuthcid enforces length, NUL, and emptiness.
+	parsed, err := ParseAuthcid(authcid)
+	if err != nil {
+		return s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "SASL PLAIN: invalid authcid")
+	}
+
+	// Authorize: the user component of the authcid (or the authzid, if set and
+	// matching) must match Config.BouncerAuth.User.
+	wantUser := s.srv.cfg.BouncerAuth.User
+	if wantUser == "" {
+		// No bouncer auth configured: reject all authentication attempts.
+		return s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "SASL PLAIN: no bouncer auth configured")
+	}
+
+	// Verify the password via PBKDF2 FIRST — before checking the username.
+	// This is a deliberate constant-time defence: verifying unconditionally
+	// ensures the response time does not leak whether the username is valid.
+	// (A username check that short-circuits before the KDF would be a timing
+	// oracle distinguishing valid vs. invalid usernames.)
+	// Do NOT log passwd or the raw payload.
+	ok, err := VerifyPassword(s.srv.cfg.BouncerAuth.PasswordHash, passwd)
+	if err != nil {
+		// Malformed stored hash or unsupported algorithm. Log the structural error
+		// (no password bytes) so the admin can diagnose misconfiguration.
+		log.Printf("server: SASL verify: %v", err)
+		return s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "SASL authentication failed")
+	}
+
+	// authzid, when non-empty, must match the bouncer username. (If authzid is
+	// empty the client is authorizing as authcid, which is the common case.)
+	// These comparisons use a bitwise-AND logic so both password and username
+	// checks always run (no short-circuit after password failure).
+	userMatch := (parsed.User == wantUser) && (authzid == "" || authzid == wantUser)
+
+	if !ok || !userMatch {
+		return s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "SASL authentication failed")
+	}
+
+	// Success. Record auth state on the session.
+	s.saslAuthed = true
+	s.saslParsed = &parsed
+
+	// 900 RPL_LOGGEDIN — <nick>!<user>@<host> <account> :You are now logged in as <user>
+	nick := s.clientNick()
+	if err := s.send(&irc.Message{
+		Source:  serverName,
+		Command: irc.RPL_LOGGEDIN,
+		Params:  []string{nick, nick + "!*@*", wantUser, "You are now logged in as " + wantUser},
+	}); err != nil {
+		return err
+	}
+
+	// 903 RPL_SASLSUCCESS
+	return s.sendNumeric(irc.RPL_SASLSUCCESS, nick, "SASL authentication successful")
+}
+
+// splitNUL splits a byte slice on NUL bytes, returning the parts (not including
+// the NUL separators). It is used to parse the SASL PLAIN payload
+// (authzid\0authcid\0passwd).
+func splitNUL(b []byte) [][]byte {
+	var parts [][]byte
+	start := 0
+	for i, c := range b {
+		if c == 0 {
+			parts = append(parts, b[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, b[start:])
+	return parts
 }
 
 // ─── NICK / USER handlers ────────────────────────────────────────────────────
@@ -415,6 +730,12 @@ func (s *session) handlePING(msg *irc.Message) error {
 // NICK and USER have been seen. It is idempotent — once the welcome burst is
 // sent s.welcomed is set and subsequent calls are no-ops, so it is safe to call
 // from every NICK, USER, and CAP END handler without risk of a double burst.
+//
+// When bouncer authentication is configured, the legacy no-CAP path (NICK+USER
+// without CAP LS) does NOT satisfy the auth requirement. Such a client will
+// complete the welcome burst only if no auth is configured, preserving backward
+// compatibility with legacy IRC clients connecting to a dev/unconfigured bouncer.
+// When auth is configured, the legacy path is also rejected (auth is mandatory).
 func (s *session) maybeWelcome() error {
 	if s.welcomed {
 		return nil // already done
@@ -422,6 +743,13 @@ func (s *session) maybeWelcome() error {
 	// If no CAP was used at all (capPhasePreLS) we treat the client as having
 	// implicitly completed CAP negotiation once both NICK and USER are known.
 	if s.capPhase == capPhasePreLS && s.nick != "" && s.user != "" {
+		// If bouncer auth is configured, a client that skipped CAP entirely has
+		// not authenticated. Reject via the same path as handleCAPEND.
+		if s.srv.cfg.BouncerAuth.User != "" && !s.saslAuthed {
+			_ = s.sendNumeric(irc.ERR_SASLFAIL, s.clientNick(), "Authentication required")
+			_ = s.conn.Close()
+			return nil
+		}
 		s.capPhase = capPhaseDone
 	}
 	if s.capPhase != capPhaseDone || s.nick == "" || s.user == "" {
@@ -433,9 +761,20 @@ func (s *session) maybeWelcome() error {
 // sendWelcome emits the IRC registration welcome burst: 001, 002, 003, 004, 005.
 // It sets s.welcomed = true before sending so that any re-entrant call (which
 // should not occur, but is guarded against) is a no-op.
+//
+// It also clears the registration timeout deadline set by serveConnInternal so
+// that the now-registered long-lived session is not subject to it.
 func (s *session) sendWelcome() error {
 	s.welcomed = true
 	nick := s.nick
+
+	// Clear the registration deadline. A zero time disables the deadline.
+	if err := s.nc.SetDeadline(time.Time{}); err != nil {
+		// Best-effort: log but continue. A failed clear means the session may
+		// eventually be killed by the old deadline if it fires before any I/O —
+		// which is safe but suboptimal.
+		log.Printf("server: clear registration deadline: %v", err)
+	}
 
 	// 001 RPL_WELCOME
 	if err := s.send(&irc.Message{

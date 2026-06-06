@@ -54,11 +54,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	ln, err := server.NewListener(addr)
+	ln, err := server.NewListener(addr, cfg)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	log.Printf("listening on %s (plain TCP; TLS enforcement is Phase 2)", ln.Addr())
+	log.Printf("listening on %s", ln.Addr())
 
 	s := server.New(cfg)
 	if err := s.Serve(ln); err != nil {

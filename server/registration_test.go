@@ -24,9 +24,22 @@ import (
 // ─── test harness helpers ─────────────────────────────────────────────────────
 
 // pipeServer creates a net.Pipe, wraps the client end in a conn.Conn, and
-// starts serveConn on the server end in a goroutine. It registers cleanup for
-// both ends. It returns the wrapped client conn for test scripts to use.
+// starts serveConnInternal on the server end in a goroutine with isTLS=false.
+// It registers cleanup for both ends. It returns the wrapped client conn for
+// test scripts to use.
+//
+// pipeServer uses serveConnInternal (the internal seam) rather than serveConn so
+// that the isTLS flag is passed explicitly — net.Pipe returns a *net.Conn, not a
+// *tls.Conn, so serveConn's type assertion would always see isTLS=false, which
+// is the correct hermetic-test behavior but it is better stated explicitly.
 func pipeServer(t *testing.T) *conn.Conn {
+	t.Helper()
+	return pipeServerWith(t, &Config{}, false)
+}
+
+// pipeServerWith is the general helper used by Phase 2 tests that need to
+// control the server config and the isTLS flag independently.
+func pipeServerWith(t *testing.T, cfg *Config, isTLS bool) *conn.Conn {
 	t.Helper()
 	cRaw, sRaw := net.Pipe()
 	client := conn.NewConn(cRaw, conn.Options{})
@@ -34,8 +47,8 @@ func pipeServer(t *testing.T) *conn.Conn {
 		_ = client.Close()
 		_ = sRaw.Close()
 	})
-	s := New(&Config{})
-	go func() { _ = s.serveConn(sRaw) }()
+	s := New(cfg)
+	go func() { _ = s.serveConnInternal(sRaw, isTLS) }()
 	return client
 }
 
