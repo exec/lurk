@@ -686,3 +686,210 @@ func TestRehydrateSkipsUnsafeFilenames(t *testing.T) {
 		t.Errorf("buffer count = %d after unsafe-file injection, want 1", count)
 	}
 }
+
+// ─── JSONL rotation tests ─────────────────────────────────────────────────────
+
+// TestRotationCreatesBackupFile verifies that when the JSONL file exceeds
+// WithMaxFileSize after an Ingest write, the file is renamed to .jsonl.1 and
+// a fresh .jsonl is created for subsequent writes.
+func TestRotationCreatesBackupFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Use a tiny cap so the first few messages trigger a rotation.
+	const cap = 100 // bytes — well below a single JSON line
+	s, err := NewStore(dir, WithMaxFileSize(cap))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer s.Close()
+
+	// Ingest enough messages to force rotation.
+	for i := 0; i < 5; i++ {
+		ev := makeEvent("PRIVMSG", "nick!u@h", []string{"#rot", fmt.Sprintf("rotation-test-msg-%d", i)})
+		s.Ingest(1, ev)
+	}
+
+	// The rotation file must exist.
+	rotPath := filepath.Join(dir, "1", "#rot.jsonl.1")
+	if _, err := os.Stat(rotPath); os.IsNotExist(err) {
+		t.Fatalf(".jsonl.1 rotation file not created after exceeding size cap")
+	}
+
+	// The current .jsonl must also exist (fresh file after rotation).
+	curPath := filepath.Join(dir, "1", "#rot.jsonl")
+	if _, err := os.Stat(curPath); os.IsNotExist(err) {
+		t.Fatalf(".jsonl current file missing after rotation")
+	}
+}
+
+// TestRotationRingRehydratesFromBothFiles verifies that after rotation, a fresh
+// NewStore rehydrates the in-memory ring from both the .jsonl.1 (older) and the
+// .jsonl (newer) files, with all msgids intact and in chronological order.
+//
+// Only one generation of backup is kept (.jsonl.1). With a very small cap,
+// multiple rotations occur during the test and only the final .jsonl + .jsonl.1
+// pair survives on disk. The test therefore only asserts that:
+//   - rehydration returns some entries (not empty)
+//   - entries are in chronological order
+//   - each rehydrated entry has a non-empty msgid
+//   - the very last ingested message is present (it's always in the current .jsonl)
+func TestRotationRingRehydratesFromBothFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Use a cap that triggers rotation but not on every single write, so we get
+	// entries in both .jsonl.1 and .jsonl after the final rotation.
+	const cap = 300
+	s, err := NewStore(dir, WithMaxFileSize(cap))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// Ingest enough messages to trigger at least one rotation.
+	const total = 15
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	var lastMsgID string
+	for i := 0; i < total; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		ev := makeEventWithTime("PRIVMSG", "alice!u@h",
+			[]string{"#rehydrate", fmt.Sprintf("msg%d", i)}, ts)
+		msgid, stored := s.Ingest(1, ev)
+		if !stored {
+			t.Fatalf("Ingest %d: not stored", i)
+		}
+		lastMsgID = msgid
+	}
+
+	// Ensure the rotation file exists before closing.
+	rotPath := filepath.Join(dir, "1", "#rehydrate.jsonl.1")
+	if _, err := os.Stat(rotPath); os.IsNotExist(err) {
+		t.Fatal(".jsonl.1 not created — increase message count or reduce cap")
+	}
+
+	s.Close()
+
+	// Open a second store — this triggers Rehydrate from both files.
+	s2, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore (restart): %v", err)
+	}
+	defer s2.Close()
+
+	after := s2.Latest(1, "#rehydrate", total+5)
+	if len(after) == 0 {
+		t.Fatal("no entries after rehydration from both files")
+	}
+
+	// Verify chronological order.
+	for i := 1; i < len(after); i++ {
+		if after[i].Time.Before(after[i-1].Time) {
+			t.Errorf("entries out of order at index %d: %v before %v",
+				i, after[i].Time, after[i-1].Time)
+		}
+	}
+
+	// Every rehydrated entry must have a non-empty msgid.
+	for _, e := range after {
+		if e.MsgID == "" {
+			t.Errorf("rehydrated entry has empty msgid: %+v", e)
+		}
+	}
+
+	// The last ingested message must always be present (it's in the current .jsonl).
+	found := false
+	for _, e := range after {
+		if e.MsgID == lastMsgID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("last ingested msgid %q not found in rehydrated ring", lastMsgID)
+	}
+}
+
+// TestRotationDeduplicatesMsgIDs verifies that dedupEntries correctly removes
+// duplicate MsgIDs (as could appear at the rotation boundary).
+func TestRotationDeduplicatesMsgIDs(t *testing.T) {
+	entries := []Entry{
+		{MsgID: "a", Params: []string{"#c", "first-a"}},
+		{MsgID: "b", Params: []string{"#c", "b"}},
+		{MsgID: "a", Params: []string{"#c", "second-a"}}, // duplicate
+		{MsgID: "c", Params: []string{"#c", "c"}},
+	}
+	got := dedupEntries(entries)
+	if len(got) != 3 {
+		t.Fatalf("dedupEntries: got %d entries, want 3", len(got))
+	}
+	// First occurrence of "a" must be kept.
+	if got[0].MsgID != "a" || got[0].Params[1] != "first-a" {
+		t.Errorf("first entry = %+v, want msgid=a text=first-a", got[0])
+	}
+	if got[1].MsgID != "b" {
+		t.Errorf("second entry msgid = %q, want b", got[1].MsgID)
+	}
+	if got[2].MsgID != "c" {
+		t.Errorf("third entry msgid = %q, want c", got[2].MsgID)
+	}
+}
+
+// TestRotationOnlyOneGenerationKept verifies that a second rotation replaces
+// the previous .jsonl.1 (only one generation of backup is kept).
+func TestRotationOnlyOneGenerationKept(t *testing.T) {
+	dir := t.TempDir()
+
+	const cap = 50 // extremely small to force multiple rotations
+	s, err := NewStore(dir, WithMaxFileSize(cap))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer s.Close()
+
+	// Ingest enough to trigger multiple rotations.
+	for i := 0; i < 20; i++ {
+		ev := makeEvent("PRIVMSG", "nick!u@h", []string{"#gen", fmt.Sprintf("gen-msg-%d-padding-to-grow-file-size", i)})
+		s.Ingest(1, ev)
+	}
+
+	// There must be at most one .jsonl.1 (no .jsonl.2 etc.).
+	entries, err := os.ReadDir(filepath.Join(dir, "1"))
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	var rotFiles []string
+	for _, fi := range entries {
+		if strings.HasSuffix(fi.Name(), ".jsonl.1") {
+			rotFiles = append(rotFiles, fi.Name())
+		}
+		if strings.HasSuffix(fi.Name(), ".jsonl.2") {
+			t.Errorf("found unexpected second-generation rotation file: %s", fi.Name())
+		}
+	}
+	if len(rotFiles) == 0 {
+		t.Error("no .jsonl.1 rotation file found after multiple writes")
+	}
+	if len(rotFiles) > 1 {
+		t.Errorf("found %d .jsonl.1 files, want at most 1: %v", len(rotFiles), rotFiles)
+	}
+}
+
+// TestNoRotationWhenCapIsZero verifies that WithMaxFileSize(0) (the default)
+// does not rotate even after many writes.
+func TestNoRotationWhenCapIsZero(t *testing.T) {
+	dir := t.TempDir()
+
+	s, err := NewStore(dir) // no WithMaxFileSize — default 0
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer s.Close()
+
+	for i := 0; i < 20; i++ {
+		ev := makeEvent("PRIVMSG", "nick!u@h", []string{"#norot", fmt.Sprintf("msg%d", i)})
+		s.Ingest(1, ev)
+	}
+
+	rotPath := filepath.Join(dir, "1", "#norot.jsonl.1")
+	if _, err := os.Stat(rotPath); !os.IsNotExist(err) {
+		t.Error(".jsonl.1 rotation file unexpectedly created when cap is 0 (disabled)")
+	}
+}

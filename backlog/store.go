@@ -12,7 +12,9 @@
 // Ingest is the write path: it filters for PRIVMSG/NOTICE, assigns a
 // crypto/rand msgid, sanitizes text with client.SanitizeForRelay, writes a JSON
 // line to disk (a single Write call per entry, so the line is atomic w.r.t.
-// other writes to the same file), and pushes the entry into the ring.
+// other writes to the same file), and pushes the entry into the ring. After each
+// write, if WithMaxFileSize is configured and the file has grown past the cap,
+// the current .jsonl file is rotated to .jsonl.1 and a fresh .jsonl is opened.
 //
 // Latest is the read path Phase 5's CHATHISTORY server uses: it returns the
 // newest-N entries in chronological order from the in-memory ring.
@@ -30,7 +32,10 @@
 // DefaultRingSize caps entries per ring. DefaultMaxTargetsPerNet caps how many
 // distinct (netid, target) buffers a single upstream can create. Targets beyond
 // the cap are logged and silently dropped so a hostile upstream spraying many
-// fabricated targets cannot exhaust memory or file descriptors.
+// fabricated targets cannot exhaust memory or file descriptors. WithMaxFileSize
+// caps the on-disk size of each JSONL file — once exceeded, the file is rotated
+// to .jsonl.1 and a fresh .jsonl is opened, keeping disk usage predictable for
+// long-running daemons on busy networks.
 //
 // # Disk format
 //
@@ -44,13 +49,22 @@
 // final line (crash mid-write) is detected during rehydration by checking that
 // json.Unmarshal succeeds and required fields are non-empty.
 //
+// # Rotation
+//
+// When WithMaxFileSize(n) is set and a file's size exceeds n bytes after a write,
+// the file is rotated: the open handle is closed, the file is renamed from
+// <target>.jsonl to <target>.jsonl.1 (replacing any previous .1), and a fresh
+// <target>.jsonl is opened. Only one generation of backup (.jsonl.1) is kept.
+//
 // # Rehydration
 //
 // Rehydrate (called by NewStore) reads the tail of every JSONL file it finds
 // under s.dir and refills each ring so msgids and server-time survive a
-// restart. If a target has no JSONL file but the optional chatlog.Logger is
-// configured, chatlog.Tail is the lossy fallback: entries get placeholder msgids
-// and are marked Lossy=true.
+// restart. When a .jsonl.1 rotation file also exists for a target, its tail is
+// read first (older entries) followed by the current .jsonl (newer entries),
+// with the merged set deduplicated by MsgID. If a target has no JSONL file but
+// the optional chatlog.Logger is configured, chatlog.Tail is the lossy fallback:
+// entries get placeholder msgids and are marked Lossy=true.
 package backlog
 
 import (
@@ -137,10 +151,11 @@ type bufferKey struct {
 //
 // The zero value is not usable; always use NewStore.
 type Store struct {
-	dir      string
-	ringSize int
-	maxTgts  int
-	chatlog  *chatlog.Logger // optional lossy fallback for rehydration
+	dir         string
+	ringSize    int
+	maxTgts     int
+	maxFileSize int64           // 0 = no rotation; positive = rotate when file exceeds this
+	chatlog     *chatlog.Logger // optional lossy fallback for rehydration
 
 	mu      sync.Mutex
 	buffers map[bufferKey]*bufferEntry
@@ -158,6 +173,14 @@ func WithRingSize(n int) Option {
 // WithMaxTargetsPerNet overrides the per-netid target cap (default 500).
 func WithMaxTargetsPerNet(n int) Option {
 	return func(s *Store) { s.maxTgts = n }
+}
+
+// WithMaxFileSize sets a per-(netid,target) JSONL file size cap in bytes. When
+// a file exceeds this size after an Ingest write, it is rotated: the current
+// file is renamed to <target>.jsonl.1 (replacing any previous rotation) and a
+// fresh <target>.jsonl is opened. A value of 0 (the default) disables rotation.
+func WithMaxFileSize(bytes int64) Option {
+	return func(s *Store) { s.maxFileSize = bytes }
 }
 
 // WithChatlogFallback attaches a chatlog.Logger to use as a lossy rehydration
@@ -344,6 +367,12 @@ func (s *Store) Latest(netid int, target string, limit int) []Entry {
 // Rehydrate scans s.dir for existing JSONL files and refills each ring from
 // the file tail. Any torn final line (crash mid-write) is silently skipped.
 //
+// When a rotation file (<target>.jsonl.1) exists alongside the current
+// <target>.jsonl, its tail is read first (it holds older entries) followed by
+// the current file (newer entries). The merged set is deduplicated by MsgID so
+// that an entry that appears in both files (possible if the rotation happened
+// between writes) is stored only once.
+//
 // Called automatically by NewStore; can be called again after manual store
 // inspection if needed (idempotent: it only adds to empty rings).
 func (s *Store) Rehydrate() error {
@@ -369,6 +398,8 @@ func (s *Store) Rehydrate() error {
 			continue
 		}
 		for _, fi := range files {
+			// Process only current .jsonl files; .jsonl.1 rotation files are
+			// handled below as part of the matching .jsonl entry.
 			if fi.IsDir() || !strings.HasSuffix(fi.Name(), ".jsonl") {
 				continue
 			}
@@ -381,15 +412,33 @@ func (s *Store) Rehydrate() error {
 				continue
 			}
 			safeTarget := rawTarget
-			path := filepath.Join(netDir, fi.Name())
+			currentPath := filepath.Join(netDir, fi.Name())
+			rotatedPath := currentPath + ".1" // <target>.jsonl.1, if present
 
-			entries, err := tailJSONL(path, s.ringSize)
+			// Load from the rotation file first (older entries), then the current
+			// file (newer entries), so chronological order is preserved.
+			var entries []Entry
+			if rotEntries, err := tailJSONL(rotatedPath, s.ringSize); err == nil && len(rotEntries) > 0 {
+				entries = append(entries, rotEntries...)
+			}
+			curEntries, err := tailJSONL(currentPath, s.ringSize)
 			if err != nil {
-				log.Printf("backlog: rehydrate %s: %v", path, err)
+				log.Printf("backlog: rehydrate %s: %v", currentPath, err)
 				continue
 			}
+			entries = append(entries, curEntries...)
+
 			if len(entries) == 0 {
 				continue
+			}
+
+			// Deduplicate by MsgID (in case an entry appears in both files at the
+			// rotation boundary). Keep first occurrence (chronologically older).
+			entries = dedupEntries(entries)
+
+			// Trim to the ring size (keep newest).
+			if len(entries) > s.ringSize {
+				entries = entries[len(entries)-s.ringSize:]
 			}
 
 			key := bufferKey{netid: netid, target: safeTarget}
@@ -414,6 +463,22 @@ func (s *Store) Rehydrate() error {
 		}
 	}
 	return nil
+}
+
+// dedupEntries returns entries with duplicates (same MsgID) removed, keeping
+// the first occurrence. The input order (chronological, oldest first) is
+// preserved so later entries from the current file shadow older rotation copies.
+func dedupEntries(entries []Entry) []Entry {
+	seen := make(map[string]bool, len(entries))
+	out := entries[:0:len(entries)] // reuse backing array
+	for _, e := range entries {
+		if seen[e.MsgID] {
+			continue
+		}
+		seen[e.MsgID] = true
+		out = append(out, e)
+	}
+	return out
 }
 
 // ─── internal helpers ─────────────────────────────────────────────────────────
@@ -442,7 +507,10 @@ func (s *Store) getOrCreate(netid int, safe string) (*bufferEntry, bool) {
 }
 
 // appendLineLocked serialises entry as JSON and appends it as a single line
-// (json + '\n') to b.f, opening the file lazily. The caller must hold b.mu.
+// (json + '\n') to b.f, opening the file lazily. After a successful write, if
+// a maxFileSize cap is configured and the file has grown past it, rotateLocked
+// is called to rename the current file to .jsonl.1 and open a fresh .jsonl.
+// The caller must hold b.mu.
 //
 // A single Write call ensures the line is written atomically with respect to
 // readers scanning complete lines on POSIX filesystems with O_APPEND.
@@ -459,8 +527,68 @@ func (s *Store) appendLineLocked(b *bufferEntry, netid int, safeTarget string, e
 		return fmt.Errorf("json encode: %w", err)
 	}
 	data = append(data, '\n')
-	_, err = b.f.Write(data)
-	return err
+	if _, err = b.f.Write(data); err != nil {
+		return err
+	}
+
+	// Check size and rotate if over the cap. Errors here are non-fatal: the
+	// write already succeeded, so we log and continue rather than disrupting
+	// the IRC session.
+	if s.maxFileSize > 0 {
+		if rotErr := s.maybeRotateLocked(b, netid, safeTarget); rotErr != nil {
+			log.Printf("backlog: rotate netid=%d target=%q: %v", netid, safeTarget, rotErr)
+		}
+	}
+	return nil
+}
+
+// maybeRotateLocked checks whether b.f has grown past s.maxFileSize and, if so,
+// rotates the current .jsonl to .jsonl.1 and opens a fresh .jsonl. The caller
+// must hold b.mu.
+//
+// Rotation steps:
+//  1. Stat the open file to get current size.
+//  2. If size <= maxFileSize, return immediately (nothing to do).
+//  3. Close b.f.
+//  4. os.Rename(<target>.jsonl → <target>.jsonl.1), replacing any previous .1.
+//  5. Open a fresh <target>.jsonl and assign it to b.f.
+//
+// If any step fails after the rename, b.f is left nil so the next Ingest call
+// reopens (and appends to the .jsonl file, which may have been recreated by
+// another process). In practice this should not happen on a healthy filesystem.
+func (s *Store) maybeRotateLocked(b *bufferEntry, netid int, safeTarget string) error {
+	info, err := b.f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat: %w", err)
+	}
+	if info.Size() <= s.maxFileSize {
+		return nil // still within cap
+	}
+
+	// Close the current file before renaming so Windows does not refuse the
+	// rename on a file with an open handle (POSIX allows it, Windows does not).
+	if err := b.f.Close(); err != nil {
+		b.f = nil
+		return fmt.Errorf("close before rotate: %w", err)
+	}
+	b.f = nil
+
+	subdir := filepath.Join(s.dir, strconv.Itoa(netid))
+	current := filepath.Join(subdir, safeTarget+".jsonl")
+	rotated := filepath.Join(subdir, safeTarget+".jsonl.1")
+
+	// Rename current → .1 (replaces any previous rotation).
+	if err := os.Rename(current, rotated); err != nil {
+		return fmt.Errorf("rename %s → %s: %w", current, rotated, err)
+	}
+
+	// Open a fresh .jsonl.
+	f, err := openJSONLFile(s.dir, netid, safeTarget)
+	if err != nil {
+		return fmt.Errorf("open fresh after rotate: %w", err)
+	}
+	b.f = f
+	return nil
 }
 
 // openJSONLFile opens (O_APPEND|O_CREATE|O_WRONLY) the JSONL file for
