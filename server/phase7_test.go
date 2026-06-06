@@ -13,9 +13,12 @@ package server
 //     sends "AWAY" (clear).
 //  5. TestMsgIDConsistency: a message delivered live carries the same @msgid
 //     that CHATHISTORY LATEST returns.
+//  6. TestBurstChannelCap: burst caps JOIN count at maxBurstChannels when upstream
+//     has more channels than the cap.
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -612,4 +615,143 @@ collectBatch:
 	if liveMsgID != storedMsgID {
 		t.Errorf("msgid mismatch: live delivery = %q, CHATHISTORY = %q (they must be equal)", liveMsgID, storedMsgID)
 	}
+}
+
+// ─── Test 6: burst channel cap ────────────────────────────────────────────────
+
+// TestBurstChannelCap verifies that sendStateBurst caps the number of channel
+// JOIN blocks it emits at maxBurstChannels, even when the upstream client has
+// joined more channels than that cap. This is the hostile-upstream protection:
+// a malicious server that pushes lurkd into thousands of channels cannot force
+// an unbounded fan of writes to every attaching client.
+//
+// The test seeds maxBurstChannels+100 channels in the upstream client state
+// by having the scripted upstream send server-initiated JOIN confirmations for
+// each channel (no JOIN request from lurkd is needed — the upstream can push
+// JOINs for the bouncer's own nick to force the channel into the client state).
+// After the state settles, a test client binds and we count the JOIN messages
+// received during the burst.
+func TestBurstChannelCap(t *testing.T) {
+	const (
+		netid      = 40
+		nick       = "capnick"
+		totalChans = maxBurstChannels + 100 // 600, well above the 500 cap
+	)
+
+	testDone := make(chan struct{})
+	var down atomic.Bool
+	t.Cleanup(func() { down.Store(true) })
+	t.Cleanup(func() { close(testDone) })
+
+	// The scripted upstream sends server-initiated JOIN confirmations for
+	// totalChans channels after registration, then waits for the test to end.
+	dialFn := pipeDialer(t, &down, func(su *scriptedUpstream) {
+		su.register(nick)
+
+		// Push totalChans server-initiated self-JOINs. A hostile upstream can
+		// send these at will; the client.Client tracks them via trackJoin.
+		for i := 0; i < totalChans; i++ {
+			ch := fmt.Sprintf("#flood%d", i)
+			su.send(
+				":"+nick+"!~u@host JOIN "+ch,
+				":upstream.local 353 "+nick+" = "+ch+" :"+nick,
+				":upstream.local 366 "+nick+" "+ch+" :End of /NAMES list.",
+			)
+		}
+
+		<-testDone
+	})
+
+	cfg := &Config{
+		Networks: []Network{
+			{
+				NetID:    netid,
+				Name:     "CapNet",
+				Addr:     "upstream.local:6667",
+				Identity: Identity{Nick: nick, User: "u", Realname: "r"},
+			},
+		},
+	}
+
+	srv := New(cfg)
+	mgr := NewManager(cfg, srv)
+	mgr.dialers = map[int]dialer{netid: dialFn}
+	srv.WithManager(mgr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Manager.Start: %v", err)
+	}
+	t.Cleanup(func() { mgr.Close() })
+
+	// Wait until the upstream client has tracked at least maxBurstChannels
+	// channels. Poll cc.Channels() until it reaches the expected count.
+	upCC, ok := mgr.Client(netid)
+	if !ok {
+		t.Fatal("no upstream client for netid")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(upCC.Channels()) >= maxBurstChannels {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := len(upCC.Channels())
+	t.Logf("upstream client tracked %d channels before client attach", got)
+	if got < maxBurstChannels {
+		t.Fatalf("upstream client only tracked %d channels, want at least %d; cannot test cap", got, maxBurstChannels)
+	}
+
+	// Connect a test client and bind to the netid.
+	c := connectClientToSrv(t, srv)
+
+	sendLine(t, c, "CAP LS 302")
+	_ = recvMsg(t, c) // CAP LS
+
+	sendLine(t, c, "CAP REQ :soju.im/bouncer-networks")
+	_ = recvMsg(t, c) // CAP ACK
+
+	sendLine(t, c, "NICK testcap")
+	sendLine(t, c, "USER testcap 0 * :Test")
+	sendLine(t, c, "BOUNCER BIND "+itoa(netid))
+	sendLine(t, c, "CAP END")
+
+	// Collect all messages until ERR_NOMOTD to capture the full burst.
+	var burstMsgs []*irc.Message
+	collectDeadline := time.After(5 * time.Second)
+collectBurst:
+	for {
+		select {
+		case msg, ok := <-c.Messages():
+			if !ok {
+				break collectBurst
+			}
+			burstMsgs = append(burstMsgs, msg)
+			if msg.Command == irc.ERR_NOMOTD {
+				break collectBurst
+			}
+		case <-collectDeadline:
+			break collectBurst
+		}
+	}
+
+	// Count JOIN messages in the burst — each channel produces exactly one JOIN.
+	joinCount := 0
+	for _, m := range burstMsgs {
+		if m.Command == irc.JOIN {
+			joinCount++
+		}
+	}
+
+	if joinCount > maxBurstChannels {
+		t.Errorf("burst emitted %d JOIN messages; expected at most maxBurstChannels=%d",
+			joinCount, maxBurstChannels)
+	}
+	if joinCount == 0 {
+		t.Error("burst emitted no JOIN messages at all; want at least 1")
+	}
+	t.Logf("burst emitted %d JOIN messages (cap=%d, upstream has %d channels)",
+		joinCount, maxBurstChannels, got)
 }

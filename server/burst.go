@@ -54,6 +54,22 @@ import (
 // IRC client that echoes it as a status knows this is from the bouncer.
 const detachedAwayMessage = ":detached"
 
+// maxBurstChannels is the maximum number of channels included in a single
+// state burst (the synthetic JOIN+topic+NAMES sequence sent to an attaching
+// client). Without this cap, a hostile upstream that has forced lurkd to
+// join thousands of channels would cause sendStateBurst to emit O(n) messages
+// to every attaching client — an unbounded amplification.
+//
+// This is a secondary defence at the burst serialisation layer. The primary
+// defence is the client-state channel cap (task #3), which limits how many
+// channels the upstream client.Client can be in. If that cap is in place, the
+// upstream slice will never exceed it; this guard protects against that cap
+// being absent or bypassed, and makes the invariant explicit here.
+//
+// 500 matches DefaultMaxTargetsPerNet in the backlog store, keeping the three
+// related caps consistent.
+const maxBurstChannels = 500
+
 // sendStateBurst emits the synthetic channel-state burst to sess.
 // It is called from registerBoundSession after the session has been added to
 // the bound-session registry, so the session is fully registered.
@@ -81,6 +97,11 @@ func (s *Server) sendStateBurst(sess *session) {
 	multiPrefix := sess.capEnabled["multi-prefix"]
 
 	channels := cc.Channels()
+	if len(channels) > maxBurstChannels {
+		log.Printf("server: state burst netid=%d: upstream has %d channels; capping burst at %d",
+			sess.netid, len(channels), maxBurstChannels)
+		channels = channels[:maxBurstChannels]
+	}
 	for _, ch := range channels {
 		ch = client.SanitizeForRelay(ch)
 		if ch == "" {
