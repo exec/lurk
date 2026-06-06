@@ -100,6 +100,87 @@ monochrome theme.
 Pass `-log` (or `LURK_LOG=1`) to write per-channel plain-text chat logs under
 `~/.local/share/lurk/logs/` (XDG-aware; override with `LURK_LOG_DIR`).
 
+## lurkd — IRC bouncer
+
+**lurkd** is a single-user IRC bouncer daemon that holds persistent connections to
+upstream IRC networks and serves them to lurk clients over a local TLS listener.
+Clients can detach and reattach without missing messages; CHATHISTORY pulls the
+backlog automatically on reconnect.
+
+### Quick start
+
+```sh
+go install github.com/exec/lurk/cmd/lurkd@latest   # or: go build ./cmd/lurkd
+```
+
+Create `~/.config/lurkd/config.json` (written `0600`; the config dir is XDG-aware):
+
+```json
+{
+  "listen": { "addr": ":6697" },
+  "bouncer_auth": {
+    "user": "alice",
+    "password_hash": ""
+  },
+  "networks": [
+    {
+      "name": "Libera.Chat",
+      "addr": "irc.libera.chat:6697",
+      "tls": true,
+      "identity": { "nick": "alice", "user": "alice", "realname": "Alice" },
+      "sasl": { "mechanism": "PLAIN", "authcid": "alice", "password": "upstream-secret" },
+      "channels": ["#lurk"]
+    }
+  ]
+}
+```
+
+Generate the bouncer password hash (paste the output into `password_hash` above):
+
+```sh
+lurkd -hashpw
+```
+
+Then start the daemon:
+
+```sh
+lurkd                          # reads ~/.config/lurkd/config.json
+lurkd -config /path/to/config  # explicit path (also $LURKD_CONFIG)
+lurkd -listen :6697            # override listen address
+```
+
+On first run, if no `tls_cert`/`tls_key` are set in the config, lurkd generates a
+self-signed ECDSA certificate in the config directory and records its paths in the
+config automatically — no manual TLS setup is required.
+
+Send `SIGINT` or `SIGTERM` to shut down gracefully (flushes the backlog store and
+cursor positions). A second signal forces immediate exit.
+
+### Connecting lurk to lurkd
+
+In `~/.config/lurk/config.json`, add a network with a `bounce` block:
+
+```json
+{
+  "name": "Libera via lurkd",
+  "addr": "127.0.0.1:6697",
+  "tls": true,
+  "insecure_skip_verify": true,
+  "identity": { "nick": "alice", "user": "alice", "realname": "Alice" },
+  "sasl": { "mechanism": "PLAIN", "authcid": "alice", "password": "bouncer-password" },
+  "bounce": { "addr": "127.0.0.1:6697", "netid": 1, "client_id": "laptop" }
+}
+```
+
+The `bounce` block tells lurk to dial the bouncer at `addr`, authenticate to it as
+the bouncer user (`alice`), and issue `BOUNCER BIND 1` before `CAP END` to attach
+to the bouncer's network id 1. `client_id` ("laptop") is folded into the SASL
+username as `alice@laptop` so multiple devices keep independent backlog positions.
+(Third-party clients that don't speak `soju.im/bouncer-networks` can instead select
+the network with the `user/network` authcid form, e.g. `alice/Libera.Chat`.)
+
+For the full design, see [`docs/LURKD-DESIGN.md`](docs/LURKD-DESIGN.md).
+
 ## Packages
 
 ```
@@ -109,8 +190,14 @@ cap/       capability negotiation state machine
 sasl/      SASL mechanisms (PLAIN, EXTERNAL)
 isupport/  RPL_ISUPPORT token parsing + casemapping
 client/    high-level client: registration, events, state tracking
+config/    on-disk network/identity config (JSON, 0600), XDG paths
+chatlog/   per-target plain-text chat logs
+server/    lurkd listener: TLS accept, CAP/SASL server, session mux  (stdlib)
+bouncer/   soju.im/bouncer-networks server side                       (stdlib)
+backlog/   structured JSONL CHATHISTORY store                         (stdlib)
 tui/       Bubble Tea terminal UI
 cmd/lurk/  the client binary (TUI by default, -plain for line mode)
+cmd/lurkd/ the bouncer daemon (headless, stdlib-only)
 ```
 
 ## Development
@@ -125,6 +212,7 @@ otherwise it skips and the suite is fully hermetic.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
 [`docs/ARCHITECTURE-TUI.md`](docs/ARCHITECTURE-TUI.md) for the design,
+[`docs/LURKD-DESIGN.md`](docs/LURKD-DESIGN.md) for the bouncer design,
 [`docs/PACKAGING.md`](docs/PACKAGING.md) for building and releases, and
 [`CHANGELOG.md`](CHANGELOG.md) for the release history.
 

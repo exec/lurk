@@ -19,13 +19,24 @@
 // No client methods are called from inside an OnAny or reconnect handler —
 // handlers merely store state and call Sink.Ingest — avoiding a deadlock that
 // would arise if a handler blocked on the same goroutine that dispatches events.
+//
+// # Resilient startup (Phase 9)
+//
+// Start is non-fatal: a per-network initial-connect failure is logged and the
+// network is kept in the managed set (marked ConnDisconnected). A background
+// goroutine retries the initial connect with capped exponential backoff. The
+// daemon comes up and serves the networks that ARE reachable even if others are
+// down. These retry goroutines are tracked in Manager.retryWg and stopped via
+// Manager.stopCh when Close is called.
 package server
 
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/exec/lurk/client"
 )
@@ -49,7 +60,19 @@ const (
 	ConnConnected ConnStatus = iota
 	// ConnReconnecting means the upstream dropped and is retrying.
 	ConnReconnecting
+	// ConnDisconnected means the upstream has never successfully connected (initial
+	// connect failed) and is pending a background retry. Distinguished from
+	// ConnReconnecting (which means it was connected at least once) so callers can
+	// tell the two apart, though both resolve to ConnConnected when the session
+	// eventually registers.
+	ConnDisconnected
 )
+
+// initialRetryBase is the starting back-off delay for initial-connect retries.
+// Each retry doubles, capped at initialRetryMax. These values are the defaults;
+// the test-injection point is Manager.retryBase / Manager.retryMax.
+const initialRetryBase = 2 * time.Second
+const initialRetryMax = 120 * time.Second
 
 // connState tracks one upstream's connection status. It is guarded by its own
 // mutex because the reconnect handlers run on the client's goroutine while
@@ -95,6 +118,10 @@ type dialer func(ctx context.Context) (net.Conn, error)
 // After Start returns, Add and Remove may be called concurrently from any
 // goroutine (e.g. from a session handler). All access to the upstreams slice
 // is guarded by mu (a sync.RWMutex): readers use RLock, writers use Lock.
+//
+// Resilient startup: if a network's initial connect fails, Start logs it and
+// moves on rather than aborting. A background goroutine retries with capped
+// exponential backoff. All such goroutines are joined by Close.
 type Manager struct {
 	cfg  *Config
 	sink Sink
@@ -113,35 +140,51 @@ type Manager struct {
 	// closeOnce ensures Close only tears down clients once even if called
 	// concurrently or multiple times.
 	closeOnce sync.Once
+	// stopCh is closed by Close to signal all background retry goroutines to stop.
+	stopCh chan struct{}
+	// retryWg tracks outstanding initial-connect retry goroutines so Close can
+	// wait for them before returning.
+	retryWg sync.WaitGroup
+
+	// retryBase and retryMax are the back-off parameters for initial-connect
+	// retries. Zero values mean use the production defaults (initialRetryBase,
+	// initialRetryMax). Set by tests for fast retry.
+	retryBase time.Duration
+	retryMax  time.Duration
 }
 
 // NewManager builds a Manager for the given config and sink. It does not
 // connect to any upstream; call Start for that.
 func NewManager(cfg *Config, sink Sink) *Manager {
 	return &Manager{
-		cfg:  cfg,
-		sink: sink,
+		cfg:    cfg,
+		sink:   sink,
+		stopCh: make(chan struct{}),
 	}
 }
 
-// Start dials every configured network and returns once all upstream clients
-// have completed registration (or failed). The context governs the dial and
-// registration phase of each network; it does not govern the lifetime of the
-// running sessions (use Close for that).
+// Start dials every configured network. It returns nil once it has processed
+// all networks — successfully-connected ones are serving immediately; those
+// that fail their initial connect are kept in the managed set (status
+// ConnDisconnected) and retried in the background with capped exponential
+// backoff. Start never fails due to a single network being unreachable; it only
+// returns a non-nil error for configuration-level problems (none today, reserved
+// for future validation).
 //
-// A connect error on one network causes Start to clean up already-started
-// upstreams and return the error. The caller does not need to call Close on a
-// failed Start.
+// The context governs only the initial dial+registration phase of each network;
+// it does not govern the lifetime of running sessions (use Close for that).
+// Background retry goroutines are not bound to ctx; they stop when Close is
+// called (via Manager.stopCh). This allows a short-timeout startup context
+// while still giving background goroutines time to succeed.
 //
-// After Start returns without error, each upstream's auto-reconnect supervisor
-// is running in the background. Handlers fire from the client's own goroutine,
-// so Sink.Ingest is called concurrently across upstreams.
+// After Start returns, each successfully-connected upstream's auto-reconnect
+// supervisor is running. Handlers fire from each client's own goroutine, so
+// Sink.Ingest is called concurrently across upstreams.
 func (m *Manager) Start(ctx context.Context) error {
 	for i := range m.cfg.Networks {
 		nw := &m.cfg.Networks[i]
 		cc := m.buildClient(nw)
-
-		st := &connState{status: ConnConnected}
+		st := &connState{status: ConnDisconnected}
 
 		// Register reconnect-lifecycle hooks before Connect so they are not
 		// missed if a reconnect fires very quickly after Connect returns.
@@ -168,11 +211,14 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.mu.Unlock()
 
 		if err := cc.Connect(ctx); err != nil {
-			// Clean up all upstreams (including the one that failed) and return.
-			m.Close()
-			return fmt.Errorf("upstream: connect network %d (%s): %w", nw.NetID, nw.Name, err)
+			// Non-fatal: log and schedule a background retry instead of aborting.
+			log.Printf("upstream: initial connect network %d (%s) failed: %v — retrying in background", nw.NetID, nw.Name, err)
+			m.scheduleRetry(nw, entry)
+			continue
 		}
 
+		// Successful initial connect: mark connected and seed autojoin state.
+		st.set(ConnConnected)
 		// Join the autojoin channels. On reconnect the client's rejoinChannels
 		// re-sends JOIN for channels already in its tracked state; an explicit
 		// Join here seeds that state on the first connection.
@@ -183,11 +229,79 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close shuts down every upstream client. It is safe to call multiple times
-// and from any goroutine. It signals each client's reconnect supervisor to
-// stop (client.Close is idempotent and non-blocking by design).
+// scheduleRetry starts a background goroutine that retries the initial connect
+// for the given network entry until it succeeds or Close is called. The retry
+// uses capped exponential back-off (retryBase → retryMax). The goroutine is
+// tracked in retryWg so Close can join it.
+func (m *Manager) scheduleRetry(nw *Network, entry *upstreamEntry) {
+	base := m.retryBase
+	if base <= 0 {
+		base = initialRetryBase
+	}
+	max := m.retryMax
+	if max <= 0 {
+		max = initialRetryMax
+	}
+
+	m.retryWg.Add(1)
+	go func() {
+		defer m.retryWg.Done()
+		delay := base
+		for {
+			// Sleep with stop-channel interrupt.
+			select {
+			case <-m.stopCh:
+				// Daemon is shutting down — stop retrying before we connect.
+				// The client may have been started by a previous successful
+				// Connect; either way, Close will clean it up.
+				return
+			case <-time.After(delay):
+			}
+
+			// Double delay for next iteration, capped at max.
+			delay *= 2
+			if delay > max {
+				delay = max
+			}
+
+			// Check stop again before attempting (avoids a dial after Close).
+			select {
+			case <-m.stopCh:
+				return
+			default:
+			}
+
+			log.Printf("upstream: retrying initial connect for network %d (%s)", nw.NetID, nw.Name)
+
+			// Use a background context: the startup context may already be done.
+			// The retry is intentionally unbounded in time.
+			if err := entry.client.Connect(context.Background()); err != nil {
+				log.Printf("upstream: retry connect network %d (%s): %v", nw.NetID, nw.Name, err)
+				continue
+			}
+
+			// Successfully connected.
+			entry.state.set(ConnConnected)
+			log.Printf("upstream: network %d (%s) connected after retry", nw.NetID, nw.Name)
+
+			if len(nw.Channels) > 0 {
+				_ = entry.client.Join(nw.Channels...)
+			}
+			return
+		}
+	}()
+}
+
+// Close shuts down every upstream client and stops all background retry
+// goroutines. It is safe to call multiple times and from any goroutine.
+// It signals each client's reconnect supervisor to stop (client.Close is
+// idempotent and non-blocking by design) and waits for all retry goroutines
+// to exit before returning.
 func (m *Manager) Close() {
 	m.closeOnce.Do(func() {
+		// Signal background retry goroutines to stop first, then close clients.
+		close(m.stopCh)
+
 		m.mu.RLock()
 		entries := make([]*upstreamEntry, len(m.upstreams))
 		copy(entries, m.upstreams)
@@ -195,6 +309,9 @@ func (m *Manager) Close() {
 		for _, e := range entries {
 			_ = e.client.Close()
 		}
+
+		// Wait for all initial-connect retry goroutines to finish.
+		m.retryWg.Wait()
 	})
 }
 

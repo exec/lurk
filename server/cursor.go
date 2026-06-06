@@ -88,8 +88,9 @@ type CursorStore struct {
 	mu      sync.Mutex
 	entries map[CursorKey]CursorEntry
 
-	stopCh chan struct{}
-	doneCh chan struct{}
+	closeOnce sync.Once
+	stopCh    chan struct{}
+	doneCh    chan struct{}
 }
 
 // NewCursorStore creates a CursorStore rooted at dir. It loads any previously
@@ -158,17 +159,15 @@ func (cs *CursorStore) Flush() error {
 }
 
 // Close stops the background flush goroutine and performs a final flush.
-// Safe to call multiple times (idempotent after the first call).
+// Safe to call multiple times and from concurrent goroutines (idempotent).
 func (cs *CursorStore) Close() {
-	// Signal the flush goroutine to stop; wait for it to exit.
-	select {
-	case <-cs.stopCh:
-		// Already closed — the channel is already closed; no second close.
-	default:
+	cs.closeOnce.Do(func() {
+		// Signal the flush goroutine to stop; the flushLoop will do a final
+		// flush before closing doneCh.
 		close(cs.stopCh)
-	}
-	// Wait for the background goroutine to complete.
-	<-cs.doneCh
+		// Wait for the background goroutine to complete and do its final flush.
+		<-cs.doneCh
+	})
 }
 
 // ─── internal ────────────────────────────────────────────────────────────────

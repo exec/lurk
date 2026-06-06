@@ -4,7 +4,9 @@
 
 # Go build artifacts
 /lurk
+/lurkd
 /cmd/lurk/lurk
+/cmd/lurkd/lurkd
 *.test
 *.out
 

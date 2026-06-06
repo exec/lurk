@@ -14,6 +14,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
 	"runtime"
 	"strings"
@@ -510,5 +511,169 @@ func TestSinkConcurrencySafe(t *testing.T) {
 	sink.mu.Unlock()
 	if total != goroutines*events {
 		t.Errorf("collected %d events, want %d", total, goroutines*events)
+	}
+}
+
+// ─── TestResilientStartup ─────────────────────────────────────────────────────
+
+// TestResilientStartup verifies Phase 9's resilient-startup requirement:
+// a 2-network config where network A's dialer succeeds and network B's dialer
+// fails initially then succeeds on retry. The daemon must:
+//   - serve network A immediately (Start returns, A is ConnConnected)
+//   - leave network B as ConnDisconnected (not abort the whole Start)
+//   - connect network B after a background retry (short backoff)
+//   - stop all retry goroutines cleanly when Close is called (no leak, race-clean)
+func TestResilientStartup(t *testing.T) {
+	const (
+		nickA  = "nicka"
+		nickB  = "nickb"
+		netidA = 10
+		netidB = 11
+	)
+
+	var down atomic.Bool
+	testDone := make(chan struct{})
+	t.Cleanup(func() { close(testDone) })
+	t.Cleanup(func() { down.Store(true) })
+
+	// dialA: always succeeds.
+	dialA := pipeDialer(t, &down, func(su *scriptedUpstream) {
+		su.register(nickA)
+		<-testDone
+	})
+
+	// dialB: fails the first call, succeeds on the second.
+	var bDialCount int
+	var bMu sync.Mutex
+	bConnectedCh := make(chan struct{})
+	dialB := func(_ context.Context) (net.Conn, error) {
+		bMu.Lock()
+		n := bDialCount
+		bDialCount++
+		bMu.Unlock()
+
+		if n == 0 {
+			// First call: fail to simulate unreachable network.
+			return nil, fmt.Errorf("test: network B unreachable (dial %d)", n)
+		}
+		// Second call: succeed.
+		clientSide, serverSide := net.Pipe()
+		su := newScriptedUpstream(t, serverSide)
+		su.down = &down
+		go func() {
+			defer su.close()
+			su.register(nickB)
+			close(bConnectedCh)
+			<-testDone
+		}()
+		return clientSide, nil
+	}
+
+	cfg := &Config{
+		Networks: []Network{
+			{NetID: netidA, Name: "NetA", Addr: "a.local:6667", Identity: Identity{Nick: nickA, User: "u", Realname: "r"}},
+			{NetID: netidB, Name: "NetB", Addr: "b.local:6667", Identity: Identity{Nick: nickB, User: "u", Realname: "r"}},
+		},
+	}
+	sink := &collectSink{}
+	mgr := NewManager(cfg, sink)
+	mgr.dialers = map[int]dialer{netidA: dialA, netidB: dialB}
+	// Very short backoff so the test is fast.
+	mgr.retryBase = 20 * time.Millisecond
+	mgr.retryMax = 100 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Start must return nil even though network B fails initially.
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Manager.Start: %v (want nil — resilient startup)", err)
+	}
+	t.Cleanup(func() { mgr.Close() })
+
+	// Network A must be connected.
+	if st, ok := mgr.UpstreamState(netidA); !ok || st != ConnConnected {
+		t.Errorf("network A state = %v, want ConnConnected", st)
+	}
+
+	// Network B must be disconnected (initial connect failed).
+	if st, ok := mgr.UpstreamState(netidB); !ok || st != ConnDisconnected {
+		t.Errorf("network B state = %v, want ConnDisconnected immediately after Start", st)
+	}
+
+	// Wait for network B to connect via the background retry.
+	select {
+	case <-bConnectedCh:
+		// Good: background retry succeeded.
+	case <-time.After(3 * time.Second):
+		t.Fatal("network B did not connect via background retry within 3s")
+	}
+
+	// After retry, network B must be ConnConnected.
+	if !waitForUpstreamState(mgr, netidB, ConnConnected, 3*time.Second) {
+		st, _ := mgr.UpstreamState(netidB)
+		t.Errorf("network B state = %v after retry, want ConnConnected", st)
+	}
+
+	// Verify that network A saw events in the sink (it served immediately).
+	if ev := sink.waitForCommand(netidA, "001", 3*time.Second); ev == nil {
+		t.Error("network A 001 event not seen in sink")
+	}
+
+	// Close must stop all goroutines cleanly. The race detector will catch leaks.
+	mgr.Close()
+}
+
+// ─── TestResilientStartupCloseBeforeRetry ─────────────────────────────────────
+
+// TestResilientStartupCloseBeforeRetry verifies that calling Close before a
+// retry goroutine attempts a reconnect stops the goroutine cleanly (no leak,
+// no post-Close connect attempt). This exercises the stop-channel interrupt.
+func TestResilientStartupCloseBeforeRetry(t *testing.T) {
+	const (
+		nickC  = "nickc"
+		netidC = 12
+	)
+	var down atomic.Bool
+	testDone := make(chan struct{})
+	t.Cleanup(func() { close(testDone) })
+	t.Cleanup(func() { down.Store(true) })
+
+	// dialC: always fails — retry goroutine should be stopped by Close.
+	dialC := func(_ context.Context) (net.Conn, error) {
+		return nil, fmt.Errorf("test: network C always unreachable")
+	}
+
+	cfg := &Config{
+		Networks: []Network{
+			{NetID: netidC, Name: "NetC", Addr: "c.local:6667", Identity: Identity{Nick: nickC, User: "u", Realname: "r"}},
+		},
+	}
+	sink := &collectSink{}
+	mgr := NewManager(cfg, sink)
+	mgr.dialers = map[int]dialer{netidC: dialC}
+	// Long enough that Close fires before the first retry.
+	mgr.retryBase = 500 * time.Millisecond
+	mgr.retryMax = 500 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Manager.Start: %v", err)
+	}
+
+	// Close immediately. The retry goroutine must stop — retryWg.Wait in Close
+	// ensures we don't return before the goroutine exits.
+	done := make(chan struct{})
+	go func() {
+		mgr.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Good.
+	case <-time.After(3 * time.Second):
+		t.Error("Manager.Close did not return within 3s — retry goroutine leak?")
 	}
 }

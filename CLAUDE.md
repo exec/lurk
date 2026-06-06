@@ -27,7 +27,7 @@ before changing anything.
 ```sh
 go build ./...
 go vet ./...
-gofmt -l irc conn cap sasl isupport client tui cmd config chatlog   # must print nothing
+gofmt -l irc conn cap sasl isupport client tui cmd config chatlog server bouncer backlog   # must print nothing
 go test -race ./...                                                  # must be all green
 ```
 
@@ -47,8 +47,15 @@ client/    high-level client: registration, Events() stream, state tracking,
            auto-reconnect, CTCP replies, terminal-escape sanitization          (stdlib)
 config/    on-disk network/identity config (JSON, 0600), XDG paths             (stdlib)
 chatlog/   per-target plain-text chat logs                                     (stdlib)
+server/    lurkd client-facing IRC server: TLS listener, CAP/SASL server-side,
+           session mux, upstream manager, cursor store, self-signed cert gen   (stdlib)
+bouncer/   soju.im/bouncer-networks server side: BOUNCER verb dispatcher,
+           netid allocation, BATCH responder, bouncer-networks-notify          (stdlib)
+backlog/   structured JSONL CHATHISTORY store: per-(netid,target) ring +
+           JSONL files, server-assigned msgids, rehydration on restart         (stdlib)
 tui/       Bubble Tea v2 terminal UI (multi-network)        (the charm-importing package)
 cmd/lurk/  binary: TUI by default, -plain for the line client, launcher w/o -server
+cmd/lurkd/ bouncer daemon: headless, stdlib-only; SIGINT/SIGTERM graceful shutdown
 ```
 
 Key contracts:
@@ -77,5 +84,7 @@ Key contracts:
 
 - `docs/ARCHITECTURE.md` — packages, dependency direction, the core contracts.
 - `docs/ARCHITECTURE-TUI.md` — the Bubble Tea model, file map, event bridge.
+- `docs/LURKD-DESIGN.md` — the lurkd bouncer design (all 16 ballot items,
+  package layout, security model, phased build order).
 - `docs/PACKAGING.md` — building native packages and the release workflow.
 - `CHANGELOG.md` — released history; `TODO.md` — forward-looking roadmap.

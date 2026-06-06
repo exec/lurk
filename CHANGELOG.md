@@ -6,6 +6,39 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+- **lurkd** — a new single-user IRC bouncer daemon (`cmd/lurkd`). It holds
+  persistent IRCv3 connections to upstream networks and serves them to attached
+  lurk (or any IRCv3) clients over a local TLS listener, so clients can detach
+  and reattach without missing messages.
+  - **Persistent upstreams:** one `client.Client` per configured network, with
+    auto-reconnect. Networks that fail their initial connect are retried in the
+    background with capped exponential backoff — the daemon comes up and serves
+    reachable networks immediately (resilient startup).
+  - **CHATHISTORY backlog:** structured JSONL store (`backlog/`) with per-line
+    server-assigned msgids and `server-time`, survives restarts with full cursor
+    fidelity. In-memory ring fronts the store for live fan-out.
+  - **`soju.im/bouncer-networks`:** the BOUNCER verb (`BIND`/`LISTNETWORKS`/
+    `ADDNETWORK`/`CHANGENETWORK`/`DELNETWORK`) and the `user/network@client`
+    authcid fallback for third-party clients.
+  - **SASL PLAIN + PBKDF2 auth:** bouncer password hashed with
+    PBKDF2-HMAC-SHA256 (600 000 iterations, 16-byte salt). `lurkd -hashpw`
+    bootstraps the hash for the config.
+  - **TLS out of the box:** generates a self-signed ECDSA P-256 certificate on
+    first run when no cert/key is configured; paths are persisted to the config
+    for reuse. Explicit cert/key config is supported and unchanged.
+  - **Per-client cursors:** read positions per `(clientID, netid, target)`,
+    flushed on clean detach and every 30 s. Survive restarts within the last
+    flush window.
+  - **Graceful shutdown:** `SIGINT`/`SIGTERM` closes the listener, drains
+    in-flight sessions, closes all upstream connections, flushes the backlog
+    store and cursor store. A second signal forces immediate exit.
+  - **Packaging:** `lurkd` binary shipped alongside `lurk` in all release
+    artifacts (cross-compiled for linux/darwin/windows, amd64/arm64, included
+    in the Windows `.zip`). No systemd unit — just the binary.
+  - Config at `~/.config/lurkd/config.json` (XDG-aware, `0600`).
+    See [`docs/LURKD-DESIGN.md`](docs/LURKD-DESIGN.md) for the full design.
+
 ## [1.0.2] - 2026-06-06
 
 ### Added
