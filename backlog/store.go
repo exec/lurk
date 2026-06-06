@@ -95,6 +95,22 @@ const (
 	// (channels + PMs) stored per netid. Exceeding this logs a warning and the
 	// excess target is silently dropped.
 	DefaultMaxTargetsPerNet = 500
+
+	// maxJSONLLineBytes is the maximum byte length of a single marshalled JSONL
+	// line (JSON object + '\n') that appendLineLocked will write to disk. It is
+	// also the scanner buffer size used by tailJSONL and readJSONLFull, so the
+	// write-side cap and read-side buffer are an invariant pair: a line this code
+	// writes can always be read back.
+	//
+	// Derivation: the IRC wire budget is conn.MaxLineBytes ≈ 9215 bytes per line
+	// (irc.MaxLenTags=8191 + irc.MaxLenMessage=512 + 512 framing slack). A JSONL
+	// Entry wrapping one IRC message serialises all params plus JSON field
+	// overhead; the total is comfortably under 12 KiB for any wire-conformant
+	// message. 16 KiB provides a generous safety margin while being 64× smaller
+	// than the former 1 MiB allocation. An entry whose JSON exceeds this constant
+	// is almost certainly a programming error or a crafted attack; it is logged
+	// and dropped rather than written to disk.
+	maxJSONLLineBytes = 16384
 )
 
 // Entry is one persisted message, both on disk (the JSONL schema) and in the
@@ -527,6 +543,19 @@ func (s *Store) appendLineLocked(b *bufferEntry, netid int, safeTarget string, e
 		return fmt.Errorf("json encode: %w", err)
 	}
 	data = append(data, '\n')
+
+	// Write-side line-length cap: a marshalled line that exceeds maxJSONLLineBytes
+	// cannot be read back by tailJSONL/readJSONLFull (whose scanner buffers are
+	// sized to the same constant). Log and drop rather than writing an unreadable
+	// line. This should never fire for wire-conformant IRC messages; it is a
+	// defence-in-depth guard against programming errors or future event types
+	// whose params are unexpectedly large.
+	if len(data) > maxJSONLLineBytes {
+		log.Printf("backlog: appendLine netid=%d target=%q: marshalled line %d bytes > cap %d; dropping",
+			netid, safeTarget, len(data), maxJSONLLineBytes)
+		return nil
+	}
+
 	if _, err = b.f.Write(data); err != nil {
 		return err
 	}
@@ -703,7 +732,7 @@ func tailJSONL(path string, n int) ([]Entry, error) {
 	// prunes them (future: reverse-seek from EOF for large files).
 	var lines []string
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+	sc.Buffer(make([]byte, maxJSONLLineBytes), maxJSONLLineBytes)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line != "" {

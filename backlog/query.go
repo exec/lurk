@@ -332,7 +332,7 @@ func readJSONLFull(path string) ([]Entry, error) {
 	var entries []Entry
 	lineCount := 0
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+	sc.Buffer(make([]byte, maxJSONLLineBytes), maxJSONLLineBytes)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
