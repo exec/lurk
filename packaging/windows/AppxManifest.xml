@@ -37,6 +37,13 @@
                           Square150x150Logo="assets\Square150x150Logo.png"
                           Square44x44Logo="assets\Square44x44Logo.png" />
     </Application>
+    <Application Id="lurkd" Executable="lurkd.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="lurkd"
+                          Description="The lurk IRC bouncer daemon."
+                          BackgroundColor="transparent"
+                          Square150x150Logo="assets\Square150x150Logo.png"
+                          Square44x44Logo="assets\Square44x44Logo.png" />
+    </Application>
   </Applications>
 
   <Capabilities>

@@ -6,6 +6,13 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+- **lurkd is now in every native package.** It already shipped as a standalone
+  binary and in the macOS `.pkg` / Windows `.zip`; it is now also a separate
+  `lurkd` `.deb`/`.rpm` (so a headless server can install just the daemon) and is
+  bundled into the Windows `.msi` and `.msix`. `SHA256SUMS` now covers the
+  hyphenated `.rpm` names too.
+
 ## [1.1.0] - 2026-06-06
 
 ### Added

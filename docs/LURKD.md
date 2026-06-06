@@ -23,8 +23,18 @@ see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 go install github.com/exec/lurk/cmd/lurkd@latest   # or: go build ./cmd/lurkd
 ```
 
-Released builds ship a `lurkd` binary alongside `lurk` for linux / darwin /
-windows on amd64 / arm64 (see [`PACKAGING.md`](PACKAGING.md)).
+Or install a native package from a release:
+
+```sh
+# Debian/Ubuntu — lurkd ships as its own package (no client/TUI pulled in)
+sudo dpkg -i lurkd_<version>_amd64.deb
+# Fedora/RHEL
+sudo rpm -i lurkd-<version>-1.x86_64.rpm
+# macOS .pkg and the Windows .zip/.msi install both lurk and lurkd
+```
+
+On Linux `lurkd` is a **separate package** from `lurk`, so a headless server gets
+just the daemon. See [`PACKAGING.md`](PACKAGING.md) for the full matrix.
 
 ---
 

@@ -2,10 +2,12 @@
 <!--
   WiX source for the lurk Windows installer (.msi), built with msitools' wixl
   (cross-platform) locally and reused in CI. Parameterized via wixl -D:
-    Version    the product version (e.g. 0.1.0)
-    ExeSource  path to the built lurk.exe
-  Installs lurk.exe to "Program Files\lurk" and adds that directory to the
-  system PATH so `lurk` works from any shell. Per-machine, 64-bit.
+    Version         the product version (e.g. 0.1.0)
+    ExeSource       path to the built lurk.exe (the client)
+    LurkdExeSource  path to the built lurkd.exe (the bouncer daemon)
+  Installs both lurk.exe and lurkd.exe to "Program Files\lurk" and adds that
+  directory to the system PATH so `lurk` and `lurkd` work from any shell.
+  Per-machine, 64-bit.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Name="lurk"
@@ -36,12 +38,16 @@
                          Action="set"
                          System="yes" />
           </Component>
+          <Component Id="LurkdExecutable" Guid="C4E1B7A2-3D8F-4E6A-9B0C-1D2E3F4A5B6C" Win64="yes">
+            <File Id="lurkdExe" Name="lurkd.exe" Source="$(var.LurkdExeSource)" KeyPath="yes" />
+          </Component>
         </Directory>
       </Directory>
     </Directory>
 
     <Feature Id="Complete" Title="lurk" Level="1">
       <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="LurkdExecutable" />
     </Feature>
   </Product>
 </Wix>

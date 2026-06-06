@@ -1,0 +1,26 @@
+# nfpm configuration for building the lurkd (bouncer daemon) .deb and .rpm.
+# Driven by scripts/package.sh, which sets PKG_ARCH / PKG_VERSION / PKG_BIN per
+# target. lurkd ships as its OWN package, separate from the lurk client package
+# (nfpm.yaml), so a headless-server install gets just the daemon without pulling
+# in the terminal-UI client. See https://nfpm.goreleaser.com.
+name: lurkd
+arch: ${PKG_ARCH} # amd64 | arm64 (nfpm maps to x86_64/aarch64 for rpm)
+platform: linux
+version: ${PKG_VERSION}
+section: net
+priority: optional
+maintainer: exec <execxd@icloud.com>
+description: |
+  IRC bouncer daemon for lurk.
+  lurkd holds persistent IRCv3 connections to upstream networks and serves them
+  to attached clients over a local TLS listener, so clients can detach and
+  reattach without missing messages. It provides a CHATHISTORY backlog,
+  soju.im/bouncer-networks, and SASL+PBKDF2 authentication. Headless; no UI.
+vendor: lurk
+homepage: https://github.com/exec/lurk
+license: MIT
+contents:
+  - src: ${PKG_BIN}
+    dst: /usr/bin/lurkd
+    file_info:
+      mode: 0755

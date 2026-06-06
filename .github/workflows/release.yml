@@ -101,7 +101,9 @@ jobs:
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
             go build -trimpath -ldflags "-s -w -X main.version=$V" \
             -o "dist/lurkd_${V}_windows_amd64.exe" ./cmd/lurkd
-          bash scripts/build-msi.sh "$V" "dist/lurk_${V}_windows_amd64.exe" dist
+          bash scripts/build-msi.sh "$V" \
+            "dist/lurk_${V}_windows_amd64.exe" \
+            "dist/lurkd_${V}_windows_amd64.exe" dist
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -143,6 +145,7 @@ jobs:
           $layout = "msix-layout"
           New-Item -ItemType Directory -Force -Path "$layout/assets" | Out-Null
           Copy-Item dist/lurk.exe "$layout/lurk.exe"
+          Copy-Item dist/lurkd.exe "$layout/lurkd.exe"
           (Get-Content packaging/windows/AppxManifest.xml) -replace '__VERSION__', $ver4 |
             Set-Content "$layout/AppxManifest.xml"
           # makeappx doesn't enforce logo dimensions for an unsigned dev package,

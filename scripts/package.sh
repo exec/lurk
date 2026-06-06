@@ -3,12 +3,13 @@
 #
 #   scripts/package.sh [version]   # default 0.1.0
 #
-# Produces, where the required tool is available:
+# Produces, where the required tool is available (both the lurk client and the
+# lurkd bouncer daemon):
 #   - cross-compiled binaries (linux/darwin/windows, amd64/arm64)
-#   - .deb and .rpm           (linux amd64 + arm64)   via nfpm
-#   - .pkg                    (macOS universal)       via pkgbuild + lipo
-#   - .zip                    (windows amd64)         via zip
-#   - .msi                    (windows amd64)         via wixl, if msitools is installed
+#   - .deb and .rpm           (linux amd64 + arm64)   via nfpm — separate lurk + lurkd packages
+#   - .pkg                    (macOS universal)       via pkgbuild + lipo — bundles both binaries
+#   - .zip                    (windows amd64)         via zip — bundles both binaries
+#   - .msi                    (windows amd64)         via wixl, if msitools is installed — bundles both
 #   - SHA256SUMS over every artifact
 #
 # Pure-Go build (CGO disabled) so cross-compilation needs no C toolchain.
@@ -48,19 +49,27 @@ if command -v nfpm >/dev/null 2>&1; then
 	echo "==> .deb / .rpm (nfpm)"
 	# Render a concrete config per arch (sed instead of relying on nfpm's env
 	# expansion, which doesn't reach the contents[].src glob in all versions).
+	# render NFPM_CONFIG with arch/version/bin substituted, then build deb + rpm.
+	render_and_pack() {
+		local tmpl="$1" arch="$2" bin="$3" cfg
+		cfg="$(mktemp)"
+		sed -e "s|\${PKG_ARCH}|$arch|g" \
+			-e "s|\${PKG_VERSION}|$VERSION|g" \
+			-e "s|\${PKG_BIN}|$bin|g" \
+			"$tmpl" >"$cfg"
+		nfpm package -f "$cfg" -p deb -t "$DIST/"
+		nfpm package -f "$cfg" -p rpm -t "$DIST/"
+		rm -f "$cfg"
+	}
 	for arch in amd64 arm64; do
 		case "$arch" in
 		amd64) bin="$LIN_AMD64" ;;
 		arm64) bin="$LIN_ARM64" ;;
 		esac
-		cfg="$(mktemp)"
-		sed -e "s|\${PKG_ARCH}|$arch|g" \
-			-e "s|\${PKG_VERSION}|$VERSION|g" \
-			-e "s|\${PKG_BIN}|$bin|g" \
-			nfpm.yaml >"$cfg"
-		nfpm package -f "$cfg" -p deb -t "$DIST/"
-		nfpm package -f "$cfg" -p rpm -t "$DIST/"
-		rm -f "$cfg"
+		# lurk (client) and lurkd (daemon) ship as separate packages so a headless
+		# install can take just the daemon.
+		render_and_pack nfpm.yaml "$arch" "$bin"
+		render_and_pack nfpm-lurkd.yaml "$arch" "$DIST/lurkd_${VERSION}_linux_${arch}"
 	done
 else
 	echo "==> skip .deb/.rpm (nfpm not installed)" >&2
@@ -98,7 +107,8 @@ rm -rf "$wstage"
 
 if command -v wixl >/dev/null 2>&1; then
 	echo "==> Windows .msi (wixl)"
-	"$ROOT/scripts/build-msi.sh" "$VERSION" "$WIN_AMD64" "$DIST" >/dev/null
+	"$ROOT/scripts/build-msi.sh" "$VERSION" "$WIN_AMD64" \
+		"$DIST/lurkd_${VERSION}_windows_amd64.exe" "$DIST" >/dev/null
 else
 	echo "==> skip .msi (wixl not installed — brew install msitools / apt-get install wixl)" >&2
 fi
@@ -107,7 +117,9 @@ fi
 # Windows SDK). See .github/workflows/release.yml and docs/PACKAGING.md.
 
 echo "==> SHA256SUMS"
-(cd "$DIST" && shasum -a 256 lurk_* lurkd_* 2>/dev/null | sort >SHA256SUMS)
+# lurk* covers every artifact: lurk_/lurkd_ (binaries, deb, zip, pkg, msi) and
+# the hyphenated rpm names (lurk-…rpm / lurkd-…rpm).
+(cd "$DIST" && shasum -a 256 lurk* 2>/dev/null | grep -v 'SHA256SUMS' | sort >SHA256SUMS)
 
 echo "==> Done. Artifacts in dist/:"
 ls -1 "$DIST"
