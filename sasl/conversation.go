@@ -3,6 +3,7 @@ package sasl
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"github.com/exec/lurk/irc"
 )
@@ -26,6 +27,14 @@ const cmdAuthenticate = irc.AUTHENTICATE
 
 // abortLine is the line a client sends to abort an in-progress SASL exchange.
 const abortLine = cmdAuthenticate + " *"
+
+// maxChallengeBytes is the maximum total decoded size of a reassembled server
+// challenge. It caps the number of 400-byte base64 chunks a hostile server
+// may send before the terminal chunk arrives, preventing a chunk-count
+// exhaustion attack that would spin the run-loop accumulating data forever.
+// 8 KiB is far above any real SCRAM server-first-message (which tops out at
+// a few hundred bytes) while still being generous to future mechanisms.
+const maxChallengeBytes = 8 * 1024
 
 // Conversation drives a single SASL authentication exchange for one Mechanism.
 //
@@ -61,6 +70,14 @@ type Conversation struct {
 	initial     []byte
 	hasInitial  bool
 	initialSent bool
+
+	// challBuf accumulates the base64-encoded chunks of a multi-line server
+	// challenge. IRCv3 SASL uses the same framing rule as client→server: a
+	// chunk of exactly maxChunk (400) bytes signals "more follows"; a chunk
+	// shorter than maxChunk, or the bare "+" token, signals "end of challenge".
+	// challBuf holds the concatenated base64 strings across chunks; once the
+	// terminal chunk arrives the buffer is decoded and passed to mech.Next.
+	challBuf strings.Builder
 }
 
 // NewConversation returns a Conversation that will authenticate using m.
@@ -155,21 +172,72 @@ func (c *Conversation) Receive(msg *irc.Message) (lines []string, done bool, err
 	}
 }
 
-// handleChallenge answers a server "AUTHENTICATE" line. The first such line is
-// the empty "+" prompt: if the mechanism supplied an initial response, it is
-// sent in reply (without invoking Next). Otherwise, and for any later challenge,
-// the payload is decoded and passed to the mechanism's Next.
+// handleChallenge processes one server "AUTHENTICATE" line, accumulating
+// multi-chunk challenges before dispatching to the mechanism.
+//
+// IRCv3 SASL uses the same framing rule in both directions: a payload of
+// exactly maxChunk (400) base64 bytes signals "more chunks follow"; a payload
+// shorter than maxChunk, or the bare "+" token, signals "end of challenge".
+// Chunks are concatenated into challBuf; once the terminal chunk arrives the
+// buffer is base64-decoded and the raw bytes are passed to mech.Next.
+//
+// Special case: the very first AUTHENTICATE line is the server's empty "+"
+// prompt that starts the exchange. If the mechanism supplied an initial
+// response (hasInitial), we send it immediately without touching challBuf —
+// no reassembly is needed because an empty "+" is always a standalone token,
+// not part of a multi-chunk sequence.
 func (c *Conversation) handleChallenge(msg *irc.Message) (lines []string, done bool, err error) {
+	payload := msg.Param(0)
+
+	// First challenge: the server's empty "+" prompt.
 	if c.hasInitial && !c.initialSent {
+		// The initial prompt is always a standalone "+" (never a multi-chunk
+		// sequence), so dispatch immediately and reset the buffer just in case.
 		c.initialSent = true
+		c.challBuf.Reset()
 		return chunkResponse(c.initial), false, nil
 	}
 
-	challenge, err := decodeChallenge(msg.Param(0))
-	if err != nil {
-		c.done = true
-		return []string{abortLine}, false, fmt.Errorf("sasl: decoding server challenge: %w", err)
+	// Validate and accumulate this chunk.
+	if payload != "+" && payload != "" {
+		if len(payload) > maxChunk {
+			c.done = true
+			c.challBuf.Reset()
+			return []string{abortLine}, false, fmt.Errorf("sasl: server challenge chunk exceeds %d-byte limit", maxChunk)
+		}
+		// Guard against chunk-count exhaustion: reject early if we already know
+		// the reassembled base64 would decode past maxChallengeBytes. A base64
+		// byte encodes 6 bits, so 4 base64 chars → 3 raw bytes; the ceiling in
+		// base64 chars is maxChallengeBytes * 4/3, conservatively rounded up.
+		const maxChallengeB64 = (maxChallengeBytes*4 + 2) / 3
+		if c.challBuf.Len()+len(payload) > maxChallengeB64 {
+			c.done = true
+			c.challBuf.Reset()
+			return []string{abortLine}, false, fmt.Errorf("sasl: server challenge exceeds %d-byte limit", maxChallengeBytes)
+		}
+		c.challBuf.WriteString(payload)
 	}
+
+	// A chunk shorter than maxChunk (or "+" / empty) terminates the challenge.
+	if len(payload) == maxChunk {
+		// Exactly maxChunk bytes: more chunks are coming; wait for the next line.
+		return nil, false, nil
+	}
+
+	// Terminal chunk received — decode the assembled base64 and dispatch.
+	assembled := c.challBuf.String()
+	c.challBuf.Reset()
+
+	var challenge []byte
+	if assembled != "" {
+		var decErr error
+		challenge, decErr = base64.StdEncoding.DecodeString(assembled)
+		if decErr != nil {
+			c.done = true
+			return []string{abortLine}, false, fmt.Errorf("sasl: decoding server challenge: %w", decErr)
+		}
+	}
+
 	resp, err := c.mech.Next(challenge)
 	if err != nil {
 		c.done = true
@@ -178,32 +246,9 @@ func (c *Conversation) handleChallenge(msg *irc.Message) (lines []string, done b
 	return chunkResponse(resp), false, nil
 }
 
-// decodeChallenge decodes the payload of a server AUTHENTICATE line. The single
-// payload token "+" denotes an empty challenge. The mechanisms in this package
-// (PLAIN, EXTERNAL) only ever receive the single empty "+" challenge, so each
-// AUTHENTICATE line is decoded independently rather than reassembled across
-// continuation lines.
-//
-// A single chunk longer than the 400-byte SASL line limit is rejected, matching
-// ircv3's sasl-3.1 framing and Ergo's server-side SASLBuffer (which returns
-// ErrSASLTooLong for an over-long chunk); this guards against a malformed or
-// hostile server payload.
-func decodeChallenge(payload string) ([]byte, error) {
-	if payload == "" || payload == "+" {
-		return nil, nil
-	}
-	if len(payload) > maxChunk {
-		return nil, fmt.Errorf("sasl: server challenge chunk exceeds %d-byte limit", maxChunk)
-	}
-	data, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		return nil, fmt.Errorf("sasl: invalid base64 in challenge: %w", err)
-	}
-	return data, nil
-}
-
 // lastParam returns the final parameter of msg (the human-readable description
-// on a result numeric), or "" if there are none.
+// on a result numeric), or "" if there are none. This is intentionally placed
+// after handleChallenge so the file reads top-to-bottom in flow order.
 func lastParam(msg *irc.Message) string {
 	if n := len(msg.Params); n > 0 {
 		return msg.Params[n-1]

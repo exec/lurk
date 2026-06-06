@@ -464,3 +464,219 @@ type challengeMech struct{}
 func (challengeMech) Name() string                  { return "FAKE" }
 func (challengeMech) Start() ([]byte, bool)         { return nil, false }
 func (challengeMech) Next(c []byte) ([]byte, error) { return []byte("hello"), nil }
+
+// echoMech captures the raw challenge bytes passed to Next so tests can assert
+// that multi-chunk reassembly delivers the full, unframed payload.
+type echoMech struct {
+	got []byte
+}
+
+func (e *echoMech) Name() string                  { return "ECHO" }
+func (e *echoMech) Start() ([]byte, bool)         { return nil, false }
+func (e *echoMech) Next(c []byte) ([]byte, error) { e.got = c; return []byte("ok"), nil }
+
+// makeAuthChunks splits a raw payload into the correct sequence of AUTHENTICATE
+// messages that a server would send according to the IRCv3 framing rule:
+// chunks of exactly maxChunk bytes signal "more follows"; a shorter final chunk
+// (or a bare "+" appended when the encoded length is an exact multiple of
+// maxChunk) signals "end". This mirrors what chunkResponse does for the client.
+func makeAuthChunks(raw []byte) []*irc.Message {
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	var msgs []*irc.Message
+	for len(encoded) >= maxChunk {
+		msgs = append(msgs, authMsg(encoded[:maxChunk]))
+		encoded = encoded[maxChunk:]
+	}
+	if len(encoded) > 0 {
+		msgs = append(msgs, authMsg(encoded))
+	} else {
+		// Exact multiple: the last full chunk is ambiguous; append a "+" terminator.
+		msgs = append(msgs, authMsg("+"))
+	}
+	return msgs
+}
+
+// TestMultiChunkChallengeReassembly verifies that a server challenge split
+// across multiple AUTHENTICATE lines is fully reassembled before being passed
+// to mech.Next. It constructs a payload large enough to require two full 400-
+// byte base64 chunks plus a shorter terminal, encodes it as the server would
+// send it, feeds each chunk to Conversation.Receive, and asserts that Next
+// receives the original raw bytes — not a fragment.
+func TestMultiChunkChallengeReassembly(t *testing.T) {
+	// Build a raw payload whose base64 encoding spans two full chunks and a
+	// remainder. 4*maxChunk base64 chars → 3*maxChunk raw bytes decoded; we
+	// want 2*maxChunk+1 base64 chars so we get two full chunks and a 1-byte
+	// terminal. The raw payload is 3/4*(2*maxChunk+1) ≈ 600 bytes.
+	// Use a simple repeating pattern for determinism.
+	rawLen := (2*maxChunk + 1) * 3 / 4 // ~600 bytes raw → ~801 base64 chars
+	raw := make([]byte, rawLen)
+	for i := range raw {
+		raw[i] = byte(i % 251)
+	}
+
+	mech := &echoMech{}
+	conv := NewConversation(mech)
+	conv.Begin()
+
+	chunks := makeAuthChunks(raw)
+	if len(chunks) < 3 {
+		t.Fatalf("test setup: need ≥3 AUTHENTICATE chunks, got %d (rawLen=%d)", len(chunks), rawLen)
+	}
+
+	var finalLines []string
+	for i, msg := range chunks {
+		lines, done, err := conv.Receive(msg)
+		if err != nil {
+			t.Fatalf("Receive chunk %d/%d: unexpected error: %v", i+1, len(chunks), err)
+		}
+		if done {
+			t.Fatalf("Receive chunk %d/%d: done=true before 903", i+1, len(chunks))
+		}
+		if i < len(chunks)-1 {
+			// Continuation chunks must not trigger a response yet.
+			if len(lines) != 0 {
+				t.Errorf("chunk %d: got %d response lines before terminal, want 0", i+1, len(lines))
+			}
+		} else {
+			// Terminal chunk must trigger a response.
+			finalLines = lines
+		}
+	}
+
+	if len(finalLines) == 0 {
+		t.Fatal("no response lines after terminal chunk")
+	}
+	if mech.got == nil {
+		t.Fatal("mech.Next was never called")
+	}
+	if string(mech.got) != string(raw) {
+		t.Errorf("mech.Next got %d bytes, want %d; payloads differ", len(mech.got), len(raw))
+	}
+}
+
+// TestMultiChunkExactMultiple exercises the edge case where the encoded payload
+// is an exact multiple of maxChunk (400), requiring the server to append a
+// standalone "+" after the last full chunk. Reassembly must handle the "+"
+// terminal correctly (treating it as an empty final piece that triggers dispatch
+// without adding any bytes to the buffer).
+func TestMultiChunkExactMultiple(t *testing.T) {
+	// Find a raw length whose base64 is an exact multiple of maxChunk.
+	// base64 length = ceil(rawLen / 3) * 4.  We want that to equal 2*maxChunk.
+	// 2*400 = 800 base64 chars → rawLen = 800*3/4 = 600 raw bytes.
+	rawLen := 2 * maxChunk * 3 / 4 // 600 bytes → 800 base64 chars
+	raw := make([]byte, rawLen)
+	for i := range raw {
+		raw[i] = byte(i % 199)
+	}
+	// Verify our math.
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	if len(encoded)%maxChunk != 0 {
+		t.Skipf("test-setup: encoded length %d is not a multiple of %d — adjust rawLen", len(encoded), maxChunk)
+	}
+
+	mech := &echoMech{}
+	conv := NewConversation(mech)
+	conv.Begin()
+
+	chunks := makeAuthChunks(raw)
+	// Last chunk must be "+".
+	if last := chunks[len(chunks)-1]; last.Param(0) != "+" {
+		t.Fatalf("test setup: expected last chunk to be '+', got %q", last.Param(0))
+	}
+
+	var calledAt int = -1
+	for i, msg := range chunks {
+		lines, _, err := conv.Receive(msg)
+		if err != nil {
+			t.Fatalf("Receive chunk %d: unexpected error: %v", i+1, err)
+		}
+		if mech.got != nil && calledAt < 0 {
+			calledAt = i
+		}
+		if i < len(chunks)-1 && len(lines) != 0 {
+			t.Errorf("chunk %d: got response before terminal", i+1)
+		}
+	}
+
+	if mech.got == nil {
+		t.Fatal("mech.Next never called")
+	}
+	if calledAt != len(chunks)-1 {
+		t.Errorf("mech.Next called at chunk %d, want at last chunk (%d)", calledAt+1, len(chunks))
+	}
+	if string(mech.got) != string(raw) {
+		t.Errorf("reassembled payload differs: got %d bytes, want %d", len(mech.got), len(raw))
+	}
+}
+
+// TestChunkCountExhaustion verifies that a hostile server sending an unbounded
+// stream of full-size (400-byte) AUTHENTICATE chunks with no terminal is
+// rejected before mech.Next is ever called. The error must be returned and an
+// AUTHENTICATE * abort emitted.
+func TestChunkCountExhaustion(t *testing.T) {
+	mech := &echoMech{}
+	conv := NewConversation(mech)
+	conv.Begin()
+
+	fullChunk := strings.Repeat("A", maxChunk) // 400 bytes, signals "more follows"
+
+	var gotErr error
+	var gotAbort bool
+	// maxChallengeB64 = (8192*4+2)/3 ≈ 10923 chars; each chunk is 400 chars,
+	// so the ceiling is hit after at most ceil(10923/400) = 28 chunks. Send 100
+	// to be sure we trigger the guard.
+	for i := 0; i < 100; i++ {
+		lines, _, err := conv.Receive(authMsg(fullChunk))
+		if err != nil {
+			gotErr = err
+			for _, l := range lines {
+				if l == abortLine {
+					gotAbort = true
+				}
+			}
+			break
+		}
+		if mech.got != nil {
+			t.Fatal("mech.Next called before exhaustion was detected")
+		}
+	}
+
+	if gotErr == nil {
+		t.Fatal("expected error for chunk-count exhaustion, got nil")
+	}
+	if !gotAbort {
+		t.Errorf("expected AUTHENTICATE * abort line in response, got none (err=%v)", gotErr)
+	}
+	if mech.got != nil {
+		t.Error("mech.Next must not be called when exhaustion is detected")
+	}
+}
+
+// TestSingleChunkChallengeUnchanged is a regression test confirming that a
+// normal single-chunk challenge (the common SCRAM case where server-first fits
+// in one line) still works correctly after the reassembly refactor.
+func TestSingleChunkChallengeUnchanged(t *testing.T) {
+	payload := []byte("r=clientnonce+servernonce,s=c2FsdA==,i=4096")
+	mech := &echoMech{}
+	conv := NewConversation(mech)
+	conv.Begin()
+
+	encoded := base64.StdEncoding.EncodeToString(payload)
+	if len(encoded) >= maxChunk {
+		t.Fatalf("test setup: encoded payload (%d bytes) must be < %d for single-chunk test", len(encoded), maxChunk)
+	}
+
+	lines, done, err := conv.Receive(authMsg(encoded))
+	if err != nil {
+		t.Fatalf("single-chunk Receive: unexpected error: %v", err)
+	}
+	if done {
+		t.Error("done=true before 903")
+	}
+	if len(lines) == 0 {
+		t.Fatal("expected response lines from single-chunk challenge")
+	}
+	if string(mech.got) != string(payload) {
+		t.Errorf("single-chunk: mech.Next got %q, want %q", mech.got, payload)
+	}
+}
