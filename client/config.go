@@ -10,7 +10,12 @@
 // raw commands and with the typed Handle* helpers for semantic events.
 package client
 
-import "github.com/exec/lurk/sasl"
+import (
+	"context"
+	"net"
+
+	"github.com/exec/lurk/sasl"
+)
 
 // SASLConfig configures SASL authentication during registration. It is used
 // only when Mechanism is non-empty (and the server advertises the sasl
@@ -114,6 +119,20 @@ type Config struct {
 	// stops it. It has no effect on a ConnectConn (injected-transport) session,
 	// which has no address to re-dial.
 	AutoReconnect bool
+
+	// Dialer, when non-nil, overrides how Connect (and every auto-reconnect
+	// re-dial) obtains the underlying network connection: it is called instead of
+	// the default TCP/TLS dialer and must return a ready net.Conn to the server,
+	// performing its own TLS if the link requires it. The returned connection is
+	// wrapped in the same framing/parsing layer as a normally-dialed one, so
+	// auto-reconnect still works — Dialer is re-invoked on each re-dial. It exists
+	// so an embedder (such as the lurkd bouncer) can drive a real reconnectable
+	// Client against an in-process server over net.Pipe in hermetic tests, and so
+	// callers can supply a custom transport while keeping reconnect (which
+	// ConnectConn cannot). When nil, the default dialer honoring Server / TLS /
+	// InsecureSkipVerify is used; when set, Server may be empty and TLS is the
+	// Dialer's responsibility.
+	Dialer func(ctx context.Context) (net.Conn, error)
 }
 
 // DefaultCaps is the set of capabilities Lurk requests when Config.Caps is nil.

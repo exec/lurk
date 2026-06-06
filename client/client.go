@@ -292,8 +292,8 @@ func (c *Client) write(command string, params ...string) error {
 // or fails. On success the caller should call Run to process subsequent
 // messages. The context governs the dial and the registration phase.
 func (c *Client) Connect(ctx context.Context) error {
-	if c.cfg.Server == "" {
-		return errors.New("client: Config.Server is required")
+	if c.cfg.Server == "" && c.cfg.Dialer == nil {
+		return errors.New("client: Config.Server or Config.Dialer is required")
 	}
 	// Refuse to send credentials in the clear: SASL PLAIN is base64-encoded, not
 	// encrypted, and PASS is sent verbatim, so either over a non-TLS link exposes
@@ -321,7 +321,17 @@ func (c *Client) Connect(ctx context.Context) error {
 }
 
 // netDial dials and TLS-wraps the configured server, returning it as a transport.
+// When Config.Dialer is set it is used to obtain the raw connection instead (the
+// embedder's seam for custom transports and hermetic reconnect tests); the result
+// is wrapped in the framing layer exactly as a normally-dialed connection.
 func (c *Client) netDial(ctx context.Context) (transport, error) {
+	if c.cfg.Dialer != nil {
+		raw, err := c.cfg.Dialer(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("client: dial: %w", err)
+		}
+		return conn.NewConn(raw, conn.Options{}), nil
+	}
 	co, err := conn.Dial(ctx, "tcp", c.cfg.Server, conn.Options{
 		TLS:                c.cfg.TLS,
 		InsecureSkipVerify: c.cfg.InsecureSkipVerify,
