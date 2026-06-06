@@ -314,3 +314,39 @@ func TestLauncherBounceSepIsSkippedByFocus(t *testing.T) {
 		f.focus(1)
 	}
 }
+
+// TestLauncherBounceNetIDNonNumericError: a non-empty, non-numeric Bounce NetID
+// field produces a validation error from toNetwork() rather than silently
+// saving 0 and creating a non-functional bounce configuration.
+func TestLauncherBounceNetIDNonNumericError(t *testing.T) {
+	f := newNetForm(config.Network{Name: "x", Addr: "y:1"}, config.Identity{})
+	f.fields[fBounceAddr].input.SetValue("localhost:7778")
+	f.fields[fBounceNetID].input.SetValue("not-a-number")
+
+	_, err := f.toNetwork()
+	if err == nil {
+		t.Fatal("toNetwork: expected error for non-numeric Bounce NetID, got nil")
+	}
+	if !strings.Contains(err.Error(), "not-a-number") {
+		t.Errorf("error message should quote the bad value; got: %v", err)
+	}
+}
+
+// TestLauncherBounceNetIDEmptyIsZero: leaving Bounce NetID blank (not required)
+// is valid and results in a zero NetID in the saved BounceConfig.
+func TestLauncherBounceNetIDEmptyIsZero(t *testing.T) {
+	f := newNetForm(config.Network{Name: "x", Addr: "y:1"}, config.Identity{})
+	f.fields[fBounceAddr].input.SetValue("localhost:7778")
+	// fBounceNetID left blank intentionally.
+
+	got, err := f.toNetwork()
+	if err != nil {
+		t.Fatalf("toNetwork: unexpected error for empty NetID: %v", err)
+	}
+	if got.Bounce.NetID != 0 {
+		t.Errorf("Bounce.NetID = %d, want 0 for empty field", got.Bounce.NetID)
+	}
+	if got.Bounce.Addr != "localhost:7778" {
+		t.Errorf("Bounce.Addr = %q, want localhost:7778", got.Bounce.Addr)
+	}
+}

@@ -150,9 +150,9 @@ func (f *netForm) focus(dir int) {
 	}
 	n := len(f.fields)
 	f.idx = (f.idx + dir + n) % n
-	// Skip over separator rows; at most one skip per step since two adjacent
-	// separators would be a form-design error, not a runtime concern.
-	if f.fields[f.idx].kind == kindSep {
+	// Skip over any separator rows so focus always lands on an interactive
+	// field even when separators are adjacent.
+	for f.fields[f.idx].kind == kindSep {
 		f.idx = (f.idx + dir + n) % n
 	}
 	if f.fields[f.idx].kind == kindText {
@@ -161,9 +161,9 @@ func (f *netForm) focus(dir int) {
 }
 
 // toNetwork validates the form and converts it to a config.Network. Name and
-// Address are required; passwords keep their exact value (not trimmed).
-// A non-empty Bounce addr populates the BounceConfig block; an invalid
-// Bounce NetID (non-numeric) is treated as zero (not configured).
+// Address are required; passwords keep their exact value (not trimmed). When a
+// Bounce addr is set, Bounce NetID must be empty (stays 0, meaning "not bound")
+// or a valid positive integer — a non-numeric value is a validation error.
 func (f *netForm) toNetwork() (config.Network, error) {
 	val := func(i int) string { return strings.TrimSpace(f.fields[i].input.Value()) }
 
@@ -190,7 +190,14 @@ func (f *netForm) toNetwork() (config.Network, error) {
 		}
 	}
 	if baddr := val(fBounceAddr); baddr != "" {
-		netID, _ := strconv.Atoi(val(fBounceNetID))
+		var netID int
+		if raw := val(fBounceNetID); raw != "" {
+			var err error
+			netID, err = strconv.Atoi(raw)
+			if err != nil {
+				return config.Network{}, fmt.Errorf("Bounce NetID %q is not a number", raw)
+			}
+		}
 		n.Bounce = config.BounceConfig{
 			Addr:     baddr,
 			NetID:    netID,
