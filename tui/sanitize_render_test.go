@@ -81,3 +81,86 @@ func TestViewSanitizesEscapeFromEvents(t *testing.T) {
 		t.Fatalf("PM peer title lost its visible text:\n%s", out)
 	}
 }
+
+// TestEmptyHintSanitizesTitle proves a PM or channel buffer whose Title carries
+// terminal escape sequences cannot inject them through the empty-buffer hint.
+// This is the render path through emptyHint → renderBody → lipgloss.Place,
+// which previously passed b.Title raw to the renderer.
+func TestEmptyHintSanitizesTitle(t *testing.T) {
+	cases := []struct {
+		name  string
+		kind  BufferKind
+		title string
+	}{
+		{"PM escape", BufferPM, escNick},
+		{"channel escape", BufferChannel, "#" + escNick},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &Buffer{Kind: tc.kind, Title: tc.title}
+			hint := emptyHint(b)
+			if strings.Contains(stripANSI(hint), "\x1b") {
+				t.Fatalf("emptyHint still contains ESC after stripANSI: %q", hint)
+			}
+			// The inert visible remnants of the payload (e.g. "]0;pwned") must
+			// survive so the hint still names the buffer.
+			vis := stripANSI(hint)
+			if !strings.Contains(vis, "pwned") {
+				t.Fatalf("emptyHint lost visible text from title: %q", vis)
+			}
+		})
+	}
+}
+
+// TestEmptyHintTruncatesWideTitle verifies that a server-controlled title of
+// thousands of full-width grapheme clusters does not produce an unbounded
+// string in the empty-buffer hint. The title width after truncation must not
+// exceed emptyHintTitleMax display columns.
+func TestEmptyHintTruncatesWideTitle(t *testing.T) {
+	// Each '你' is 2 display columns wide; 2500 × 2 = 5000 columns total.
+	wideTitle := strings.Repeat("你", 2500)
+	cases := []struct {
+		name string
+		kind BufferKind
+	}{
+		{"PM", BufferPM},
+		{"channel", BufferChannel},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &Buffer{Kind: tc.kind, Title: wideTitle}
+			hint := emptyHint(b)
+			vis := stripANSI(hint)
+			// The hint prefix ("No messages yet — say hello to " etc.) plus the
+			// capped title must fit well below a sane maximum; we check that the
+			// raw hint length is not pathologically large.
+			if len(vis) > 256 {
+				t.Fatalf("emptyHint produced an oversized hint (%d bytes); title was not truncated", len(vis))
+			}
+		})
+	}
+}
+
+// TestEmptyHintRenderBodyESCFree exercises the full renderBody path with an
+// empty PM buffer whose Title carries an OSC escape, proving the fix reaches
+// the actual render output (not just the string returned by emptyHint).
+func TestEmptyHintRenderBodyESCFree(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height, m.ready = 80, 24, true
+	// Open an empty PM buffer with a malicious title and switch to it.
+	_, i := m.ensureBuffer(escNick, BufferPM)
+	m.switchTo(i)
+	m = layout(m)
+
+	// renderBody is the composition layer that calls emptyHint; check its output.
+	b := m.activeBuffer()
+	if len(b.lines) != 0 {
+		t.Skip("buffer is not empty — hint path not exercised")
+	}
+	bodyW, _ := paneWidths(m.width, false)
+	_, bodyH := verticalLayout(m)
+	out := renderBody(m, bodyW, bodyH)
+	if strings.Contains(stripANSI(out), "\x1b") {
+		t.Fatalf("renderBody(empty PM with ESC title) leaked ESC: %q", stripANSI(out))
+	}
+}

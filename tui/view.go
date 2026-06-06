@@ -209,16 +209,26 @@ func renderBody(m model, w, h int) string {
 	return lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(content)
 }
 
+// emptyHintTitleMax is the display-column cap applied to a server-controlled
+// buffer title embedded in the empty-buffer hint. The cap is wide enough for
+// any realistic nick or channel name (IRC max is 50 chars for nicks, longer for
+// channels) while bounding the grapheme-width work lipgloss does per render.
+const emptyHintTitleMax = 64
+
 // emptyHint returns the placeholder shown in an empty buffer, tailored to its
-// kind so the suggested next step fits the context.
+// kind so the suggested next step fits the context. The buffer's Title is
+// server-controlled (a PM peer nick or a channel name), so it is sanitized to
+// strip terminal control sequences and truncated to a fixed column cap before
+// it reaches the renderer — matching the treatment every other Title render
+// site applies (sidebar, status bar, topic bar).
 func emptyHint(b *Buffer) string {
 	switch b.Kind {
 	case BufferServer:
 		return "Type /help for commands · /list to browse channels · /join #channel"
 	case BufferPM:
-		return "No messages yet — say hello to " + b.Title
+		return "No messages yet — say hello to " + truncate(sanitize(b.Title), emptyHintTitleMax)
 	default:
-		return "No messages yet in " + b.Title
+		return "No messages yet in " + truncate(sanitize(b.Title), emptyHintTitleMax)
 	}
 }
 
