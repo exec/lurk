@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-06-06
+
 ### Added
 - `-insecure-auth` flag (env `LURK_INSECURE_AUTH`) to allow sending credentials
   over a plaintext connection, matching the per-network setting the launcher
@@ -169,7 +171,8 @@ Initial release.
 - Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
   `-version` flag.
 
-[Unreleased]: https://github.com/exec/lurk/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/exec/lurk/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/exec/lurk/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/exec/lurk/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/exec/lurk/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/exec/lurk/compare/v0.3.0...v0.4.0
