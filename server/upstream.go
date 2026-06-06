@@ -211,6 +211,20 @@ func (m *Manager) UpstreamState(netid int) (ConnStatus, bool) {
 	return 0, false
 }
 
+// Client returns the upstream client.Client for the given netid, and false if
+// no such upstream is managed. The returned pointer is safe to use from any
+// goroutine (client.Client is goroutine-safe for its write methods).
+func (m *Manager) Client(netid int) (*client.Client, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, e := range m.upstreams {
+		if e.netid == netid {
+			return e.client, true
+		}
+	}
+	return nil, false
+}
+
 // Add builds, connects, and registers a new upstream for nw. It appends the
 // entry to the managed set and returns when the upstream has completed
 // registration. ctx governs the connect+registration phase only.
@@ -274,6 +288,18 @@ func (m *Manager) Remove(netid int) {
 	}
 }
 
+// upstreamCaps is the set of capabilities the upstream client requests from the
+// IRC server. echo-message is required for the self-send fan-out rule [B#11]:
+// lurkd must see its own sent PRIVMSGs echoed so they can be stored once and
+// fanned out to all bound clients. Without echo-message, self-sends are not
+// delivered to other bound clients (graceful degradation — the message is
+// still forwarded to the upstream, but lurkd never sees it back).
+var upstreamCaps = append(
+	append([]string(nil), client.DefaultCaps...),
+	"echo-message",
+	"labeled-response",
+)
+
 // buildClient constructs a client.Client from a Network config entry, wiring in
 // any injected Dialer from m.Dialers.
 func (m *Manager) buildClient(n *Network) *client.Client {
@@ -284,6 +310,7 @@ func (m *Manager) buildClient(n *Network) *client.Client {
 		Server:        n.Addr,
 		TLS:           n.TLS,
 		AutoReconnect: true,
+		Caps:          upstreamCaps,
 	}
 
 	// Map upstream SASL credentials.

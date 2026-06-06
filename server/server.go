@@ -151,10 +151,17 @@ type Server struct {
 	// controlSessions is the set of currently-connected, registered, unbound
 	// (netid==0) sessions that have enabled soju.im/bouncer-networks-notify.
 	// Used to broadcast bouncer-networks-notify on ADD/CHANGE/DEL.
-	//
-	// Phase 6b extension point: keying by netid (0=control) will allow bound
-	// sessions to be tracked here too for per-network broadcast.
 	controlSessions map[*session]struct{}
+
+	// boundMu guards boundSessions. It is a separate mutex from controlMu so
+	// fanout (high-frequency, upstream goroutine) does not contend with the
+	// low-frequency control-session registry mutations.
+	boundMu sync.RWMutex
+	// boundSessions maps netid → set of sessions currently bound to that netid.
+	// A session is added on registration (end of sendWelcome, netid != 0) and
+	// removed on disconnect (defer in run). Guarded by boundMu; never hold
+	// boundMu across conn I/O.
+	boundSessions map[int]map[*session]struct{}
 }
 
 // WithStore configures the Server to use the given backlog store for
@@ -178,11 +185,13 @@ func (s *Server) WithConfigPath(path string) {
 
 // New builds a Server from cfg. cfg must not be nil.
 func New(cfg *Config) *Server {
-	return &Server{
+	s := &Server{
 		cfg:             cfg,
 		regTimeout:      registrationTimeout,
 		controlSessions: make(map[*session]struct{}),
 	}
+	s.initBoundSessions()
+	return s
 }
 
 // registerControlSession adds sess to the control-session registry. Called
@@ -425,6 +434,20 @@ type session struct {
 	// BOUNCER BIND sets this field; tests set it directly to exercise
 	// CHATHISTORY without going through the full bind flow.
 	netid int
+
+	// labelMu guards pendingLabels. It is held briefly by both the session's
+	// own goroutine (when pushing a new pending label on relay) and by the
+	// fanout goroutine (when matching and consuming the head label on echo).
+	// Never hold labelMu across conn I/O.
+	labelMu sync.Mutex
+	// pendingLabels is a bounded FIFO of @label-tagged sends awaiting their
+	// upstream echo. When the upstream echoes a matching message, fanout pops
+	// the label and attaches it to that session's copy of the fanned-out
+	// message (the self-send rule [B#11]). Other sessions see no label.
+	// The slice is at most pendingLabelFIFOSize entries; the oldest is evicted
+	// when full (the client sent so many unlabeled-echoed messages that the
+	// FIFO wrapped — graceful degradation: no label on the excess echo).
+	pendingLabels []pendingLabel
 }
 
 // run is the session goroutine's main loop. It processes messages until the
@@ -432,11 +455,11 @@ type session struct {
 func (s *session) run() error {
 	s.capEnabled = make(map[string]bool)
 
-	// Deregister from the control-session registry on exit. The defer is placed
-	// before registration (below) so it fires even if registration never
-	// completes — unregisterControlSession is a no-op for sessions that were
-	// never registered.
+	// Deregister from both registries on exit. The defers are placed before
+	// any registration call so they fire even if registration never completes —
+	// both unregister helpers are no-ops for sessions that were never registered.
 	defer s.srv.unregisterControlSession(s)
+	defer s.srv.unregisterBoundSession(s)
 
 	for {
 		msg, err := s.conn.ReadMessage()
@@ -453,7 +476,8 @@ func (s *session) run() error {
 // dispatch routes a single incoming message to the appropriate handler.
 // An error from dispatch tears down the session.
 func (s *session) dispatch(msg *irc.Message) error {
-	switch strings.ToUpper(msg.Command) {
+	cmd := strings.ToUpper(msg.Command)
+	switch cmd {
 	case irc.CAP:
 		return s.handleCAP(msg)
 	case irc.AUTHENTICATE:
@@ -463,9 +487,13 @@ func (s *session) dispatch(msg *irc.Message) error {
 	case irc.USER:
 		return s.handleUSER(msg)
 	case irc.PING:
+		// Always handled locally: respond with a PONG (even for bound sessions,
+		// per the bouncer design — PING keepalives are between client and lurkd,
+		// not forwarded to the upstream).
 		return s.handlePING(msg)
 	case irc.QUIT:
-		// Graceful client quit: close the connection and let run() return.
+		// QUIT from a bound client closes the client's connection to lurkd, not
+		// the upstream. The upstream stays connected (bouncer semantics).
 		_ = s.conn.Close()
 		return nil
 	case "BOUNCER":
@@ -476,12 +504,14 @@ func (s *session) dispatch(msg *irc.Message) error {
 		}
 		return s.handleCHATHISTORY(msg)
 	default:
-		// Unknown commands during registration: send ERR_NOTREGISTERED if not
-		// yet done, otherwise ignore. We never panic on unknown input.
 		if !s.registered() {
 			return s.sendNumeric(irc.ERR_NOTREGISTERED, s.clientNick(), "You have not registered")
 		}
-		// Post-registration unknown commands: silently ignore.
+		// For a bound session: relay to the upstream. For an unbound/control
+		// session: silently ignore (no upstream to forward to).
+		if s.netid != 0 {
+			return s.relayToUpstream(msg)
+		}
 		return nil
 	}
 }
@@ -981,10 +1011,13 @@ func (s *session) sendWelcome() error {
 		return err
 	}
 
-	// Register as a control session if unbound and the notify cap is enabled.
-	// This must happen after welcome so the client is fully registered before
-	// we might deliver a notify to it.
-	if s.netid == 0 && s.capEnabled["soju.im/bouncer-networks-notify"] {
+	// Register in the appropriate session registry after welcome so the client
+	// is fully registered before any fan-out or notify reaches it.
+	if s.netid != 0 {
+		// Bound session: register for live upstream fan-out.
+		s.srv.registerBoundSession(s)
+	} else if s.capEnabled["soju.im/bouncer-networks-notify"] {
+		// Unbound/control session with notify cap: register for network broadcasts.
 		s.srv.registerControlSession(s)
 	}
 

@@ -4,17 +4,20 @@
 // place. It is headless and standard-library only — unlike cmd/lurk it imports no
 // charm UI libraries (enforced by server.TestNoCharmDependency).
 //
-// Phase 1: the plain TCP accept loop is wired. TLS wrapping, SASL auth, session
-// multiplexing, backlog store, and soju.im/bouncer-networks land in later phases
-// (see docs/LURKD-DESIGN.md §8).
+// Phase 6b: the full daemon wiring is in place. Upstream events flow through
+// the Manager → Server.Ingest (store + fanout) → bound clients. Bound clients
+// relay commands back to the upstream via the Manager. The backlog store is
+// wired for CHATHISTORY. Signal handling and graceful shutdown are Phase 9.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 
+	"github.com/exec/lurk/backlog"
 	"github.com/exec/lurk/server"
 )
 
@@ -54,14 +57,54 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Build the backlog store. DefaultPath uses $LURKD_BACKLOG_DIR if set,
+	// else the XDG data home. On error, proceed without a store (CHATHISTORY
+	// will return empty results, but the daemon is otherwise functional).
+	backlogDir, err := backlog.DefaultPath()
+	if err != nil {
+		log.Printf("backlog: could not determine store path: %v (CHATHISTORY will be unavailable)", err)
+	}
+	var store *backlog.Store
+	if backlogDir != "" {
+		store, err = backlog.NewStore(backlogDir)
+		if err != nil {
+			log.Printf("backlog: open store at %s: %v (CHATHISTORY will be unavailable)", backlogDir, err)
+		} else {
+			log.Printf("backlog store: %s", backlogDir)
+			defer store.Close()
+		}
+	}
+
+	// Build the Server first (it becomes the Sink the Manager feeds into).
+	srv := server.New(cfg)
+	if store != nil {
+		srv.WithStore(store)
+	}
+	srv.WithConfigPath(path)
+
+	// Build the upstream Manager with the Server as its Sink. The Server must
+	// be the Sink so that Ingest fans out to bound sessions as well as storing.
+	mgr := server.NewManager(cfg, srv)
+	srv.WithManager(mgr)
+
+	// Start all configured upstreams. Use a background context for the dial
+	// phase; full lifecycle management (signal-driven shutdown) is Phase 9.
+	startCtx := context.Background()
+	if len(cfg.Networks) > 0 {
+		if err := mgr.Start(startCtx); err != nil {
+			log.Fatalf("start upstreams: %v", err)
+		}
+		log.Printf("upstreams started")
+	}
+
+	// Start the listener.
 	ln, err := server.NewListener(addr, cfg)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
 	log.Printf("listening on %s", ln.Addr())
 
-	s := server.New(cfg)
-	if err := s.Serve(ln); err != nil {
+	if err := srv.Serve(ln); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
 }
