@@ -99,7 +99,11 @@ func safeName(target string) string {
 		}
 	}
 	out := b.String()
-	if out == "" {
+	// A name made entirely of dots (".", "..", …) survives the character filter but
+	// resolves to the log directory itself or its parent once joined to a path.
+	// Reject it so a buffer titled "." or ".." can't redirect its log outside the
+	// log dir.
+	if strings.Trim(out, ".") == "" {
 		return "server"
 	}
 	return out

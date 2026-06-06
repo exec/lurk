@@ -64,6 +64,15 @@ func TestSafeName(t *testing.T) {
 		"  ":         "server",
 		"Bob[m]":     "bob_m_",
 		"+localchan": "+localchan",
+		// Dot-only names would resolve to the log dir or its parent once joined to
+		// a path, so they fall back to "server" rather than escaping it. A dot
+		// inside an otherwise-normal name is still allowed.
+		".":      "server",
+		"..":     "server",
+		"...":    "server",
+		" .. ":   "server",
+		"a.b":    "a.b",
+		"#a.b.c": "#a.b.c",
 	}
 	for in, want := range cases {
 		if got := safeName(in); got != want {
