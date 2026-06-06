@@ -6,6 +6,15 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+- `docs/CONFIG.md` — a full client configuration reference: the JSON schema for
+  networks/identity/SASL/bounce, the `LURK_*` environment variables, and the CLI
+  flags.
+- `config.Validate` — an additive validator that reports malformed network
+  entries (empty name/addr, unknown SASL mechanism, bad `host:port`, duplicate
+  names, a misconfigured bounce block). It is not wired into `Load`, so existing
+  configs keep loading unchanged.
+
 ## [1.1.1] - 2026-06-06
 
 ### Changed
