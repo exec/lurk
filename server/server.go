@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/exec/lurk/backlog"
 	"github.com/exec/lurk/conn"
 	"github.com/exec/lurk/irc"
 )
@@ -121,6 +122,16 @@ type Server struct {
 	// New defaults it to registrationTimeout; tests set a short value to exercise
 	// the idle-client drop without waiting the full production timeout.
 	regTimeout time.Duration
+
+	// store is the durable backlog store used to serve CHATHISTORY queries.
+	// Set via WithStore. If nil, CHATHISTORY returns an empty batch.
+	store *backlog.Store
+}
+
+// WithStore configures the Server to use the given backlog store for
+// CHATHISTORY queries. Must be called before Serve/serveConn.
+func (s *Server) WithStore(store *backlog.Store) {
+	s.store = store
 }
 
 // New builds a Server from cfg. cfg must not be nil.
@@ -203,6 +214,36 @@ func (s *Server) serveConn(nc net.Conn) error {
 	// accept loop wrapped the listener with tls.NewListener, nc is a *tls.Conn.
 	_, isTLS := nc.(*tls.Conn)
 	return s.serveConnInternal(nc, isTLS)
+}
+
+// serveConnInternalNetid is the Phase 5 test seam: identical to
+// serveConnInternal but also sets session.netid before the run loop. This
+// allows CHATHISTORY tests to bind a session to a specific netid without
+// going through Phase 6's BOUNCER BIND flow.
+//
+// This method is intentionally unexported and used only from within the server
+// package (by chathistory_test.go). Phase 6 will have BOUNCER BIND set
+// session.netid from within the run loop; this seam is only for Phase 5 tests.
+func (s *Server) serveConnInternalNetid(nc net.Conn, isTLS bool, netid int) error {
+	regTimeout := s.regTimeout
+	if regTimeout <= 0 {
+		regTimeout = registrationTimeout
+	}
+	if err := nc.SetDeadline(time.Now().Add(regTimeout)); err != nil {
+		log.Printf("server: set registration deadline: %v", err)
+	}
+
+	c := conn.NewConn(nc, conn.Options{})
+	defer c.Close()
+
+	sess := &session{
+		srv:   s,
+		conn:  c,
+		nc:    nc,
+		isTLS: isTLS,
+		netid: netid,
+	}
+	return sess.run()
 }
 
 // serveConnInternal is the internal implementation shared by serveConn and
@@ -290,6 +331,12 @@ type session struct {
 	saslState  saslState
 	saslAuthed bool           // true if SASL authentication succeeded
 	saslParsed *ParsedAuthcid // parsed authcid from the PLAIN payload (set on success)
+
+	// netid identifies which upstream network this session is bound to.
+	// 0 means the session is on the control context (unbound). Phase 6's
+	// BOUNCER BIND sets this field; tests set it directly to exercise
+	// CHATHISTORY without going through the full bind flow.
+	netid int
 }
 
 // run is the session goroutine's main loop. It processes messages until the
@@ -327,6 +374,11 @@ func (s *session) dispatch(msg *irc.Message) error {
 		// Graceful client quit: close the connection and let run() return.
 		_ = s.conn.Close()
 		return nil
+	case "CHATHISTORY":
+		if !s.registered() {
+			return s.sendNumeric(irc.ERR_NOTREGISTERED, s.clientNick(), "You have not registered")
+		}
+		return s.handleCHATHISTORY(msg)
 	default:
 		// Unknown commands during registration: send ERR_NOTREGISTERED if not
 		// yet done, otherwise ignore. We never panic on unknown input.
