@@ -7,13 +7,42 @@ semantic versioning.
 ## [Unreleased]
 
 ### Added
-- `docs/CONFIG.md` — a full client configuration reference: the JSON schema for
-  networks/identity/SASL/bounce, the `LURK_*` environment variables, and the CLI
-  flags.
-- `config.Validate` — an additive validator that reports malformed network
+- **SASL SCRAM-SHA-256** (`SCRAM-SHA-256`, RFC 5802/7677) — a challenge-response
+  mechanism that proves knowledge of the password without sending it, selectable
+  via a network's SASL `mechanism`. Standard-library crypto only, with
+  server-signature verification that rejects a rogue authenticator.
+- **MONITOR presence tracking** — request the `monitor` capability and watch a
+  set of nicks for online/offline transitions (`Monitor`/`Unmonitor`/
+  `UnmonitorAll`/`MonitorList` actions, `MonitoredOnline` state, and
+  `HandleMonitorOnline`/`HandleMonitorOffline` handlers), re-established
+  automatically after an auto-reconnect.
+- **`standard-replies`** — request the capability and register one handler for
+  server `FAIL`/`WARN`/`NOTE` messages via `HandleStandardReply`.
+- **`irc.Message.Clone` + nil-safe `Tags.Set`** — deep-copy a message
+  (independent `Tags` map and `Params` slice) so a cached message no longer
+  aliases the receive buffer.
+- **Launcher bouncer fields** — the network add/edit form now has Bounce
+  address / NetID / Client-ID fields, so a lurkd connection can be configured
+  from the UI instead of hand-editing `config.json`.
+- **lurkd backlog rotation** — `backlog.WithMaxFileSize` bounds each per-target
+  JSONL file, rotating `<target>.jsonl` to `.jsonl.1` and rehydrating the ring
+  from both segments on restart. Off by default (unbounded), backward-compatible.
+- **`config.Validate`** — an additive validator that reports malformed network
   entries (empty name/addr, unknown SASL mechanism, bad `host:port`, duplicate
   names, a misconfigured bounce block). It is not wired into `Load`, so existing
   configs keep loading unchanged.
+- **`docs/CONFIG.md`** — a full client configuration reference: the JSON schema
+  for networks/identity/SASL/bounce, the `LURK_*` environment variables, and the
+  CLI flags.
+
+### Fixed
+- `/quit` (and `Ctrl-C`) now sends `QUIT` to **every** connected network, not
+  just the active one, so the other servers see a clean quit instead of a silent
+  TCP drop.
+- lurkd `CHANGENETWORK` now reconnects the upstream when its address or TLS flag
+  changes (previously it kept dialing the old host until a restart), and
+  `CHANGENETWORK`/`DELNETWORK` roll back their in-memory change if persisting the
+  config fails, so disk and memory no longer diverge.
 
 ## [1.1.1] - 2026-06-06
 
