@@ -394,3 +394,98 @@ func TestMergeTokenCeilingKnownKeyOverride(t *testing.T) {
 		t.Errorf("second novel key: NOVEL2 should be dropped (ceiling reached)")
 	}
 }
+
+// TestIntTokenUpperBounds verifies that NickLen, ChannelLen, and TopicLen clamp
+// absurdly large server-advertised values to their per-token ceilings, while
+// normal values pass through unchanged and absent tokens report ok=false.
+func TestIntTokenUpperBounds(t *testing.T) {
+	tests := []struct {
+		name    string
+		token   string
+		value   string
+		wantN   int
+		wantOK  bool
+	}{
+		// Normal values pass through unchanged.
+		{"NickLen normal", "NICKLEN", "32", 32, true},
+		{"ChannelLen normal", "CHANNELLEN", "64", 64, true},
+		{"TopicLen normal", "TOPICLEN", "390", 390, true},
+		// Exactly at the ceiling passes through.
+		{"NickLen at ceiling", "NICKLEN", strconv.Itoa(maxNickLen), maxNickLen, true},
+		{"ChannelLen at ceiling", "CHANNELLEN", strconv.Itoa(maxChannelLen), maxChannelLen, true},
+		{"TopicLen at ceiling", "TOPICLEN", strconv.Itoa(maxTopicLen), maxTopicLen, true},
+		// One above the ceiling is clamped to the ceiling (not rejected).
+		{"NickLen above ceiling", "NICKLEN", strconv.Itoa(maxNickLen + 1), maxNickLen, true},
+		{"ChannelLen above ceiling", "CHANNELLEN", strconv.Itoa(maxChannelLen + 1), maxChannelLen, true},
+		{"TopicLen above ceiling", "TOPICLEN", strconv.Itoa(maxTopicLen + 1), maxTopicLen, true},
+		// Astronomically large values are clamped, not rejected.
+		{"NickLen huge", "NICKLEN", "2147483647", maxNickLen, true},
+		{"ChannelLen huge", "CHANNELLEN", "2147483647", maxChannelLen, true},
+		{"TopicLen huge", "TOPICLEN", "2147483647", maxTopicLen, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			feat := Parse([]string{tt.token + "=" + tt.value})
+			var gotN int
+			var gotOK bool
+			switch tt.token {
+			case "NICKLEN":
+				gotN, gotOK = feat.NickLen()
+			case "CHANNELLEN":
+				gotN, gotOK = feat.ChannelLen()
+			case "TOPICLEN":
+				gotN, gotOK = feat.TopicLen()
+			}
+			if gotOK != tt.wantOK || gotN != tt.wantN {
+				t.Errorf("%s(%q) = (%d, %v), want (%d, %v)",
+					tt.token, tt.value, gotN, gotOK, tt.wantN, tt.wantOK)
+			}
+		})
+	}
+
+	// Absent tokens still report ok=false regardless of bounds.
+	t.Run("NickLen absent", func(t *testing.T) {
+		feat := Parse([]string{"CHANNELLEN=50"})
+		if _, ok := feat.NickLen(); ok {
+			t.Error("NickLen() absent should return ok=false")
+		}
+	})
+}
+
+// TestTargMaxUpperBound verifies that TargMax clamps hostile large values to
+// maxTargMax while preserving normal values and the empty-value (unlimited)
+// semantics.
+func TestTargMaxUpperBound(t *testing.T) {
+	tests := []struct {
+		name    string
+		targmax string
+		command string
+		wantN   int
+		wantOK  bool
+	}{
+		// Normal value passes through unchanged.
+		{"normal", "PRIVMSG:4,NOTICE:4", "PRIVMSG", 4, true},
+		// Exactly at the ceiling passes through.
+		{"at ceiling", "PRIVMSG:" + strconv.Itoa(maxTargMax), "PRIVMSG", maxTargMax, true},
+		// One above the ceiling is clamped.
+		{"above ceiling", "PRIVMSG:" + strconv.Itoa(maxTargMax+1), "PRIVMSG", maxTargMax, true},
+		// Astronomically large value is clamped.
+		{"huge", "PRIVMSG:2147483647", "PRIVMSG", maxTargMax, true},
+		// Empty value (unlimited) still reports ok=false.
+		{"unlimited", "KICK:", "KICK", 0, false},
+		// Absent command reports ok=false.
+		{"absent command", "NOTICE:4", "PRIVMSG", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			feat := Parse([]string{"TARGMAX=" + tt.targmax})
+			gotN, gotOK := feat.TargMax(tt.command)
+			if gotOK != tt.wantOK || gotN != tt.wantN {
+				t.Errorf("TargMax(%q) with TARGMAX=%q = (%d, %v), want (%d, %v)",
+					tt.command, tt.targmax, gotN, gotOK, tt.wantN, tt.wantOK)
+			}
+		})
+	}
+}

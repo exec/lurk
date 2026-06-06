@@ -271,6 +271,21 @@ func (s ISupport) ChanModes() ChanModes {
 	return cm
 }
 
+// Per-token upper bounds for integer ISUPPORT values. A hostile server can
+// advertise any non-negative integer; without a ceiling, a value like
+// NICKLEN=2147483647 could be passed into a downstream allocation or loop.
+// The ceilings are generous multiples of any real-world value: every known
+// IRC daemon uses NICKLEN ≤ 64, CHANNELLEN ≤ 200, TOPICLEN ≤ 1000,
+// TARGMAX entries ≤ a few dozen. A value above the ceiling is clamped to it
+// (returning the ceiling, not ok=false) so callers that do
+// "if n, ok := NickLen(); ok { use n }" still receive a safe, usable value.
+const (
+	maxNickLen    = 512
+	maxChannelLen = 512
+	maxTopicLen   = 8192
+	maxTargMax    = 1000
+)
+
 // intToken parses a token whose value is a non-negative integer, returning the
 // value and whether it was present and well-formed.
 func (s ISupport) intToken(key string) (int, bool) {
@@ -285,22 +300,38 @@ func (s ISupport) intToken(key string) (int, bool) {
 	return n, true
 }
 
+// boundedIntToken is like intToken but clamps the result to [0, max]. It is
+// used for tokens whose value is fed into allocations or loop bounds so that
+// a hostile server advertising an astronomically large value cannot cause
+// pathological behaviour downstream.
+func (s ISupport) boundedIntToken(key string, max int) (int, bool) {
+	n, ok := s.intToken(key)
+	if !ok {
+		return 0, false
+	}
+	if n > max {
+		return max, true
+	}
+	return n, true
+}
+
 // NickLen returns the maximum nickname length (NICKLEN), and whether it was
-// advertised.
-func (s ISupport) NickLen() (int, bool) { return s.intToken("NICKLEN") }
+// advertised. Values above maxNickLen are clamped to maxNickLen.
+func (s ISupport) NickLen() (int, bool) { return s.boundedIntToken("NICKLEN", maxNickLen) }
 
 // ChannelLen returns the maximum channel-name length (CHANNELLEN), and whether
-// it was advertised.
-func (s ISupport) ChannelLen() (int, bool) { return s.intToken("CHANNELLEN") }
+// it was advertised. Values above maxChannelLen are clamped to maxChannelLen.
+func (s ISupport) ChannelLen() (int, bool) { return s.boundedIntToken("CHANNELLEN", maxChannelLen) }
 
 // TopicLen returns the maximum topic length (TOPICLEN), and whether it was
-// advertised.
-func (s ISupport) TopicLen() (int, bool) { return s.intToken("TOPICLEN") }
+// advertised. Values above maxTopicLen are clamped to maxTopicLen.
+func (s ISupport) TopicLen() (int, bool) { return s.boundedIntToken("TOPICLEN", maxTopicLen) }
 
 // TargMax returns the maximum number of targets allowed for the named command
 // (from the TARGMAX token, e.g. "PRIVMSG:4,NOTICE:4"), and whether a limit is
 // defined for it. A command listed with an empty value (no numeric limit, i.e.
-// unlimited) reports ok=false, matching the "no limit" semantics.
+// unlimited) reports ok=false, matching the "no limit" semantics. Values above
+// maxTargMax are clamped to maxTargMax.
 //
 // The empty-value case is not hypothetical: Ergo emits entries such as "KICK:"
 // to mean "no per-command target limit" (see ergo/irc/config.go's
@@ -325,6 +356,9 @@ func (s ISupport) TargMax(command string) (int, bool) {
 		n, err := strconv.Atoi(limit)
 		if err != nil || n < 0 {
 			return 0, false
+		}
+		if n > maxTargMax {
+			return maxTargMax, true
 		}
 		return n, true
 	}
