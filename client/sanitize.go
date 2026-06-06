@@ -43,6 +43,68 @@ func SanitizeTerminal(s string) string {
 	}, s)
 }
 
+// ircFormatting reports whether r is one of the inline IRC formatting control
+// bytes that clients interpret as styling (not as a terminal escape): bold,
+// colour, hex-colour, monospace, reverse, italic, strikethrough, underline, and
+// the reset/plain byte. They live in the C0 range but are legitimate IRC content,
+// so SanitizeForRelay preserves them where SanitizeTerminal (terminal-bound) drops
+// them.
+func ircFormatting(r rune) bool {
+	switch r {
+	case 0x02, // bold (STX)
+		0x03, // colour (ETX)
+		0x04, // hex colour (EOT)
+		0x0f, // reset / plain (SI)
+		0x11, // monospace (DC1)
+		0x16, // reverse (SYN)
+		0x1d, // italic (GS)
+		0x1e, // strikethrough (RS)
+		0x1f: // underline (US)
+		return true
+	}
+	return false
+}
+
+// SanitizeForRelay neutralizes terminal-hijacking control sequences in
+// peer-supplied text while PRESERVING the inline IRC formatting controls
+// (bold/colour/italic/underline/strikethrough/monospace/reverse/reset). Use it
+// when text will be stored or relayed onward to another IRC client — a bouncer's
+// backlog and its live relay — because that client renders IRC formatting itself
+// and is responsible for its own terminal safety. For text written directly to
+// this process's own terminal, use SanitizeTerminal instead, which additionally
+// strips the formatting bytes.
+//
+// It drops ESC (0x1b) and every other C0 control except the IRC formatting set
+// and the horizontal tab, drops DEL (0x7f) and the C1 range (0x80–0x9f) — so no
+// ANSI/OSC/CSI/DCS sequence can survive to attack a downstream terminal — and
+// drops the Trojan-Source bidirectional formatting controls (CVE-2021-42574),
+// which spoof rendered order in any client, IRC-aware or not. NUL/CR/LF never
+// reach here (the wire parser rejects them) but would be dropped regardless.
+// Printable Unicode and the IRC formatting bytes pass through untouched, so a
+// round-trip preserves the message's styling exactly.
+func SanitizeForRelay(s string) string {
+	if strings.IndexFunc(s, unsafeForRelay) < 0 {
+		return s // fast path: nothing to strip
+	}
+	return strings.Map(func(r rune) rune {
+		if unsafeForRelay(r) {
+			return -1 // drop
+		}
+		return r
+	}, s)
+}
+
+// unsafeForRelay reports whether r must be stripped before text is relayed to or
+// stored for another IRC client: a C0 control or DEL that is not an IRC
+// formatting byte and not a tab, a C1 control, or a bidirectional formatting
+// control. Unlike unsafeControl it keeps the IRC formatting bytes and the tab.
+func unsafeForRelay(r rune) bool {
+	if r == '\t' || ircFormatting(r) {
+		return false
+	}
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || bidiControl(r)
+}
+
 // whitespaceSeparator reports whether r is a whitespace separator that should
 // collapse to a single space rather than be dropped: the horizontal tab, and the
 // Unicode line (U+2028) and paragraph (U+2029) separators. Mapping them to a
