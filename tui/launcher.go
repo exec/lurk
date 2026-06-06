@@ -175,6 +175,10 @@ func (m launcherModel) updateForm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			cur.mech = (cur.mech + len(saslMechs) - 1) % len(saslMechs)
 		}
 		return m, nil
+	case kindSep:
+		// Separators are non-interactive; focus() always skips them, so this
+		// branch is unreachable in normal use. No-op.
+		return m, nil
 	default: // kindText
 		var cmd tea.Cmd
 		cur.input, cmd = cur.input.Update(msg)

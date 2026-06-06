@@ -60,6 +60,9 @@ func renderNetworkRows(m launcherModel, t theme) string {
 		if n.SASL.Mechanism != "" {
 			flags = append(flags, "SASL")
 		}
+		if n.Bounce.Addr != "" {
+			flags = append(flags, "Bounce")
+		}
 		if len(flags) > 0 {
 			meta += "  " + strings.Join(flags, " ")
 		}
@@ -84,9 +87,19 @@ func networkRow(t theme, selected bool, name, meta string) string {
 }
 
 // renderForm renders the add/edit form's fields, marking the focused one.
+// kindSep rows are rendered as a dim section-header line with no interactive
+// marker; all other field types render a cursor marker and an editable value.
 func renderForm(f *netForm, t theme) string {
 	rows := make([]string, 0, len(f.fields)+2)
 	for i, fld := range f.fields {
+		if fld.kind == kindSep {
+			// Section separator: a dim label spanning the full field width,
+			// with a blank line above for visual breathing room.
+			rows = append(rows, "")
+			rows = append(rows, "  "+t.dim.Render(fld.label))
+			continue
+		}
+
 		marker := "  "
 		labelStyle := t.dim
 		if i == f.idx {

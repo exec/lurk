@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -179,5 +180,137 @@ func TestLauncherAddRowEnter(t *testing.T) {
 	}
 	if m.chosen != nil {
 		t.Error("add row should not choose a network")
+	}
+}
+
+// TestLauncherBounceFieldsRoundTrip: filling the bounce fields in the form
+// produces a BounceConfig that round-trips correctly through toNetwork().
+// It drives the form via tab navigation and typed text, exercising the full
+// Update path (including the kindSep skip), then asserts toNetwork() output.
+func TestLauncherBounceFieldsRoundTrip(t *testing.T) {
+	// Build a form pre-filled with Name and Address so validation passes, then
+	// navigate to the bounce fields and fill them via typed input.
+	n := config.Network{Name: "BounceNet", Addr: "irc.libera.chat:6697"}
+	f := newNetForm(n, config.Identity{})
+
+	// Advance focus to fBounceAddr. The sep at fBounceSep is skipped
+	// automatically by focus(), so it takes (fBounceAddr - 1) steps from
+	// fName to land on fBounceAddr (11 steps: indices 1..10 plus the sep
+	// skip at 11 → 12).
+	for step := 0; step < fBounceAddr-fName-1; step++ {
+		f.focus(1)
+	}
+	if f.idx != fBounceAddr {
+		t.Fatalf("focus landed at idx %d, want fBounceAddr=%d", f.idx, fBounceAddr)
+	}
+
+	// Type the bounce addr directly into the focused field.
+	f.fields[fBounceAddr].input.SetValue("127.0.0.1:7777")
+	f.focus(1) // → fBounceNetID
+	f.fields[fBounceNetID].input.SetValue("3")
+	f.focus(1) // → fBounceClient
+	f.fields[fBounceClient].input.SetValue("laptop")
+
+	got, err := f.toNetwork()
+	if err != nil {
+		t.Fatalf("toNetwork: %v", err)
+	}
+	if got.Bounce.Addr != "127.0.0.1:7777" {
+		t.Errorf("Bounce.Addr = %q, want 127.0.0.1:7777", got.Bounce.Addr)
+	}
+	if got.Bounce.NetID != 3 {
+		t.Errorf("Bounce.NetID = %d, want 3", got.Bounce.NetID)
+	}
+	if got.Bounce.ClientID != "laptop" {
+		t.Errorf("Bounce.ClientID = %q, want laptop", got.Bounce.ClientID)
+	}
+}
+
+// TestLauncherBounceFieldsEmptyWhenNoAddr: leaving Bounce addr blank means
+// toNetwork() produces a zero BounceConfig (no bouncer configured).
+func TestLauncherBounceFieldsEmptyWhenNoAddr(t *testing.T) {
+	n := config.Network{Name: "Libera", Addr: "irc.libera.chat:6697"}
+	f := newNetForm(n, config.Identity{})
+	// Bounce fields are all blank for a direct-connection network.
+	got, err := f.toNetwork()
+	if err != nil {
+		t.Fatalf("toNetwork: %v", err)
+	}
+	if got.Bounce != (config.BounceConfig{}) {
+		t.Errorf("Bounce = %+v, want zero value (no bouncer)", got.Bounce)
+	}
+}
+
+// TestLauncherBounceEditRoundTrip: opening an existing bouncer-connected
+// network in the edit form pre-fills the bounce fields, and saving them back
+// preserves the full BounceConfig.
+func TestLauncherBounceEditRoundTrip(t *testing.T) {
+	orig := config.Network{
+		Name: "MyBounce",
+		Addr: "irc.libera.chat:6697",
+		Bounce: config.BounceConfig{
+			Addr:     "localhost:7778",
+			NetID:    5,
+			ClientID: "desktop",
+		},
+	}
+	f := newNetForm(orig, config.Identity{})
+
+	// Verify prefill.
+	if got := f.fields[fBounceAddr].input.Value(); got != "localhost:7778" {
+		t.Errorf("fBounceAddr prefill = %q, want localhost:7778", got)
+	}
+	if got := f.fields[fBounceNetID].input.Value(); got != "5" {
+		t.Errorf("fBounceNetID prefill = %q, want 5", got)
+	}
+	if got := f.fields[fBounceClient].input.Value(); got != "desktop" {
+		t.Errorf("fBounceClient prefill = %q, want desktop", got)
+	}
+
+	// Round-trip.
+	got, err := f.toNetwork()
+	if err != nil {
+		t.Fatalf("toNetwork: %v", err)
+	}
+	if got.Bounce != orig.Bounce {
+		t.Errorf("Bounce = %+v, want %+v", got.Bounce, orig.Bounce)
+	}
+}
+
+// TestLauncherBounceListFlag: a network with a Bounce addr shows "Bounce" in
+// the network list row alongside TLS/SASL.
+func TestLauncherBounceListFlag(t *testing.T) {
+	store := &config.File{Networks: []config.Network{
+		{
+			Name: "Bounced",
+			Addr: "irc.libera.chat:6697",
+			TLS:  true,
+			Bounce: config.BounceConfig{
+				Addr:  "localhost:7778",
+				NetID: 1,
+			},
+		},
+	}}
+	m := newLauncher(t, store)
+	rendered := renderNetworkRows(m, defaultTheme)
+	if !containsPlain(rendered, "Bounce") {
+		t.Errorf("network list row missing Bounce flag; rendered:\n%s", rendered)
+	}
+}
+
+// containsPlain strips ANSI escapes from s and reports whether it contains sub.
+func containsPlain(s, sub string) bool {
+	return strings.Contains(stripANSI(s), sub)
+}
+
+// TestLauncherBounceSepIsSkippedByFocus: Tab never lands on the bounce section
+// separator row; focus always moves to an interactive field.
+func TestLauncherBounceSepIsSkippedByFocus(t *testing.T) {
+	f := newNetForm(config.Network{Name: "x", Addr: "y:1"}, config.Identity{})
+	for steps := 0; steps < len(f.fields)*2; steps++ {
+		if f.fields[f.idx].kind == kindSep {
+			t.Fatalf("focus landed on kindSep at index %d after %d steps", f.idx, steps)
+		}
+		f.focus(1)
 	}
 }
