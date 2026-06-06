@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-06
+
 ### Added
 - **SASL SCRAM-SHA-256** (`SCRAM-SHA-256`, RFC 5802/7677) — a challenge-response
   mechanism that proves knowledge of the password without sending it, selectable
@@ -253,7 +255,8 @@ Initial release.
 - Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
   `-version` flag.
 
-[Unreleased]: https://github.com/exec/lurk/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/exec/lurk/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/exec/lurk/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/exec/lurk/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/exec/lurk/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/exec/lurk/compare/v1.0.1...v1.0.2
