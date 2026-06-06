@@ -6,6 +6,31 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+- `-insecure-auth` flag (env `LURK_INSECURE_AUTH`) to allow sending credentials
+  over a plaintext connection, matching the per-network setting the launcher
+  already exposed.
+
+### Fixed
+- **Reconnect file-descriptor leak:** a peer-initiated drop only cancelled the
+  connection without closing the local socket, so every auto-reconnect leaked a
+  descriptor (stuck in `CLOSE_WAIT`). The supervisor now closes the dead
+  transport before re-dialing.
+- The Events stream is now closed when a non-reconnecting session ends (an
+  `AutoReconnect=false` or `ConnectConn` client), so a consumer ranging over
+  `Events()` is released instead of blocking forever — matching the supervised
+  path.
+- The per-user **Status…** menu is now offered to half-ops (`%`), not just
+  founder/admin/op, so a half-op can use the kick and lower-mode actions the
+  server would honor.
+- Automatic CTCP replies (VERSION/PING/TIME/CLIENTINFO) are rate-limited with a
+  shared token bucket, so a peer flooding private CTCP queries can no longer
+  induce a 1:1 outbound NOTICE flood (a reflection vector).
+- A chat-log buffer named `.` or `..` can no longer redirect its log file outside
+  the log directory; such names fall back to `server`.
+- `LURK_*` boolean env vars now keep their documented default on an unrecognized
+  value instead of silently becoming false.
+
 ## [1.0.1] - 2026-06-05
 
 ### Added

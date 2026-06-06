@@ -54,7 +54,9 @@ edit / delete. Networks persist to `~/.config/lurk/config.json` (XDG-aware;
 override with `-config` or `LURK_CONFIG`), written `0600` since passwords are
 stored in cleartext. Passing `-server` connects directly and skips the launcher.
 
-All flags have `LURK_*` environment-variable equivalents.
+All flags have `LURK_*` environment-variable equivalents. Sending credentials
+(`-pass` or SASL) over a non-TLS connection is refused by default; pass
+`-insecure-auth` (or `LURK_INSECURE_AUTH=1`) to allow it knowingly.
 
 ### Keys (TUI)
 
