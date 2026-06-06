@@ -13,8 +13,8 @@ import (
 var lurkdPackages = []string{
 	"github.com/exec/lurk/server",
 	"github.com/exec/lurk/cmd/lurkd",
+	"github.com/exec/lurk/backlog",
 	// "github.com/exec/lurk/bouncer",  // Phase 6
-	// "github.com/exec/lurk/backlog",  // Phase 4
 }
 
 // TestNoCharmDependency enforces the dependency rule for the bouncer daemon by
