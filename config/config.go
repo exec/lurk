@@ -180,6 +180,89 @@ func Save(f *File, path string) error {
 	return nil
 }
 
+// validSASLMechanisms is the set of mechanism names the client actually
+// implements. An empty string means "no SASL" and is always valid.
+var validSASLMechanisms = map[string]bool{
+	"":         true,
+	"PLAIN":    true,
+	"EXTERNAL": true,
+}
+
+// ValidationError is one problem found by Validate. It identifies the network
+// by display name (empty for file-level errors) and the JSON field path.
+type ValidationError struct {
+	Network string // network display name, or "" for file-level problems
+	Field   string // JSON field path, e.g. "addr" or "sasl.mechanism"
+	Problem string // human-readable description
+}
+
+// Error implements the error interface.
+func (e *ValidationError) Error() string {
+	if e.Network != "" {
+		return fmt.Sprintf("network %q: %s: %s", e.Network, e.Field, e.Problem)
+	}
+	return fmt.Sprintf("%s: %s", e.Field, e.Problem)
+}
+
+// Validate checks f for obvious configuration errors and returns one
+// *ValidationError per problem found. A nil/empty return means the config is
+// valid. Validate is purely additive — it never modifies f and is not called
+// by Load/LoadFrom; callers that want to surface problems up front call it
+// themselves after loading.
+//
+// Checks performed for each Network:
+//   - name must not be empty
+//   - addr must not be empty and must be in host:port form (contains ":")
+//   - sasl.mechanism, if set, must be "PLAIN" or "EXTERNAL" (case-insensitive)
+//   - network names must be unique (case-insensitive)
+//   - bounce.addr must not be empty when bounce.netid > 0
+func Validate(f *File) []error {
+	if f == nil {
+		return nil
+	}
+	var errs []error
+	seen := make(map[string]bool, len(f.Networks))
+
+	for i, n := range f.Networks {
+		// Use the name for labeling errors when available; fall back to the
+		// index so problems in anonymous entries are still locatable.
+		label := n.Name
+		if label == "" {
+			label = fmt.Sprintf("networks[%d]", i)
+		}
+		addf := func(field, problem string) {
+			errs = append(errs, &ValidationError{Network: label, Field: field, Problem: problem})
+		}
+
+		if n.Name == "" {
+			addf("name", "must not be empty")
+		} else {
+			key := strings.ToLower(n.Name)
+			if seen[key] {
+				addf("name", "duplicate network name (case-insensitive)")
+			}
+			seen[key] = true
+		}
+
+		if n.Addr == "" {
+			addf("addr", "must not be empty")
+		} else if !strings.Contains(n.Addr, ":") {
+			addf("addr", `must be in host:port form (e.g. "irc.libera.chat:6697")`)
+		}
+
+		mech := strings.ToUpper(n.SASL.Mechanism)
+		if !validSASLMechanisms[mech] {
+			addf("sasl.mechanism", fmt.Sprintf("unknown mechanism %q (want PLAIN, EXTERNAL, or empty)", n.SASL.Mechanism))
+		}
+
+		// When a bounce network ID is set, the bouncer address is required.
+		if n.Bounce.NetID > 0 && n.Bounce.Addr == "" {
+			addf("bounce.addr", "must not be empty when bounce.netid is set")
+		}
+	}
+	return errs
+}
+
 // find returns the index of the network named name (case-insensitive), or -1.
 func (f *File) find(name string) int {
 	for i := range f.Networks {

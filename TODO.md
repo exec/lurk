@@ -16,9 +16,8 @@ The bouncer ([`docs/LURKD.md`](docs/LURKD.md)) is feature-complete. Remaining:
 ## Docs / polish
 - [ ] Add a screenshot/GIF of the TUI to the README.
 - [ ] `CONTRIBUTING.md` (style, hermetic-test expectations, commit conventions).
-- [ ] A config-file / flags reference doc for the **client** (the `config/` JSON
-      schema and the `LURK_*` environment variables). The lurkd config reference
-      already lives in [`docs/LURKD.md`](docs/LURKD.md).
+- [x] A config-file / flags reference doc for the **client** (the `config/` JSON
+      schema and the `LURK_*` environment variables) — see [`docs/CONFIG.md`](docs/CONFIG.md).
 - [ ] An IRCv3 capability support matrix (what's negotiated and handled).
 
 ## Nice to have

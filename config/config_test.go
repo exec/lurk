@@ -168,3 +168,153 @@ func TestRemove(t *testing.T) {
 		t.Error("Remove of absent network reported true")
 	}
 }
+
+func TestValidate(t *testing.T) {
+	// validNet is a well-formed network that should always pass.
+	validNet := Network{Name: "Libera", Addr: "irc.libera.chat:6697", TLS: true,
+		SASL: SASL{Mechanism: "PLAIN", Username: "u", Password: "p"}}
+
+	// wantErrs counts the expected number of errors returned by Validate for
+	// each table entry. wantField, when non-empty, asserts at least one error
+	// carries that Field value so we know the right check fired.
+	tests := []struct {
+		name      string
+		file      *File
+		wantErrs  int
+		wantField string
+	}{
+		{
+			name:     "nil file is valid",
+			file:     nil,
+			wantErrs: 0,
+		},
+		{
+			name:     "empty file is valid",
+			file:     &File{},
+			wantErrs: 0,
+		},
+		{
+			name:     "one valid network",
+			file:     &File{Networks: []Network{validNet}},
+			wantErrs: 0,
+		},
+		{
+			name:     "two valid networks",
+			file:     &File{Networks: []Network{validNet, {Name: "Local", Addr: "127.0.0.1:6667"}}},
+			wantErrs: 0,
+		},
+		{
+			name:      "missing name",
+			file:      &File{Networks: []Network{{Addr: "irc.libera.chat:6697"}}},
+			wantErrs:  1,
+			wantField: "name",
+		},
+		{
+			name:      "missing addr",
+			file:      &File{Networks: []Network{{Name: "Net"}}},
+			wantErrs:  1,
+			wantField: "addr",
+		},
+		{
+			name:      "addr without port",
+			file:      &File{Networks: []Network{{Name: "Net", Addr: "irc.libera.chat"}}},
+			wantErrs:  1,
+			wantField: "addr",
+		},
+		{
+			name:      "unknown SASL mechanism",
+			file:      &File{Networks: []Network{{Name: "Net", Addr: "h:1", SASL: SASL{Mechanism: "GSSAPI"}}}},
+			wantErrs:  1,
+			wantField: "sasl.mechanism",
+		},
+		{
+			name:     "SASL mechanism PLAIN is valid",
+			file:     &File{Networks: []Network{{Name: "Net", Addr: "h:1", SASL: SASL{Mechanism: "PLAIN"}}}},
+			wantErrs: 0,
+		},
+		{
+			name:     "SASL mechanism EXTERNAL is valid",
+			file:     &File{Networks: []Network{{Name: "Net", Addr: "h:1", SASL: SASL{Mechanism: "EXTERNAL"}}}},
+			wantErrs: 0,
+		},
+		{
+			// Mechanism matching is case-insensitive to match cmd/lurk's ToUpper call.
+			name:     "SASL mechanism lowercase plain is valid",
+			file:     &File{Networks: []Network{{Name: "Net", Addr: "h:1", SASL: SASL{Mechanism: "plain"}}}},
+			wantErrs: 0,
+		},
+		{
+			name:      "duplicate network name",
+			file:      &File{Networks: []Network{{Name: "Net", Addr: "h:1"}, {Name: "net", Addr: "h:2"}}},
+			wantErrs:  1,
+			wantField: "name",
+		},
+		{
+			name: "bounce netid set without addr",
+			file: &File{Networks: []Network{
+				{Name: "Net", Addr: "h:1", Bounce: BounceConfig{NetID: 1}},
+			}},
+			wantErrs:  1,
+			wantField: "bounce.addr",
+		},
+		{
+			name: "bounce with both netid and addr is valid",
+			file: &File{Networks: []Network{
+				{Name: "Net", Addr: "h:1", Bounce: BounceConfig{NetID: 1, Addr: "b:6697"}},
+			}},
+			wantErrs: 0,
+		},
+		{
+			name: "multiple errors in one network",
+			file: &File{Networks: []Network{
+				{Name: "", Addr: "", SASL: SASL{Mechanism: "BOGUS"}},
+			}},
+			// name missing + addr missing + bad mechanism = 3 errors
+			wantErrs: 3,
+		},
+		{
+			name: "errors across multiple networks",
+			file: &File{Networks: []Network{
+				{Name: "A", Addr: ""}, // addr missing
+				{Name: "B", Addr: ""}, // addr missing
+			}},
+			wantErrs: 2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := Validate(tc.file)
+			if len(errs) != tc.wantErrs {
+				t.Fatalf("Validate() returned %d errors, want %d:\n%v", len(errs), tc.wantErrs, errs)
+			}
+			if tc.wantField != "" {
+				found := false
+				for _, e := range errs {
+					if ve, ok := e.(*ValidationError); ok && ve.Field == tc.wantField {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("no error with Field=%q among: %v", tc.wantField, errs)
+				}
+			}
+		})
+	}
+}
+
+func TestValidationErrorString(t *testing.T) {
+	e := &ValidationError{Network: "Libera", Field: "addr", Problem: "must not be empty"}
+	want := `network "Libera": addr: must not be empty`
+	if got := e.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+
+	// File-level error (no network name).
+	e2 := &ValidationError{Field: "defaults.nick", Problem: "some problem"}
+	want2 := "defaults.nick: some problem"
+	if got := e2.Error(); got != want2 {
+		t.Errorf("Error() = %q, want %q", got, want2)
+	}
+}
