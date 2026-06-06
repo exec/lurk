@@ -316,17 +316,23 @@ func TestScramParseAttrs(t *testing.T) {
 	}
 }
 
-// TestScramParsePositiveInt exercises the iteration-count parser.
+// TestScramParsePositiveInt exercises the iteration-count parser, including the
+// RFC 7677 minimum (4096) and the overflow/DoS ceiling (1 000 000).
 func TestScramParsePositiveInt(t *testing.T) {
 	tests := []struct {
 		input   string
 		want    int
 		wantErr bool
 	}{
-		{"4096", 4096, false},
-		{"1", 1, false},
-		{"0", 0, true},  // must be >= 1
-		{"-1", 0, true}, // leading '-' is not a digit
+		{"4096", 4096, false},             // RFC 7677 minimum — must be accepted
+		{"8192", 8192, false},             // normal value
+		{"1000000", 1_000_000, false},     // maximum allowed
+		{"1", 0, true},                    // below RFC 7677 minimum (4096) — rejected
+		{"4095", 0, true},                 // one below minimum — rejected
+		{"1000001", 0, true},              // one above ceiling — rejected
+		{"99999999999999999999", 0, true}, // overflow input — rejected
+		{"0", 0, true},                    // zero — rejected
+		{"-1", 0, true},                   // leading '-' is not a digit
 		{"", 0, true},
 		{"abc", 0, true},
 	}
@@ -341,5 +347,56 @@ func TestScramParsePositiveInt(t *testing.T) {
 		if !tt.wantErr && got != tt.want {
 			t.Errorf("scramParsePositiveInt(%q) = %d, want %d", tt.input, got, tt.want)
 		}
+	}
+}
+
+// TestScramIterBelowMin verifies that a server advertising fewer than 4096
+// iterations (RFC 7677 §3 minimum) is rejected before any key derivation,
+// preventing an offline brute-force attack via a weakened KDF.
+func TestScramIterBelowMin(t *testing.T) {
+	m := newRFC7677Scram()
+	// Build a server-first-message with i=1.
+	lowIterSF := "r=" + rfc7677FullNonce + ",s=" + rfc7677SaltB64 + ",i=1"
+	_, err := m.Next([]byte(lowIterSF))
+	if err == nil {
+		t.Fatal("expected error for i=1 (below RFC 7677 minimum 4096), got nil")
+	}
+}
+
+// TestScramIterAtMin verifies that exactly 4096 iterations is accepted (RFC 7677
+// lower bound is inclusive).
+func TestScramIterAtMin(t *testing.T) {
+	m := newRFC7677Scram()
+	// i=4096 is the RFC 7677 vector — must succeed.
+	if _, err := m.Next([]byte(rfc7677ServerFirst())); err != nil {
+		t.Fatalf("expected i=4096 to be accepted, got error: %v", err)
+	}
+}
+
+// TestScramIterOverflow verifies that an astronomically large iteration count
+// is rejected rather than causing scramHi to spin for an impractical duration
+// (DoS via CPU exhaustion).
+func TestScramIterOverflow(t *testing.T) {
+	m := newRFC7677Scram()
+	overflowSF := "r=" + rfc7677FullNonce + ",s=" + rfc7677SaltB64 + ",i=99999999999999999999"
+	_, err := m.Next([]byte(overflowSF))
+	if err == nil {
+		t.Fatal("expected error for huge iteration count, got nil")
+	}
+}
+
+// TestScramMandatoryExtension verifies that a server-first-message containing
+// the 'm' mandatory-extension attribute (RFC 5802 §7) is rejected — the client
+// does not understand the extension and must not proceed.
+func TestScramMandatoryExtension(t *testing.T) {
+	m := newRFC7677Scram()
+	// Inject 'm=foo' as a mandatory extension in the server-first-message.
+	mExtSF := "m=foo,r=" + rfc7677FullNonce + ",s=" + rfc7677SaltB64 + ",i=" + rfc7677Iters
+	_, err := m.Next([]byte(mExtSF))
+	if err == nil {
+		t.Fatal("expected error for mandatory extension 'm=', got nil")
+	}
+	if !strings.Contains(err.Error(), "mandatory extension") {
+		t.Errorf("error should mention mandatory extension, got: %q", err)
 	}
 }

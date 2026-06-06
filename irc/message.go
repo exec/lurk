@@ -131,9 +131,14 @@ func (t Tags) Get(key string) string {
 	return t[key]
 }
 
-// Set stores key→value in the map. It is safe to call on a non-nil Tags value;
-// callers with a possibly-nil Tags should initialise the map first or call
-// Clone on the owning Message to get an independent, non-nil copy.
-func (t Tags) Set(key, value string) {
-	t[key] = value
+// Set stores key→value in the Tags map. It is nil-safe: if the receiver is a
+// nil map it is initialised before the assignment, so callers can write to a
+// zero-value Message field without a separate make call. Call as
+// msg.Tags.Set(k, v) — because Message.Tags is addressable, the pointer
+// receiver is taken automatically.
+func (t *Tags) Set(key, value string) {
+	if *t == nil {
+		*t = make(Tags)
+	}
+	(*t)[key] = value
 }

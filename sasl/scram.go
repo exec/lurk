@@ -104,6 +104,13 @@ func (s *scram256Mechanism) serverFirst(msg string) ([]byte, error) {
 		return nil, fmt.Errorf("sasl: SCRAM-SHA-256 server-first-message: %w", err)
 	}
 
+	// RFC 5802 §7: if the server-first-message contains an 'm' attribute
+	// (mandatory extension), the client MUST fail authentication — it does not
+	// understand the extension and must not proceed.
+	if ext, ok := attrs["m"]; ok {
+		return nil, fmt.Errorf("sasl: SCRAM-SHA-256 server requires unsupported mandatory extension: %q", ext)
+	}
+
 	fullNonce, ok := attrs["r"]
 	if !ok {
 		return nil, fmt.Errorf("sasl: SCRAM-SHA-256 server-first-message missing 'r'")
@@ -228,8 +235,10 @@ func scramNonce() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// scramEncodeUsername applies RFC 5802 §5.1 SASLprep-lite encoding for
-// attribute values: "=" → "=3D" and "," → "=2C".
+// scramEncodeUsername applies RFC 5802 §5.1 attribute-value encoding for the
+// username field: "=" → "=3D" and "," → "=2C". Full SASLprep / Unicode
+// normalization (RFC 4013) is NOT implemented; only ASCII-clean usernames are
+// supported, which covers the overwhelming majority of IRC accounts.
 func scramEncodeUsername(u string) string {
 	u = strings.ReplaceAll(u, "=", "=3D")
 	u = strings.ReplaceAll(u, ",", "=2C")
@@ -254,7 +263,23 @@ func scramParseAttrs(s string) (map[string]string, error) {
 	return attrs, nil
 }
 
-// scramParsePositiveInt parses a decimal integer string that must be > 0.
+// Iteration count bounds for SCRAM-SHA-256.
+//
+// minScramIters enforces the RFC 7677 §3 mandatory minimum of 4096 iterations.
+// A server advertising fewer is either misconfigured or attempting to weaken the
+// key derivation to allow an offline brute-force attack.
+//
+// maxScramIters caps the upper bound to prevent a malicious server from
+// advertising an astronomically large count (e.g. 99999999999999) that would
+// cause scramHi to spin for an impractical duration, effectively a DoS. One
+// million iterations is already well beyond any legitimate deployment.
+const (
+	minScramIters = 4096
+	maxScramIters = 1_000_000
+)
+
+// scramParsePositiveInt parses a decimal integer string, enforcing
+// minScramIters ≤ n ≤ maxScramIters for the SCRAM iteration count.
 func scramParsePositiveInt(s string) (int, error) {
 	if s == "" {
 		return 0, fmt.Errorf("empty string")
@@ -265,9 +290,15 @@ func scramParsePositiveInt(s string) (int, error) {
 			return 0, fmt.Errorf("non-digit character %q", c)
 		}
 		n = n*10 + int(c-'0')
+		// Guard against overflow before multiplying again next iteration: if n
+		// already exceeds maxScramIters, stop accumulating (the final check will
+		// reject it). This also prevents int overflow on a very long digit string.
+		if n > maxScramIters {
+			return 0, fmt.Errorf("iteration count %d exceeds maximum %d", n, maxScramIters)
+		}
 	}
-	if n < 1 {
-		return 0, fmt.Errorf("value must be >= 1, got %d", n)
+	if n < minScramIters {
+		return 0, fmt.Errorf("iteration count %d is below RFC 7677 minimum %d", n, minScramIters)
 	}
 	return n, nil
 }

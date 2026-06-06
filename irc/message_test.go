@@ -140,6 +140,29 @@ func TestTagsSet(t *testing.T) {
 	}
 }
 
+// TestTagsSetNilSafe verifies that Set on a nil Tags field initialises the map
+// rather than panicking, so callers can write to a zero-value Message without a
+// separate make call.
+func TestTagsSetNilSafe(t *testing.T) {
+	// Via a Message field (the primary use case).
+	m := &Message{Command: "PRIVMSG"}
+	// m.Tags is nil here; Set must initialise it.
+	m.Tags.Set("time", "2024-01-01")
+	if !m.Tags.Has("time") {
+		t.Error("Tags.Set on nil Message.Tags: Has(time) = false, want true")
+	}
+	if v := m.Tags.Get("time"); v != "2024-01-01" {
+		t.Errorf("Tags.Set on nil Message.Tags: Get(time) = %q, want 2024-01-01", v)
+	}
+
+	// Via a standalone nil Tags variable.
+	var tags Tags
+	tags.Set("batch", "b1")
+	if !tags.Has("batch") {
+		t.Error("Tags.Set on nil Tags variable: Has(batch) = false, want true")
+	}
+}
+
 // TestTagsSetOnClone verifies the intended idiom: Clone then Set on the clone
 // does not affect the original.
 func TestTagsSetOnClone(t *testing.T) {
