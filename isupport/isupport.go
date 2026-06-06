@@ -56,6 +56,14 @@ func Parse(tokens []string) ISupport {
 	return ISupport{}.Merge(tokens)
 }
 
+// maxIsupportTokens caps how many distinct keys the token map retains.
+// Real servers advertise well under 100 tokens; the bound guards against a
+// hostile server growing the map without limit via a flood of 005 lines, each
+// carrying novel KEY=value entries. A key already in the map can always be
+// overridden (negated or updated) regardless of the ceiling, matching the
+// "always update known keys" pattern in cap.addAvailable.
+const maxIsupportTokens = 512
+
 // Merge folds a later batch of 005 tokens onto the receiver and returns the
 // result. The receiver is not modified.
 //
@@ -63,7 +71,9 @@ func Parse(tokens []string) ISupport {
 //   - KEY (bare) sets KEY to the empty string (advertised as a flag).
 //   - -KEY removes KEY (a negation); -KEY=value is also treated as a removal.
 //
-// Keys are upper-cased so lookups are case-insensitive.
+// Keys are upper-cased so lookups are case-insensitive. A novel key that
+// would push the map past maxIsupportTokens is silently dropped; this bounds
+// memory growth against a hostile server sending unlimited 005 lines.
 func (s ISupport) Merge(tokens []string) ISupport {
 	out := make(map[string]string, len(s.tokens)+len(tokens))
 	for k, v := range s.tokens {
@@ -83,6 +93,11 @@ func (s ISupport) Merge(tokens []string) ISupport {
 		}
 		key, val, hasVal := strings.Cut(tok, "=")
 		key = strings.ToUpper(key)
+		// Drop novel keys once the ceiling is reached; updates to existing
+		// keys are always allowed (the presence check below handles this).
+		if _, known := out[key]; !known && len(out) >= maxIsupportTokens {
+			continue
+		}
 		if hasVal {
 			out[key] = decodeValue(val)
 		} else {

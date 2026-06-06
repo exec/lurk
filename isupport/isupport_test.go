@@ -1,6 +1,7 @@
 package isupport
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/exec/lurk/irc"
@@ -330,5 +331,66 @@ func TestErgoRealISupport(t *testing.T) {
 	}
 	if n, ok := feat.NickLen(); !ok || n != 32 {
 		t.Errorf("NickLen() = (%d,%v), want 32", n, ok)
+	}
+}
+
+// TestMergeTokenCeiling verifies that the isupport map cannot grow past
+// maxIsupportTokens when fed a flood of novel keys, guarding against a
+// hostile server that sends unlimited 005 lines to exhaust memory.
+func TestMergeTokenCeiling(t *testing.T) {
+	var feat ISupport
+
+	// Feed maxIsupportTokens+100 distinct keys one batch at a time.
+	for i := 0; i < maxIsupportTokens+100; i++ {
+		key := "FLOOD" + strconv.Itoa(i) + "=x"
+		feat = feat.Merge([]string{key})
+	}
+
+	got := len(feat.tokens)
+	if got > maxIsupportTokens {
+		t.Errorf("token map grew to %d, want <= %d", got, maxIsupportTokens)
+	}
+}
+
+// TestMergeTokenCeilingKnownKeyOverride confirms that once the ceiling is
+// reached a key already in the map can still be updated or negated; only
+// brand-new keys are rejected.
+func TestMergeTokenCeilingKnownKeyOverride(t *testing.T) {
+	// Start with exactly maxIsupportTokens entries.
+	tokens := make([]string, maxIsupportTokens)
+	for i := range tokens {
+		tokens[i] = "KEY" + strconv.Itoa(i) + "=old"
+	}
+	feat := Parse(tokens)
+
+	if n := len(feat.tokens); n != maxIsupportTokens {
+		t.Fatalf("setup: want %d tokens, got %d", maxIsupportTokens, n)
+	}
+
+	// Override an existing key — must succeed even though map is full.
+	feat = feat.Merge([]string{"KEY0=new"})
+	if v, ok := feat.Get("KEY0"); !ok || v != "new" {
+		t.Errorf("known key override at ceiling: Get(KEY0) = (%q,%v), want (new,true)", v, ok)
+	}
+
+	// Negate an existing key — must shrink the map.
+	feat = feat.Merge([]string{"-KEY1"})
+	if _, ok := feat.Get("KEY1"); ok {
+		t.Errorf("negation of known key at ceiling: KEY1 should be absent")
+	}
+	if n := len(feat.tokens); n != maxIsupportTokens-1 {
+		t.Errorf("after negation: want %d tokens, got %d", maxIsupportTokens-1, n)
+	}
+
+	// After negation freed a slot, the next novel key should be accepted.
+	feat = feat.Merge([]string{"NOVEL=yes"})
+	if v, ok := feat.Get("NOVEL"); !ok || v != "yes" {
+		t.Errorf("novel key after free slot: Get(NOVEL) = (%q,%v), want (yes,true)", v, ok)
+	}
+
+	// A second novel key should be dropped (map is full again).
+	feat = feat.Merge([]string{"NOVEL2=yes"})
+	if _, ok := feat.Get("NOVEL2"); ok {
+		t.Errorf("second novel key: NOVEL2 should be dropped (ceiling reached)")
 	}
 }
