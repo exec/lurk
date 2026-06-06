@@ -346,12 +346,37 @@ func (m *Manager) Client(netid int) (*client.Client, bool) {
 // entry to the managed set and returns when the upstream has completed
 // registration. ctx governs the connect+registration phase only.
 //
+// If an upstream with the same netid already exists — which can happen when two
+// concurrent CHANGENETWORK sessions both call mgr.Remove then mgr.Add on the
+// same netid — Add closes and removes the stale entry first so there is always
+// exactly one upstream per netid. This makes Add(netid) an idempotent replace.
+//
 // Add is safe to call concurrently with UpstreamState, Close, and other Add
 // or Remove calls; the upstreams slice is guarded by m.mu.
 //
 // The caller must have added nw to Config.Networks before calling Add so that
 // buildClient can find any injected Dialer for nw.NetID.
 func (m *Manager) Add(ctx context.Context, nw *Network) error {
+	// Guard against a duplicate-netid race: if a stale entry for this netid
+	// slipped in (e.g. two concurrent CHANGENETWORK calls), remove and close
+	// it before installing the new one. Identical to Remove's inner loop but
+	// done here under m.mu so the eviction and append are a single critical
+	// section, preventing a second concurrent Add from appending yet another
+	// entry between the Remove and the append below.
+	var stale *upstreamEntry
+	m.mu.Lock()
+	for i, e := range m.upstreams {
+		if e.netid == nw.NetID {
+			stale = e
+			m.upstreams = append(m.upstreams[:i], m.upstreams[i+1:]...)
+			break
+		}
+	}
+	m.mu.Unlock()
+	if stale != nil {
+		_ = stale.client.Close()
+	}
+
 	cc := m.buildClient(nw)
 	st := &connState{status: ConnConnected}
 

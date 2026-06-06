@@ -227,6 +227,9 @@ func (s *session) handleBouncerCHANGENETWORK(cmd bouncer.Cmd) error {
 	// Both calls are made OUTSIDE cfgMu (already released above). A connect
 	// failure is non-fatal: the config is already persisted and the upstream
 	// will retry via auto-reconnect.
+	//
+	// Identity (nick/user/realname) and SASL changes do not trigger an immediate
+	// re-dial; they take effect on the next connection (auto-reconnect or restart).
 	if s.srv.mgr != nil && (updated.Addr != old.Addr || updated.TLS != old.TLS) {
 		s.srv.mgr.Remove(cmd.NetID)
 		if err := s.srv.mgr.Add(context.Background(), &updated); err != nil {

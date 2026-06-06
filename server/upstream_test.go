@@ -677,3 +677,90 @@ func TestResilientStartupCloseBeforeRetry(t *testing.T) {
 		t.Error("Manager.Close did not return within 3s — retry goroutine leak?")
 	}
 }
+
+// ─── TestAddDuplicateNetIDReplacesOld ─────────────────────────────────────────
+
+// TestAddDuplicateNetIDReplacesOld verifies the TOCTOU guard in Manager.Add:
+// calling Add twice for the same netid (as two concurrent CHANGENETWORK
+// sessions could do) must result in exactly one upstream entry, and the
+// older connection must be closed (its Done channel closes promptly).
+//
+// Without the guard, two entries would exist for the same netid, causing
+// duplicate fan-out and an unbounded resource leak.
+func TestAddDuplicateNetIDReplacesOld(t *testing.T) {
+	const (
+		nick  = "dupnick"
+		netid = 42
+	)
+
+	testDone := make(chan struct{})
+	var down atomic.Bool
+	t.Cleanup(func() {
+		down.Store(true)
+		close(testDone)
+	})
+
+	cfg := &Config{
+		Networks: []Network{
+			{NetID: netid, Name: "DupNet", Addr: "dup.local:6667",
+				Identity: Identity{Nick: nick, User: "u", Realname: "r"}},
+		},
+	}
+	sink := &collectSink{}
+	mgr := NewManager(cfg, sink)
+	mgr.dialers = map[int]dialer{
+		netid: pipeDialer(t, &down, func(su *scriptedUpstream) {
+			su.register(nick)
+			<-testDone
+		}),
+	}
+	t.Cleanup(func() { mgr.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// First Add — the normal path (simulates CHANGENETWORK re-dial).
+	if err := mgr.Add(ctx, &cfg.Networks[0]); err != nil {
+		t.Fatalf("first Add: %v", err)
+	}
+
+	// Grab the first client's Done channel before the second Add closes it.
+	mgr.mu.RLock()
+	var firstDone <-chan struct{}
+	for _, e := range mgr.upstreams {
+		if e.netid == netid {
+			firstDone = e.client.Done()
+			break
+		}
+	}
+	mgr.mu.RUnlock()
+	if firstDone == nil {
+		t.Fatal("first upstream entry not found after first Add")
+	}
+
+	// Second Add for the same netid — must evict and close the first entry.
+	if err := mgr.Add(ctx, &cfg.Networks[0]); err != nil {
+		t.Fatalf("second Add: %v", err)
+	}
+
+	// The old upstream must have been closed.
+	select {
+	case <-firstDone:
+		// Good: old client was closed.
+	case <-time.After(3 * time.Second):
+		t.Error("old upstream client was not closed after duplicate Add")
+	}
+
+	// Exactly one entry for this netid must remain.
+	mgr.mu.RLock()
+	var count int
+	for _, e := range mgr.upstreams {
+		if e.netid == netid {
+			count++
+		}
+	}
+	mgr.mu.RUnlock()
+	if count != 1 {
+		t.Errorf("upstream entry count for netid=%d = %d after duplicate Add, want 1", netid, count)
+	}
+}
