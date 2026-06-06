@@ -305,7 +305,8 @@ func TestClientToUpstreamRelay(t *testing.T) {
 		// Wait until the client is registered and sends its PRIVMSG.
 		<-clientSent
 		// The upstream should now receive the relayed PRIVMSG.
-		line := su.readLine()
+		// Skip any AWAY messages emitted by bouncer attach/detach logic.
+		line := su.readLineSkipAway()
 		upstreamReceived <- line
 		<-testDone
 	})
@@ -761,8 +762,8 @@ func TestSelfSendFanout(t *testing.T) {
 		su.sendJoinConfirm(nick, channel)
 		// Wait for client A to send its PRIVMSG.
 		<-clientASent
-		// Read and discard the relayed PRIVMSG.
-		_ = su.readLine()
+		// Read and discard the relayed PRIVMSG (skip any AWAY from bouncer attach).
+		_ = su.readLineSkipAway()
 		// Echo it back as if echo-message is enabled.
 		su.send(":selfnick!u@host PRIVMSG " + channel + " :" + msgText)
 		<-testDone

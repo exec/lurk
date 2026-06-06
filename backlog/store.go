@@ -218,8 +218,20 @@ func (s *Store) Close() {
 	}
 }
 
-// Ingest implements the server.Sink interface structurally.
-// It is safe for concurrent calls from multiple upstream goroutines.
+// Ingest stores one event from upstream and returns the server-assigned msgid
+// and whether the entry was actually stored.
+//
+// stored is false when:
+//   - the event is synthetic or filtered (not PRIVMSG/NOTICE),
+//   - the target is unroutable, or
+//   - the per-netid target cap is exceeded (drop-oldest).
+//
+// When stored is true, msgid is the canonical identifier for the stored entry —
+// the same value that CHATHISTORY will return for this message. Callers (e.g.
+// Server.Ingest) should stamp the live fan-out copy with this msgid so that live
+// delivery and CHATHISTORY replay reference the same id.
+//
+// Ingest is safe for concurrent calls from multiple upstream goroutines.
 //
 // Only PRIVMSG and NOTICE are persisted. Synthetic client events
 // (ev.Message == nil, or commands starting with '@') are silently skipped.
@@ -228,26 +240,26 @@ func (s *Store) Close() {
 // For PRIVMSG/NOTICE, the target is Param(0). If Param(0) equals the client's
 // own nick (a PM addressed to lurkd), the sender's nick is used as the routing
 // key so PMs are keyed by the other party.
-func (s *Store) Ingest(netid int, ev *client.Event) {
+func (s *Store) Ingest(netid int, ev *client.Event) (msgid string, stored bool) {
 	// Skip synthetic events (overflow events, @reconnecting/@connected, etc.).
 	if ev.Message == nil {
-		return
+		return "", false
 	}
 	cmd := ev.Command()
 	if strings.HasPrefix(cmd, "@") {
 		// Synthetic @connected / @reconnecting / @reconnected markers from the
 		// client package must never be stored.
-		return
+		return "", false
 	}
 
 	// v1: only PRIVMSG and NOTICE.
 	if cmd != "PRIVMSG" && cmd != "NOTICE" {
-		return
+		return "", false
 	}
 
 	rawTarget := ev.Param(0)
 	if rawTarget == "" {
-		return
+		return "", false
 	}
 
 	// Determine the routing target. For a PM addressed to lurkd's own nick,
@@ -258,7 +270,7 @@ func (s *Store) Ingest(netid int, ev *client.Event) {
 	}
 	target := routeTarget(rawTarget, ev.Nick(), ownNick)
 	if target == "" {
-		return
+		return "", false
 	}
 
 	// Sanitize all params with SanitizeForRelay: strips terminal-hijacking
@@ -282,7 +294,7 @@ func (s *Store) Ingest(netid int, ev *client.Event) {
 	b, ok := s.getOrCreate(netid, safe)
 	if !ok {
 		// Target cap exceeded; drop silently (already logged in getOrCreate).
-		return
+		return "", false
 	}
 
 	b.mu.Lock()
@@ -293,6 +305,7 @@ func (s *Store) Ingest(netid int, ev *client.Event) {
 		log.Printf("backlog: ingest netid=%d target=%q: write: %v", netid, target, err)
 	}
 	pushRing(b, entry, s.ringSize)
+	return entry.MsgID, true
 }
 
 // Latest returns the most recent limit entries for the given (netid, target) in

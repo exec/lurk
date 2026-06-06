@@ -100,26 +100,61 @@ func (s *Server) initBoundSessions() {
 	s.boundSessions = make(map[int]map[*session]struct{})
 }
 
-// registerBoundSession adds sess to the bound-session registry under its netid.
+// registerBoundSession adds sess to the bound-session registry under its netid,
+// then emits the synthetic channel-state burst to sess, and manages the
+// upstream AWAY state (0→1 transition: send Back to clear AWAY).
+//
 // Called at the end of sendWelcome for sessions with netid != 0.
 func (s *Server) registerBoundSession(sess *session) {
+	var wasFirst bool
 	s.boundMu.Lock()
-	defer s.boundMu.Unlock()
 	if s.boundSessions[sess.netid] == nil {
 		s.boundSessions[sess.netid] = make(map[*session]struct{})
 	}
+	wasFirst = len(s.boundSessions[sess.netid]) == 0
 	s.boundSessions[sess.netid][sess] = struct{}{}
+	s.boundMu.Unlock()
+
+	// Emit the channel state burst to this session. Called OUTSIDE the lock
+	// (conn I/O must not be done under boundMu).
+	s.sendStateBurst(sess)
+
+	// On first attach (0→1): clear AWAY upstream so the bouncer appears attended.
+	if wasFirst && s.mgr != nil {
+		if cc, ok := s.mgr.Client(sess.netid); ok {
+			_ = cc.Back() // errors are non-fatal (upstream may be reconnecting)
+		}
+	}
 }
 
 // unregisterBoundSession removes sess from the bound-session registry. Safe to
-// call even if sess was never registered (no-op).
+// call even if sess was never registered (no-op). On the last detach (1→0),
+// sends AWAY upstream and flushes the cursor store for this session's clientID.
 func (s *Server) unregisterBoundSession(sess *session) {
+	var wasLast bool
 	s.boundMu.Lock()
-	defer s.boundMu.Unlock()
 	if m, ok := s.boundSessions[sess.netid]; ok {
 		delete(m, sess)
 		if len(m) == 0 {
 			delete(s.boundSessions, sess.netid)
+			wasLast = true
+		}
+	}
+	s.boundMu.Unlock()
+
+	// On last detach (1→0): mark the upstream as away (bouncer unattended).
+	// Called OUTSIDE the lock.
+	if wasLast && s.mgr != nil {
+		if cc, ok := s.mgr.Client(sess.netid); ok {
+			_ = cc.Away(detachedAwayMessage)
+		}
+	}
+
+	// Flush cursor store on clean detach so the cursor survives a crash-free
+	// disconnect (the periodic flush covers the crash case up to the flush window).
+	if s.cursors != nil {
+		if err := s.cursors.Flush(); err != nil {
+			log.Printf("server: cursor flush on detach (netid=%d): %v", sess.netid, err)
 		}
 	}
 }
@@ -131,18 +166,33 @@ func (s *Server) unregisterBoundSession(sess *session) {
 // The store-once guarantee: only this path stores events. The relay path
 // (session→upstream) never calls Ingest; the upstream echoes the sent message
 // back (via echo-message) and that echo enters Ingest once.
+//
+// msgid consistency: when the store accepts the message, we capture its
+// server-assigned msgid and stamp the live fan-out copy with that same id,
+// overriding any @msgid the upstream may have sent. This ensures that a
+// client can use a live-delivery msgid in a CHATHISTORY AFTER/BEFORE query
+// and receive the correct result.
 func (s *Server) Ingest(netid int, ev *client.Event) {
 	// Store in the backlog store first (before fan-out, so the store is updated
 	// before any client receives the live copy, keeping CHATHISTORY consistent).
+	var storeMsgID string
 	if s.store != nil {
-		s.store.Ingest(netid, ev)
+		var stored bool
+		storeMsgID, stored = s.store.Ingest(netid, ev)
+		_ = stored // stored is informational; we use storeMsgID below
 	}
-	s.fanout(netid, ev)
+	s.fanout(netid, ev, storeMsgID)
 }
 
 // fanout delivers ev to every session currently bound to netid. It is called
 // from Ingest (upstream OnAny goroutine); no lock is held during conn I/O.
-func (s *Server) fanout(netid int, ev *client.Event) {
+//
+// storeMsgID, when non-empty, is the server-assigned msgid returned by the
+// backlog store for this message. It is stamped onto the live fan-out copy so
+// that live delivery and CHATHISTORY replay reference the same msgid. When
+// storeMsgID is empty (message was filtered or not stored), the upstream's
+// @msgid (if any) is preserved.
+func (s *Server) fanout(netid int, ev *client.Event, storeMsgID string) {
 	// Skip synthetic events (overflow, @-prefixed markers).
 	if ev.Message == nil {
 		return
@@ -180,6 +230,11 @@ func (s *Server) fanout(netid int, ev *client.Event) {
 	// Merge existing tags with @time. Preserve upstream tags (e.g. @msgid if
 	// the upstream sent one) but always override @time with our server-assigned
 	// time so the client sees a consistent timeline.
+	//
+	// msgid consistency: if the store accepted this message, override @msgid
+	// with the store-assigned id so live delivery and CHATHISTORY replay are
+	// consistent. If not stored (filtered/cap-exceeded), preserve the upstream's
+	// @msgid as-is (if present) for best-effort delivery.
 	tags := make(irc.Tags)
 	for k, v := range ev.Message.Tags {
 		// Never forward the @label tag from the upstream echo — we manage it
@@ -190,6 +245,10 @@ func (s *Server) fanout(netid int, ev *client.Event) {
 		tags[k] = v
 	}
 	tags["time"] = ts
+	if storeMsgID != "" {
+		// Override (or set) @msgid with the store-assigned id.
+		tags["msgid"] = storeMsgID
+	}
 
 	base := &irc.Message{
 		Tags:    tags,
@@ -212,7 +271,8 @@ func (s *Server) fanout(netid int, ev *client.Event) {
 }
 
 // fanoutToSession delivers a single upstream event to one bound session,
-// attaching the session's pending @label if the echo matches.
+// attaching the session's pending @label if the echo matches, and advancing
+// the per-client cursor if the message is a PRIVMSG or NOTICE.
 func (s *Server) fanoutToSession(sess *session, base *irc.Message, ev *client.Event) {
 	msg := base
 
@@ -245,6 +305,20 @@ func (s *Server) fanoutToSession(sess *session, base *irc.Message, ev *client.Ev
 			}
 		}
 		sess.labelMu.Unlock()
+
+		// Advance the per-client cursor for this (clientID, netid, target).
+		// Only PRIVMSG/NOTICE messages have a meaningful read position.
+		if s.cursors != nil {
+			msgid := msg.Tags["msgid"]
+			if msgid != "" && msg.Param(0) != "" {
+				key := CursorKey{
+					ClientID: clientIDFromSession(sess),
+					NetID:    sess.netid,
+					Target:   msg.Param(0),
+				}
+				s.cursors.Advance(key, msgid, ev.Time())
+			}
+		}
 	}
 
 	if err := sess.conn.WriteMessage(msg); err != nil {

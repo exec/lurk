@@ -162,6 +162,11 @@ type Server struct {
 	// removed on disconnect (defer in run). Guarded by boundMu; never hold
 	// boundMu across conn I/O.
 	boundSessions map[int]map[*session]struct{}
+
+	// cursors is the optional per-client cursor store. When set, fanout advances
+	// the cursor for the delivering session as each PRIVMSG/NOTICE is delivered.
+	// Flushed on detach and periodically. Set via WithCursorStore.
+	cursors *CursorStore
 }
 
 // WithStore configures the Server to use the given backlog store for
@@ -181,6 +186,14 @@ func (s *Server) WithManager(mgr *Manager) {
 // persist mutations to. Must be called before Serve/serveConn.
 func (s *Server) WithConfigPath(path string) {
 	s.cfgPath = path
+}
+
+// WithCursorStore configures the Server to use the given per-client cursor
+// store. When set, fanout advances cursors as PRIVMSG/NOTICE messages are
+// delivered to bound sessions, and the cursor store is flushed on clean detach.
+// Must be called before Serve/serveConn.
+func (s *Server) WithCursorStore(cs *CursorStore) {
+	s.cursors = cs
 }
 
 // New builds a Server from cfg. cfg must not be nil.

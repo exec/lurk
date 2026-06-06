@@ -71,6 +71,21 @@ func (s *scriptedUpstream) readLine() string {
 	return strings.TrimRight(line, "\r\n")
 }
 
+// readLineSkipAway reads lines, silently skipping any AWAY (or "AWAY ...")
+// messages that lurkd emits as part of its attach/detach away management.
+// This prevents upstream test scripts from accidentally consuming the AWAY
+// line when they are waiting for a relayed command.
+func (s *scriptedUpstream) readLineSkipAway() string {
+	s.t.Helper()
+	for {
+		line := s.readLine()
+		if !strings.HasPrefix(line, "AWAY") {
+			return line
+		}
+		// AWAY/BACK from bouncer internal logic — silently consumed.
+	}
+}
+
 func (s *scriptedUpstream) expect(want string) {
 	s.t.Helper()
 	got := s.readLine()
