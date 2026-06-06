@@ -71,6 +71,7 @@ func (c *Client) supervise(sessionDone chan struct{}) {
 			return
 		}
 		c.rejoinChannels()
+		c.remonitorNicks()
 		c.emitSynthetic(evtReconnected, "reconnected")
 		sessionDone = next
 	}
@@ -180,6 +181,22 @@ func (c *Client) rejoinChannels() {
 	for _, ch := range c.Channels() {
 		_ = c.Join(ch)
 	}
+}
+
+// remonitorNicks re-sends MONITOR + for every nick that was being watched before
+// the drop. It also clears the online set (all statuses are unknown until the
+// server re-reports them via 730/731). Called after a successful reconnect.
+func (c *Client) remonitorNicks() {
+	nicks := c.MonitoredNicks()
+	if len(nicks) == 0 {
+		return
+	}
+	// Reset online state: we don't know who is online on the new session until
+	// the server sends fresh 730/731 notifications.
+	c.mu.Lock()
+	c.st.monitorOnline = make(map[string]bool)
+	c.mu.Unlock()
+	_ = c.Monitor(nicks...)
 }
 
 // emitSynthetic dispatches a client-originated semantic event (reconnecting /

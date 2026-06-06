@@ -87,6 +87,16 @@ type state struct {
 	// @batch=ref tag are resolved against this map at dispatch time so the UI can
 	// group/label them (e.g. chathistory playback). Unknown refs are tolerated.
 	batches map[string]batchInfo
+
+	// monitored is the set of nicks the client has asked the server to watch via
+	// MONITOR + (keyed by the folded nick). The display-case nick is the value.
+	// Populated by addMonitor/clearMonitor (actions) and cleared on disconnect.
+	monitored map[string]string
+
+	// monitorOnline is the subset of monitored nicks currently reported online
+	// by the server (RPL_MONONLINE 730). Keyed by folded nick. A nick absent from
+	// this map (but present in monitored) is offline or status unknown.
+	monitorOnline map[string]bool
 }
 
 // batchInfo records the type and parameters of an open BATCH (e.g. type
@@ -102,10 +112,73 @@ type batchInfo struct {
 // IRC default that applies before any 005 is seen).
 func newState() *state {
 	return &state{
-		fold:     isupport.CaseRFC1459,
-		channels: make(map[string]*channelState),
-		batches:  make(map[string]batchInfo),
+		fold:          isupport.CaseRFC1459,
+		channels:      make(map[string]*channelState),
+		batches:       make(map[string]batchInfo),
+		monitored:     make(map[string]string),
+		monitorOnline: make(map[string]bool),
 	}
+}
+
+// maxMonitored caps the local tracked set so a bug or adversarial server reply
+// cannot grow it without bound. The IRCv3 spec lets servers advertise a per-user
+// limit via MONITOR=N in ISUPPORT; callers should respect that limit before
+// calling addMonitor, but we guard here defensively.
+const maxMonitored = 1000
+
+// addMonitor records nick in the local monitored set. A display-case copy is
+// stored; the folded key is used for lookup. No-op when already present or when
+// the cap is at maxMonitored.
+func (s *state) addMonitor(nick string) {
+	key := s.foldKey(nick)
+	if _, ok := s.monitored[key]; ok {
+		return // already tracked
+	}
+	if len(s.monitored) >= maxMonitored {
+		return // defensive cap
+	}
+	s.monitored[key] = nick
+}
+
+// removeMonitor removes nick from the monitored and online sets.
+func (s *state) removeMonitor(nick string) {
+	key := s.foldKey(nick)
+	delete(s.monitored, key)
+	delete(s.monitorOnline, key)
+}
+
+// clearMonitor removes all entries from both monitored and online sets. It is
+// called by UnmonitorAll (MONITOR C) and after a reconnect.
+func (s *state) clearMonitor() {
+	s.monitored = make(map[string]string)
+	s.monitorOnline = make(map[string]bool)
+}
+
+// setMonitorOnline marks a nick as online (730) or offline (731). The nick is
+// matched by fold so a reply with different case still hits the right entry.
+func (s *state) setMonitorOnline(nick string, online bool) {
+	key := s.foldKey(nick)
+	if online {
+		s.monitorOnline[key] = true
+	} else {
+		delete(s.monitorOnline, key)
+	}
+}
+
+// isMonitoredOnline reports whether nick is currently marked online.
+func (s *state) isMonitoredOnline(nick string) bool {
+	return s.monitorOnline[s.foldKey(nick)]
+}
+
+// monitoredNicks returns a sorted snapshot of the display-case nicks currently
+// being monitored.
+func (s *state) monitoredNicks() []string {
+	out := make([]string, 0, len(s.monitored))
+	for _, nick := range s.monitored {
+		out = append(out, nick)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // maxOpenBatches caps the number of concurrently-open BATCH references tracked.

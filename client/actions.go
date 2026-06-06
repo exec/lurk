@@ -304,3 +304,83 @@ func (c *Client) SelfPrefixes(channel string) string {
 	}
 	return ""
 }
+
+// MonitorLimit returns the server-advertised MONITOR limit (from ISUPPORT
+// MONITOR=N), or 0 if the server did not advertise one. A return of 0 should be
+// treated as "no limit stated", not as "zero allowed".
+func (c *Client) MonitorLimit() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.st.feat.Get("MONITOR")
+	if !ok {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// Monitor asks the server to watch nicks for online/offline changes (MONITOR +).
+// Notifications arrive as RPL_MONONLINE (730) and RPL_MONOFFLINE (731) events;
+// use HandleMonitorOnline / HandleMonitorOffline to subscribe. The nicks are also
+// recorded in local state so MonitoredOnline and MonitorList reflect them. It is
+// a no-op when monitor was not negotiated (the server ignores it regardless).
+func (c *Client) Monitor(nicks ...string) error {
+	if len(nicks) == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	for _, nick := range nicks {
+		c.st.addMonitor(nick)
+	}
+	c.mu.Unlock()
+	return c.write(irc.MONITOR, "+", strings.Join(nicks, ","))
+}
+
+// Unmonitor removes nicks from the server watch list (MONITOR -) and from local
+// state.
+func (c *Client) Unmonitor(nicks ...string) error {
+	if len(nicks) == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	for _, nick := range nicks {
+		c.st.removeMonitor(nick)
+	}
+	c.mu.Unlock()
+	return c.write(irc.MONITOR, "-", strings.Join(nicks, ","))
+}
+
+// UnmonitorAll clears the entire server watch list (MONITOR C) and resets the
+// local monitored and online sets.
+func (c *Client) UnmonitorAll() error {
+	c.mu.Lock()
+	c.st.clearMonitor()
+	c.mu.Unlock()
+	return c.write(irc.MONITOR, "C")
+}
+
+// MonitorList requests the server to send back the current watch list (MONITOR L).
+// The server replies with RPL_MONLIST (732) lines and a RPL_ENDOFMONLIST (733).
+func (c *Client) MonitorList() error {
+	return c.write(irc.MONITOR, "L")
+}
+
+// MonitoredNicks returns a sorted snapshot of the display-case nicks currently
+// being monitored (those added via Monitor that have not since been removed).
+func (c *Client) MonitoredNicks() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.st.monitoredNicks()
+}
+
+// MonitoredOnline reports whether nick was last reported online by the server
+// (via RPL_MONONLINE 730). It returns false for nicks not in the watch list, or
+// for nicks that are watched but whose current status is offline or unknown.
+func (c *Client) MonitoredOnline(nick string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.st.isMonitoredOnline(nick)
+}

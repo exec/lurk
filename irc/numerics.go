@@ -51,6 +51,13 @@ const (
 
 	ERR_INPUTTOOLONG = "417" // line exceeded the server's length budget
 
+	// MONITOR numerics (IRCv3 monitor extension).
+	RPL_MONONLINE    = "730" // <client> :<nick>[,<nick>...] — nicks now online
+	RPL_MONOFFLINE   = "731" // <client> :<nick>[,<nick>...] — nicks now offline
+	RPL_MONLIST      = "732" // <client> :<nick>[,<nick>...] — entry in MONITOR LIST response
+	RPL_ENDOFMONLIST = "733" // <client> :End of MONITOR list
+	ERR_MONLISTFULL  = "734" // <client> <limit> <nick> :Monitor list is full
+
 	// SASL numerics (sasl-3.1 / 3.2).
 	RPL_LOGGEDIN    = "900"
 	RPL_LOGGEDOUT   = "901"

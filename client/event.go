@@ -251,3 +251,32 @@ func (c *Client) HandleQuit(h Handler) { c.disp.on(irc.QUIT, h) }
 
 // HandleNick registers a handler for NICK changes.
 func (c *Client) HandleNick(h Handler) { c.disp.on(irc.NICK, h) }
+
+// HandleMonitorOnline registers a handler fired when watched nicks come online
+// (RPL_MONONLINE 730). The event's trailing parameter (Text()) is a
+// comma-separated list of nick!user@host entries that are now online. State is
+// updated before the handler is called, so MonitoredOnline() reflects the change.
+func (c *Client) HandleMonitorOnline(h Handler) { c.disp.on(irc.RPL_MONONLINE, h) }
+
+// HandleMonitorOffline registers a handler fired when watched nicks go offline
+// (RPL_MONOFFLINE 731). The event's trailing parameter (Text()) is a
+// comma-separated list of nick!user@host entries that are now offline. State is
+// updated before the handler is called, so MonitoredOnline() reflects the change.
+func (c *Client) HandleMonitorOffline(h Handler) { c.disp.on(irc.RPL_MONOFFLINE, h) }
+
+// HandleStandardReply registers h to be called for every FAIL, WARN, and NOTE
+// message the server sends (the standard-replies IRCv3 extension). The wire
+// format is:
+//
+//	FAIL/WARN/NOTE <command> <code> [<context>...] :<description>
+//
+// Param(0) is the command the reply relates to (e.g. "JOIN"), Param(1) is the
+// machine-readable error code (e.g. "CHANNEL_BANNED"), subsequent params are
+// optional context tokens, and Text() is the human-readable description. A
+// single handler h is registered for all three verbs; callers that need to
+// distinguish severity can inspect Command() ("FAIL", "WARN", or "NOTE").
+func (c *Client) HandleStandardReply(h Handler) {
+	c.disp.on(irc.FAIL, h)
+	c.disp.on(irc.WARN, h)
+	c.disp.on(irc.NOTE, h)
+}

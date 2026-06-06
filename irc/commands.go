@@ -31,6 +31,7 @@ const (
 	CHGHOST      = "CHGHOST"
 	SETNAME      = "SETNAME"
 	CHATHISTORY  = "CHATHISTORY"
+	MONITOR      = "MONITOR"
 
 	// Standard replies (the standard-replies extension): a server may send any of
 	// these as "FAIL/WARN/NOTE <COMMAND> <code> [context...] :<description>".

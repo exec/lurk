@@ -21,8 +21,8 @@ import (
 // only when Mechanism is non-empty (and the server advertises the sasl
 // capability). The zero value disables SASL.
 type SASLConfig struct {
-	// Mechanism selects the SASL mechanism: "PLAIN" or "EXTERNAL". Empty
-	// disables SASL.
+	// Mechanism selects the SASL mechanism: "PLAIN", "EXTERNAL", or
+	// "SCRAM-SHA-256". Empty disables SASL.
 	Mechanism string
 
 	// Username is the authentication identity (authcid) for PLAIN.
@@ -49,6 +49,8 @@ func (s SASLConfig) mechanism() sasl.Mechanism {
 		return sasl.Plain(s.Authzid, s.Username, s.Password)
 	case "EXTERNAL":
 		return sasl.External(s.Authzid)
+	case "SCRAM-SHA-256":
+		return sasl.Scram(s.Username, s.Password)
 	default:
 		return nil
 	}
@@ -163,6 +165,8 @@ var DefaultCaps = []string{
 	"invite-notify",
 	"batch",
 	"draft/chathistory",
+	"monitor",
+	"standard-replies",
 }
 
 // withDefaults returns a copy of the config with empty fields filled in.

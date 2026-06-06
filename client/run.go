@@ -285,6 +285,29 @@ func (c *Client) track(m *irc.Message) {
 		c.trackTopicReply(m)
 	case rplTopicWhoTime:
 		c.trackTopicWhoTime(m)
+	case irc.RPL_MONONLINE:
+		c.trackMonitorStatus(m, true)
+	case irc.RPL_MONOFFLINE:
+		c.trackMonitorStatus(m, false)
+	}
+}
+
+// trackMonitorStatus applies a RPL_MONONLINE (730) or RPL_MONOFFLINE (731)
+// message to the monitor online set. The nicks are in the trailing parameter as
+// a comma-separated list of nick!user@host masks (or bare nicks on some servers).
+// Only the nick part is extracted; host/user are not stored here.
+func (c *Client) trackMonitorStatus(m *irc.Message, online bool) {
+	// 730/731: "<client> :<nick!user@host>[,<nick!user@host>...]"
+	// The trailing param is param(1) — param(0) is our own nick (the target).
+	raw := m.Param(1)
+	if raw == "" {
+		return
+	}
+	for _, mask := range strings.Split(raw, ",") {
+		nick, _, _ := splitMask(strings.TrimSpace(mask))
+		if nick != "" {
+			c.st.setMonitorOnline(nick, online)
+		}
 	}
 }
 
