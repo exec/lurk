@@ -91,6 +91,31 @@ func (m *Message) Host() string {
 	return ""
 }
 
+// Clone returns a deep copy of the Message. The returned Message owns its own
+// Tags map and Params slice, so mutations to either do not affect the original.
+// A nil Tags or nil Params in the receiver is preserved as nil in the clone.
+// Clone on a nil *Message returns nil.
+func (m *Message) Clone() *Message {
+	if m == nil {
+		return nil
+	}
+	c := &Message{
+		Source:  m.Source,
+		Command: m.Command,
+	}
+	if m.Tags != nil {
+		c.Tags = make(Tags, len(m.Tags))
+		for k, v := range m.Tags {
+			c.Tags[k] = v
+		}
+	}
+	if m.Params != nil {
+		c.Params = make([]string, len(m.Params))
+		copy(c.Params, m.Params)
+	}
+	return c
+}
+
 // Tags is an ordered-insensitive map of IRCv3 message tags. Keys are stored
 // without the leading '@'. Client-only tag keys keep their '+' prefix.
 type Tags map[string]string
@@ -104,4 +129,11 @@ func (t Tags) Has(key string) bool {
 // Get returns the value for key (empty string if absent or value-less).
 func (t Tags) Get(key string) string {
 	return t[key]
+}
+
+// Set stores key→value in the map. It is safe to call on a non-nil Tags value;
+// callers with a possibly-nil Tags should initialise the map first or call
+// Clone on the owning Message to get an independent, non-nil copy.
+func (t Tags) Set(key, value string) {
+	t[key] = value
 }
