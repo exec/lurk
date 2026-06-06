@@ -57,6 +57,13 @@ type Client struct {
 	// is owned by the run goroutine.
 	conv *sasl.Conversation
 
+	// nickRetries counts ERR_NICKNAMEINUSE / ERR_ERRONEUSNICKNAME collisions seen
+	// during the current registration phase. Owned by the run goroutine; reset by
+	// resetRegistration (called before the goroutine starts, so no race). Once it
+	// reaches nickRetryMax the client fails registration rather than appending
+	// another underscore indefinitely.
+	nickRetries int
+
 	// ctcpRL rate-limits automatic CTCP replies so a peer flooding private CTCP
 	// queries cannot induce a 1:1 outbound NOTICE flood (a reflection vector).
 	ctcpRL ctcpLimiter
@@ -422,6 +429,10 @@ func (c *Client) resetRegistration() {
 	c.regErr = nil
 	c.conv = nil
 	c.mu.Unlock()
+	// Reset the nick-collision counter. This is safe without c.mu because
+	// resetRegistration is called before the run goroutine starts; the goroutine
+	// that will read/write nickRetries has not yet been spawned.
+	c.nickRetries = 0
 }
 
 // sendOpening emits the capability-negotiation start and the NICK/USER (and

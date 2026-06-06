@@ -2,11 +2,14 @@ package client
 
 import (
 	"context"
+	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/exec/lurk/conn"
 	"github.com/exec/lurk/irc"
 )
 
@@ -60,6 +63,72 @@ func TestConnectRefusesCleartextCredentials(t *testing.T) {
 			t.Fatalf("EXTERNAL wrongly blocked by credential guard: %v", err)
 		}
 	})
+}
+
+// TestNickInUseFloodFailsRegistration verifies that a hostile server flooding
+// ERR_NICKNAMEINUSE (433) during registration causes the client to fail
+// registration rather than appending underscores to the nick indefinitely.
+// After nickRetryMax collisions ConnectConn must return a non-nil error, and
+// the final attempted nick must not have grown past a reasonable bound.
+func TestNickInUseFloodFailsRegistration(t *testing.T) {
+	const startNick = "bot"
+	clientSide, serverSide := net.Pipe()
+	srv := newMockServer(t, serverSide)
+	tr := conn.NewConn(clientSide, conn.Options{})
+
+	c := New(Config{Nick: startNick, User: "u", Realname: "r", Caps: []string{}})
+
+	// down is set once the test enters teardown (or the flood loop ends) so that
+	// the server-side goroutine does not fail the test when failRegistration closes
+	// the client connection mid-read.
+	var down atomic.Bool
+	srv.down = &down
+
+	scriptDone := make(chan struct{})
+	go func() {
+		defer close(scriptDone)
+		srv.expect("CAP LS 302")
+		srv.expect("NICK " + startNick)
+		srv.expect("USER u 0 * r")
+		srv.send("CAP * LS :")
+		srv.expectPrefix("CAP END")
+
+		// Flood more than nickRetryMax consecutive 433s; never send 001.
+		// Mark the server as shutting down before the flood so that when
+		// failRegistration closes the client connection mid-read, the pipe error
+		// in readLine is treated as a silent exit rather than a test failure.
+		down.Store(true)
+		for i := 0; i < nickRetryMax+5; i++ {
+			line := srv.readLine() // exits silently on pipe close (srv.down is set)
+			nick := strings.TrimPrefix(line, "NICK ")
+			srv.send(":server 433 * " + nick + " :Nickname is already in use")
+		}
+	}()
+
+	defer func() {
+		down.Store(true)
+		c.Close()
+		srv.close()
+		<-scriptDone
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := c.ConnectConn(ctx, tr)
+	if err == nil {
+		t.Fatal("ConnectConn succeeded after a 433 flood, want an error")
+	}
+
+	// The final self-nick must not have grown without bound. With nickRetryMax=10
+	// and a 3-char starting nick, the worst-case appended length is startNick +
+	// nickRetryMax underscores. Anything significantly beyond that indicates the
+	// cap did not fire.
+	finalNick := c.Nick()
+	maxAllowed := len(startNick) + nickRetryMax + 5 // a little headroom
+	if len(finalNick) > maxAllowed {
+		t.Errorf("nick grew to %d chars (%q) — cap did not fire (max allowed %d)", len(finalNick), finalNick, maxAllowed)
+	}
 }
 
 // TestTrackTopicIgnoresUnknownChannel verifies that TOPIC, RPL_TOPIC (332), and

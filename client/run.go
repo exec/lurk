@@ -211,15 +211,31 @@ func withCommand(m *irc.Message, command string) *irc.Message {
 	return &cp
 }
 
+// nickRetryMax is the maximum number of ERR_NICKNAMEINUSE / ERR_ERRONEUSNICKNAME
+// collisions the client will retry during a single registration phase before
+// giving up. A hostile server that floods 433 replies would otherwise drive
+// handleNickInUse to append underscores indefinitely, growing the nick string
+// and emitting a NICK write per iteration without bound. Ten attempts is generous
+// for legitimate servers (FallbackNick + nine underscore suffixes) while still
+// capping the attack.
+const nickRetryMax = 10
+
 // handleNickInUse responds to ERR_NICKNAMEINUSE / ERR_ERRONEUSNICKNAME during
 // registration by trying a fallback nick. After registration it is left to user
-// handlers (the client does not auto-rename a live session).
+// handlers (the client does not auto-rename a live session). If more than
+// nickRetryMax collisions are seen before registration completes, the session is
+// failed rather than continuing to append underscores indefinitely.
 func (c *Client) handleNickInUse(m *irc.Message) {
 	select {
 	case <-c.registered:
 		// Already registered: don't auto-change a live nick.
 		return
 	default:
+	}
+	c.nickRetries++
+	if c.nickRetries > nickRetryMax {
+		c.failRegistration(fmt.Errorf("client: nickname unavailable after %d attempts", nickRetryMax))
+		return
 	}
 	next := c.nextNick()
 	c.mu.Lock()
