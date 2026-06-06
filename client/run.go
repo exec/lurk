@@ -1,6 +1,7 @@
 package client
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -165,9 +166,7 @@ func (c *Client) handleCAP(m *irc.Message) {
 		c.failRegistration(err)
 		return
 	}
-	for _, l := range lines {
-		_ = c.tr.Send(l)
-	}
+	c.sendCapLines(lines)
 	c.advanceCAP()
 }
 
@@ -538,7 +537,24 @@ func (c *Client) handleSASL(m *irc.Message) {
 // CAP END line, allowing the server to proceed to RPL_WELCOME.
 func (c *Client) finishSASL() {
 	c.conv = nil
-	for _, l := range c.neg.SASLComplete() {
+	c.sendCapLines(c.neg.SASLComplete())
+}
+
+// sendCapLines sends the lines the capability negotiator produced during
+// registration. Immediately before the "CAP END" line — the point after
+// capabilities (and any SASL) are negotiated but before registration is
+// finalized — it injects "BOUNCER BIND <netid>" when Config.BouncerNetID is set
+// and the soju.im/bouncer-networks capability was negotiated, so a lurk client
+// attaches to a specific lurkd network within the same registration round-trip
+// (the soju.im/bouncer-networks bind point). The negotiator emits CAP END once
+// per registration, and again on each reconnect, so the bind is re-sent
+// automatically after a drop. It is a no-op (plain pass-through) for a normal
+// direct connection.
+func (c *Client) sendCapLines(lines []string) {
+	for _, l := range lines {
+		if l == "CAP END" && c.cfg.BouncerNetID > 0 && c.CapEnabled("soju.im/bouncer-networks") {
+			_ = c.tr.Send(fmt.Sprintf("BOUNCER BIND %d", c.cfg.BouncerNetID))
+		}
 		_ = c.tr.Send(l)
 	}
 }

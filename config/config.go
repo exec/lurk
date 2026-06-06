@@ -44,6 +44,24 @@ type Network struct {
 	SASL              SASL     `json:"sasl,omitempty"`
 	Channels          []string `json:"channels,omitempty"`   // autojoin
 	Highlights        []string `json:"highlights,omitempty"` // extra mention words
+
+	// Bounce, when set (NetID > 0), routes this network through a lurkd bouncer
+	// instead of connecting to Addr directly: the client dials the bouncer,
+	// authenticates to it, and attaches to the bouncer's network NetID. A zero
+	// Bounce means a normal direct connection.
+	Bounce BounceConfig `json:"bounce,omitempty"`
+}
+
+// BounceConfig describes how a saved network is reached through a lurkd bouncer
+// rather than connected to directly. When NetID > 0, the launcher dials Addr (the
+// bouncer's host:port), authenticates with the network's own SASL/identity as the
+// bouncer credential, and sends BOUNCER BIND NetID. ClientID, when set, is the
+// per-client cursor name ("@client") so multiple devices keep independent
+// backlog positions. The zero value disables bouncing.
+type BounceConfig struct {
+	Addr     string `json:"addr,omitempty"`      // bouncer host:port
+	NetID    int    `json:"netid,omitempty"`     // bouncer-side network id (BOUNCER BIND target)
+	ClientID string `json:"client_id,omitempty"` // per-client cursor id (@client)
 }
 
 // Identity holds default nick/user/realname used to prefill a new network form

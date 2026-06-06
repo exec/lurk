@@ -120,6 +120,17 @@ type Config struct {
 	// which has no address to re-dial.
 	AutoReconnect bool
 
+	// BouncerNetID, when greater than zero, makes the client attach to a specific
+	// network on a soju.im/bouncer-networks bouncer (such as lurkd): after
+	// capability negotiation and any SASL, and immediately before CAP END, the
+	// client sends "BOUNCER BIND <netid>". It is sent only when the
+	// soju.im/bouncer-networks capability was negotiated (so pointing a
+	// bouncer-bound config at a plain server sends nothing spurious), and it is
+	// re-sent on every reconnect's registration. withDefaults ensures the
+	// soju.im/bouncer-networks capability is requested when this is set. Zero means
+	// a normal direct connection with no bind.
+	BouncerNetID int
+
 	// Dialer, when non-nil, overrides how Connect (and every auto-reconnect
 	// re-dial) obtains the underlying network connection: it is called instead of
 	// the default TCP/TLS dialer and must return a ready net.Conn to the server,
@@ -172,6 +183,11 @@ func (c Config) withDefaults() Config {
 	// the capability the auth flow depends on.
 	if c.SASL.enabled() && !containsFold(c.Caps, "sasl") {
 		c.Caps = append(append([]string(nil), c.Caps...), "sasl")
+	}
+	// Ensure the bouncer-networks capability is requested when a bind is
+	// configured, so BOUNCER BIND is actually honored by the bouncer.
+	if c.BouncerNetID > 0 && !containsFold(c.Caps, "soju.im/bouncer-networks") {
+		c.Caps = append(append([]string(nil), c.Caps...), "soju.im/bouncer-networks")
 	}
 	return c
 }

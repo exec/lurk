@@ -456,6 +456,18 @@ func networkToConfig(n config.Network, def config.Identity) (client.Config, []st
 		},
 		Caps: append(append([]string(nil), client.DefaultCaps...), "echo-message"),
 	}
+	// Route through a lurkd bouncer when configured: dial the bouncer instead of
+	// the network's own address, and BOUNCER BIND to the bouncer-side network id.
+	// The per-client cursor name ("@client") is carried in the SASL username as
+	// "<user>@<client>" (the soju convention), so multiple devices keep
+	// independent backlog positions.
+	if n.Bounce.NetID > 0 && n.Bounce.Addr != "" {
+		cfg.Server = n.Bounce.Addr
+		cfg.BouncerNetID = n.Bounce.NetID
+		if n.Bounce.ClientID != "" && cfg.SASL.Mechanism != "" {
+			cfg.SASL.Username = cfg.SASL.Username + "@" + n.Bounce.ClientID
+		}
+	}
 	return cfg, n.Channels
 }
 
