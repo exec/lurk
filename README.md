@@ -107,6 +107,9 @@ upstream IRC networks and serves them to lurk clients over a local TLS listener.
 Clients can detach and reattach without missing messages; CHATHISTORY pulls the
 backlog automatically on reconnect.
 
+**→ Full operator guide: [`docs/LURKD.md`](docs/LURKD.md)** (config reference,
+TLS, auth, connecting clients, runtime network management, operations).
+
 ### Quick start
 
 ```sh
@@ -158,28 +161,17 @@ cursor positions). A second signal forces immediate exit.
 
 ### Connecting lurk to lurkd
 
-In `~/.config/lurk/config.json`, add a network with a `bounce` block:
+In `~/.config/lurk/config.json`, give a saved network a `bounce` block — lurk dials
+the bouncer instead of the network directly and `BOUNCER BIND`s to the configured
+network id:
 
 ```json
-{
-  "name": "Libera via lurkd",
-  "addr": "127.0.0.1:6697",
-  "tls": true,
-  "insecure_skip_verify": true,
-  "identity": { "nick": "alice", "user": "alice", "realname": "Alice" },
-  "sasl": { "mechanism": "PLAIN", "authcid": "alice", "password": "bouncer-password" },
-  "bounce": { "addr": "127.0.0.1:6697", "netid": 1, "client_id": "laptop" }
-}
+"bounce": { "addr": "127.0.0.1:6697", "netid": 1, "client_id": "laptop" }
 ```
 
-The `bounce` block tells lurk to dial the bouncer at `addr`, authenticate to it as
-the bouncer user (`alice`), and issue `BOUNCER BIND 1` before `CAP END` to attach
-to the bouncer's network id 1. `client_id` ("laptop") is folded into the SASL
-username as `alice@laptop` so multiple devices keep independent backlog positions.
-(Third-party clients that don't speak `soju.im/bouncer-networks` can instead select
-the network with the `user/network` authcid form, e.g. `alice/Libera.Chat`.)
-
-For the full design, see [`docs/LURKD-DESIGN.md`](docs/LURKD-DESIGN.md).
+See [`docs/LURKD.md`](docs/LURKD.md) for the complete client setup (including
+third-party clients and the `user/network@client` fallback), and
+[`docs/LURKD-DESIGN.md`](docs/LURKD-DESIGN.md) for the internal design.
 
 ## Packages
 

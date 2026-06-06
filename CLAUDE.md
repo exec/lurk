@@ -84,6 +84,8 @@ Key contracts:
 
 - `docs/ARCHITECTURE.md` — packages, dependency direction, the core contracts.
 - `docs/ARCHITECTURE-TUI.md` — the Bubble Tea model, file map, event bridge.
+- `docs/LURKD.md` — the lurkd bouncer operator guide (install, config reference,
+  TLS, auth, connecting clients, runtime network management, operations).
 - `docs/LURKD-DESIGN.md` — the lurkd bouncer design (all 16 ballot items,
   package layout, security model, phased build order).
 - `docs/PACKAGING.md` — building native packages and the release workflow.

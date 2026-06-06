@@ -20,7 +20,18 @@ config/     On-disk network/identity configuration (JSON, 0600) with XDG path re
 chatlog/    Append-only per-target plain-text chat logs.
 tui/        Bubble Tea v2 terminal UI.
 cmd/lurk/   The binary: TUI by default, -plain for the line client, network launcher when no -server.
+
+backlog/    Bouncer message store: structured JSONL per (network, target) with msgids + server-time.
+bouncer/    soju.im/bouncer-networks wire protocol (NETWORK attribute encoding, BOUNCER verb parsing).
+server/     Bouncer daemon core: TLS listener, server-side CAP/SASL responder, session multiplexer,
+            CHATHISTORY, upstream session manager, live fan-out, per-client cursors.
+cmd/lurkd/  The bouncer binary (headless; no terminal UI).
 ```
+
+The first group is the **client** half; the last four are the **bouncer** half,
+lurkd ([`LURKD.md`](LURKD.md)). Both are standard-library only and share the
+protocol stack — `server` reuses `client` to hold its upstream connections and
+reuses `conn`/`irc` for its client-facing listener.
 
 ## Dependency direction
 
@@ -33,11 +44,17 @@ There are no import cycles; dependencies point "downward":
   nor any UI library.
 - `tui` depends on `client`, `config`, `chatlog`, and `irc`.
 - `cmd/lurk` wires `client`, `config`, and `tui` together.
+- `backlog` depends on `client` (and `chatlog`); `bouncer` depends only on `irc`
+  (plus stdlib); `server` depends on `client`, `backlog`, `bouncer`, `conn`, and
+  `irc`; `cmd/lurkd` wires them. `server` imports `bouncer` one-directionally —
+  `bouncer` is pure protocol and never imports `server`.
 
-**Dependency rule (enforced by review):** only `tui/` and `cmd/lurk` may import the
-charm libraries (`charm.land/{bubbletea,bubbles,lipgloss}/v2`). Every protocol
-package stays standard-library only, so `client` is usable as a library without
-pulling in a terminal UI.
+**Dependency rule (enforced by `server.TestNoCharmDependency`):** only `tui/` and
+`cmd/lurk` may import the charm libraries
+(`charm.land/{bubbletea,bubbles,lipgloss}/v2`). Every protocol package, plus the
+whole bouncer (`server`, `backlog`, `bouncer`, `cmd/lurkd`), stays
+standard-library only — `client` is usable as a library, and lurkd is a headless
+daemon, without pulling in a terminal UI.
 
 ## The central type: `irc.Message`
 
@@ -76,6 +93,29 @@ the server's CASEMAPPING. Everything surfaces as events:
 network to the chat UI. The full-screen TUI is the default; `-plain` runs a
 line-mode client against the same `client` API. The TUI can hold **multiple
 networks at once** (see [`ARCHITECTURE-TUI.md`](ARCHITECTURE-TUI.md)).
+
+## The bouncer (lurkd)
+
+`cmd/lurkd` is a second, headless binary: an IRC bouncer that holds persistent
+upstream connections and serves them to attached clients. It is two halves glued
+by the backlog store:
+
+- The **upstream side** reuses `client.Client` verbatim — one per configured
+  network, with auto-reconnect — and forwards every event into the server.
+- The **client-facing side** is new server-side code in `server/`: a TLS listener,
+  a server-side CAP/SASL responder (the mirror of the client-side `cap`/`sasl`
+  negotiators), the `soju.im/bouncer-networks` control surface, a CHATHISTORY
+  server over the `backlog` JSONL store, and live fan-out to bound sessions.
+
+A client attaches over plain IRC, authenticates to the bouncer with SASL PLAIN
+(verified against a PBKDF2 hash, TLS-gated), and selects a network with
+`BOUNCER BIND <netid>` or the `user/network@client` username fallback. The same
+server-assigned msgid is stamped on both the stored line and the live copy, so a
+message seen live resolves in a later CHATHISTORY query. All relayed and stored
+text passes through `client.SanitizeForRelay` (strips terminal escapes, keeps IRC
+formatting). The operator guide is [`LURKD.md`](LURKD.md); the full design,
+including the phased build order and the design-council provenance, is in
+[`LURKD-DESIGN.md`](LURKD-DESIGN.md).
 
 ## Conventions
 
