@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-06-06
+
 ### Changed
 - **lurkd is now in every native package.** It already shipped as a standalone
   binary and in the macOS `.pkg` / Windows `.zip`; it is now also a separate
@@ -213,7 +215,8 @@ Initial release.
 - Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
   `-version` flag.
 
-[Unreleased]: https://github.com/exec/lurk/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/exec/lurk/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/exec/lurk/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/exec/lurk/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/exec/lurk/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/exec/lurk/compare/v1.0.0...v1.0.1
