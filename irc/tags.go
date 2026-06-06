@@ -81,13 +81,36 @@ func escapeTagValue(s string) string {
 	return b.String()
 }
 
+// maxTagCount is the maximum number of tag entries parseTags will store. The
+// IRCv3 tag budget (8189 bytes) can hold up to ~2729 distinct 3-byte keys, but
+// real servers never send more than a handful. Capping here prevents a hostile
+// server from inflating per-message map size by filling the tag budget with
+// unique short keys. 64 is well above any legitimate tag set (the largest
+// defined IRCv3 tag sets top out around 10–15 entries).
+const maxTagCount = 64
+
 // parseTags parses the tag segment (without the leading '@') into a Tags map.
 // Keys are stored as-is, retaining any '+' client-only prefix and vendor/
 // prefix; values are unescaped. A tag with no '=' has the empty string value
-// but is still present (see Tags.Has).
+// but is still present (see Tags.Has). At most maxTagCount distinct entries
+// are stored; any further tags in the segment are silently ignored.
+//
+// The segment is scanned without strings.Split to avoid the intermediate
+// []string allocation that Split would produce for a large segment.
 func parseTags(segment string) Tags {
 	tags := make(Tags)
-	for _, raw := range strings.Split(segment, ";") {
+	for segment != "" {
+		if len(tags) >= maxTagCount {
+			break
+		}
+		// Consume one ';'-delimited token.
+		raw := segment
+		if i := strings.IndexByte(segment, ';'); i >= 0 {
+			raw = segment[:i]
+			segment = segment[i+1:]
+		} else {
+			segment = ""
+		}
 		if raw == "" {
 			// Tolerate empty entries (e.g. a trailing or doubled ';').
 			continue

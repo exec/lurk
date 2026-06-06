@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,51 @@ func TestConnectRefusesCleartextCredentials(t *testing.T) {
 			t.Fatalf("EXTERNAL wrongly blocked by credential guard: %v", err)
 		}
 	})
+}
+
+// TestTrackTopicIgnoresUnknownChannel verifies that TOPIC, RPL_TOPIC (332), and
+// RPL_TOPICWHOTIME (333) messages for channels the client has not joined are
+// silently ignored and do not fabricate phantom channel state. A hostile server
+// sending a flood of topic messages for arbitrary channel names must not be able
+// to grow the channel map without bound below the TUI-layer buffer cap.
+func TestTrackTopicIgnoresUnknownChannel(t *testing.T) {
+	c := New(Config{Nick: "me"})
+	c.mu.Lock()
+	c.st.self = "me"
+	c.mu.Unlock()
+
+	const phantomCount = 1000
+
+	// Flood TOPIC, RPL_TOPIC (332), and RPL_TOPICWHOTIME (333) for channels the
+	// client has never joined. None should create channel state.
+	for i := 0; i < phantomCount; i++ {
+		ch := "#phantom" + strconv.Itoa(i)
+		c.track(mustParse(t, ":server!s@s TOPIC "+ch+" :hostile topic"))
+		c.track(mustParse(t, ":server 332 me "+ch+" :hostile topic"))
+		c.track(mustParse(t, ":server 333 me "+ch+" setter 1700000000"))
+	}
+
+	if got := c.Channels(); len(got) != 0 {
+		t.Fatalf("topic messages for unjoined channels created %d phantom channel(s): %v", len(got), got)
+	}
+
+	// After the client joins a channel, TOPIC and 332/333 for that channel must
+	// still be applied correctly.
+	c.track(mustParse(t, ":me!u@h JOIN #real"))
+	c.track(mustParse(t, ":server!s@s TOPIC #real :welcome"))
+	c.track(mustParse(t, ":server 332 me #real :welcome"))
+	c.track(mustParse(t, ":server 333 me #real alice 1700000000"))
+
+	text, setBy, at := c.Topic("#real")
+	if text != "welcome" {
+		t.Errorf("topic text = %q, want welcome", text)
+	}
+	if setBy != "alice" {
+		t.Errorf("topic setBy = %q, want alice", setBy)
+	}
+	if at.IsZero() {
+		t.Errorf("topic at is zero, want non-zero")
+	}
 }
 
 // TestTrackJoinIgnoresForeignChannel verifies that a JOIN from another user for a

@@ -315,30 +315,47 @@ func (c *Client) trackMonitorStatus(m *irc.Message, online bool) {
 // :<text>". The setter and time come from the message source and receive time
 // (server-time tag if present is applied by the caller's Event, but for state
 // we use the wall clock here).
+//
+// Only channels the client is already tracking are updated. A conformant server
+// only sends TOPIC for channels the client has joined; ignoring it for unknown
+// channels prevents a hostile server from fabricating phantom channel state by
+// sending TOPIC for arbitrary channel names — the same guard trackJoin applies
+// to foreign JOINs.
 func (c *Client) trackTopicCommand(m *irc.Message) {
 	channel := m.Param(0)
 	if channel == "" {
 		return
+	}
+	if c.st.channel(channel) == nil {
+		return // not in this channel; ignore to prevent phantom state
 	}
 	c.st.setTopicText(channel, m.Param(1))
 	c.st.setTopicMeta(channel, m.Nick(), time.Now())
 }
 
 // trackTopicReply records RPL_TOPIC (332): "<client> <channel> :<topic>".
+// Only channels the client is already tracking are updated (see trackTopicCommand).
 func (c *Client) trackTopicReply(m *irc.Message) {
 	channel := m.Param(1)
 	if channel == "" {
 		return
+	}
+	if c.st.channel(channel) == nil {
+		return // not in this channel; ignore to prevent phantom state
 	}
 	c.st.setTopicText(channel, m.Param(2))
 }
 
 // trackTopicWhoTime records RPL_TOPICWHOTIME (333): "<client> <channel> <setBy>
 // <setAt unix-seconds>".
+// Only channels the client is already tracking are updated (see trackTopicCommand).
 func (c *Client) trackTopicWhoTime(m *irc.Message) {
 	channel := m.Param(1)
 	if channel == "" {
 		return
+	}
+	if c.st.channel(channel) == nil {
+		return // not in this channel; ignore to prevent phantom state
 	}
 	c.st.setTopicMeta(channel, m.Param(2), parseUnixSeconds(m.Param(3)))
 }
