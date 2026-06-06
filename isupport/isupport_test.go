@@ -400,11 +400,11 @@ func TestMergeTokenCeilingKnownKeyOverride(t *testing.T) {
 // normal values pass through unchanged and absent tokens report ok=false.
 func TestIntTokenUpperBounds(t *testing.T) {
 	tests := []struct {
-		name    string
-		token   string
-		value   string
-		wantN   int
-		wantOK  bool
+		name   string
+		token  string
+		value  string
+		wantN  int
+		wantOK bool
 	}{
 		// Normal values pass through unchanged.
 		{"NickLen normal", "NICKLEN", "32", 32, true},
