@@ -42,12 +42,21 @@ func (c *Client) supervise(sessionDone chan struct{}) {
 				c.finalize()
 				return
 			}
+			// The dead transport's goroutines have unwound, but a peer-initiated
+			// drop (EOF / read error) only cancels the conn — it never closes the
+			// underlying socket; Conn.Close alone does that. Release it before
+			// re-dialing so a long-lived client on a flaky link doesn't leak a file
+			// descriptor (stuck in CLOSE_WAIT) on every reconnect. Close is
+			// idempotent, so the later teardown stays safe.
+			if tr := c.transport(); tr != nil {
+				_ = tr.Close()
+			}
 		case <-c.stop:
 			// Asked to stop while connected: tear the connection down and wait for
 			// its run goroutine to exit before finalizing (so nothing publishes onto
 			// a closed Events channel).
-			if c.tr != nil {
-				_ = c.tr.Close()
+			if tr := c.transport(); tr != nil {
+				_ = tr.Close()
 			}
 			<-sessionDone
 			c.finalize()
@@ -119,13 +128,14 @@ func nextBackoff(d time.Duration) time.Duration {
 	return d
 }
 
-// bridgeDone mirrors a single (unsupervised, but private-channel) session's end
-// onto the public done channel. It is used when a supervised connect fails to
-// register: there is no supervisor, so this closes done once the run goroutine
-// exits.
-func (c *Client) bridgeDone(sessionDone chan struct{}) {
+// finalizeWhenDone waits for a single (unsupervised) session's run goroutine to
+// exit, then finalizes the client — closing both the public done channel and the
+// Events stream. It is used when reconnect is off and when a connect fails to
+// register: there is no supervisor, so this is what releases an Events() consumer
+// blocked in a range loop once the connection is gone.
+func (c *Client) finalizeWhenDone(sessionDone chan struct{}) {
 	<-sessionDone
-	c.closeDone()
+	c.finalize()
 }
 
 // finalize shuts the client down for good: it closes the public done channel and

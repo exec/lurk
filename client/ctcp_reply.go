@@ -2,6 +2,7 @@ package client
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/exec/lurk/irc"
@@ -58,7 +59,52 @@ func (c *Client) maybeAnswerCTCP(m *irc.Message) {
 	default:
 		return // unknown query: silence is correct
 	}
+
+	// Rate-limit the auto-reply: a peer spraying private CTCP queries must not be
+	// able to turn us into a 1:1 NOTICE amplifier (which would get us throttled or
+	// killed by our own server). Drop the reply when the bucket is empty.
+	if !c.ctcpRL.allow(time.Now()) {
+		return
+	}
 	_ = c.Notice(sender, "\x01"+reply+"\x01")
+}
+
+// CTCP auto-reply rate limits: a burst of ctcpBurst replies is allowed, then
+// replies refill at one per ctcpRefill, shared across all peers.
+const (
+	ctcpBurst  = 5
+	ctcpRefill = 2 * time.Second
+)
+
+// ctcpLimiter is a token bucket bounding the rate of automatic CTCP replies. The
+// zero value is ready to use and starts full on first use. It is safe for
+// concurrent use, though in practice only the run goroutine calls allow.
+type ctcpLimiter struct {
+	mu     sync.Mutex
+	tokens float64
+	last   time.Time
+}
+
+// allow reports whether a reply may be sent at time now, consuming one token if
+// so. now is a parameter (rather than a time.Now call) so tests can drive the
+// bucket deterministically.
+func (l *ctcpLimiter) allow(now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.last.IsZero() {
+		l.tokens = ctcpBurst // first use: start with a full burst
+	} else {
+		l.tokens += now.Sub(l.last).Seconds() / ctcpRefill.Seconds()
+		if l.tokens > ctcpBurst {
+			l.tokens = ctcpBurst
+		}
+	}
+	l.last = now
+	if l.tokens < 1 {
+		return false
+	}
+	l.tokens--
+	return true
 }
 
 // stripCTCPArg removes control bytes (including CR/LF/NUL and the \x01 CTCP

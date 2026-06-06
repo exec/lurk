@@ -57,6 +57,10 @@ type Client struct {
 	// is owned by the run goroutine.
 	conv *sasl.Conversation
 
+	// ctcpRL rate-limits automatic CTCP replies so a peer flooding private CTCP
+	// queries cannot induce a 1:1 outbound NOTICE flood (a reflection vector).
+	ctcpRL ctcpLimiter
+
 	// done is closed once the client has stopped for good (the final connection
 	// ended and, when auto-reconnect is on, no further attempt will be made).
 	done     chan struct{}
@@ -343,22 +347,24 @@ func (c *Client) ConnectConn(ctx context.Context, tr transport) error {
 func (c *Client) attachAndRegister(ctx context.Context, tr transport) error {
 	supervised := c.reconnectable && c.cfg.AutoReconnect
 
-	// A supervised session runs on a private done channel the supervisor owns;
-	// an unsupervised one drives the public done directly (the prior behavior).
-	sessionDone := c.done
-	if supervised {
-		sessionDone = make(chan struct{})
-	}
+	// Every session runs on a private done channel: the supervisor owns it when
+	// reconnect is on, otherwise a finalizer mirrors the single session's end onto
+	// the public done channel AND the Events stream. Closing Events matters in both
+	// modes — a consumer ranging over Events() must learn the session is over, not
+	// just one watching Done().
+	sessionDone := make(chan struct{})
 
 	if err := c.startSession(tr, sessionDone, ctx); err != nil {
-		if supervised {
-			go c.bridgeDone(sessionDone)
-		}
+		// startSession already launched the run goroutine on sessionDone; whichever
+		// mode we are in, finalize once it exits so done and Events both close.
+		go c.finalizeWhenDone(sessionDone)
 		return err
 	}
 
 	if supervised {
 		go c.supervise(sessionDone)
+	} else {
+		go c.finalizeWhenDone(sessionDone)
 	}
 	return nil
 }
