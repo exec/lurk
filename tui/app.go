@@ -150,8 +150,15 @@ func (m model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 // command, switch/close a buffer) plus any Cmd to run.
 func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Quit is always available, even from the nicklist or an open menu.
+	// Send QUIT to every connected network so all servers see a clean
+	// disconnect rather than a silent TCP drop.
 	if key_matches(m.keys.Quit, msg) {
 		m.quitting = true
+		for _, n := range m.networks {
+			if n.cli != nil {
+				_ = n.cli.Quit("")
+			}
+		}
 		return m, tea.Quit
 	}
 

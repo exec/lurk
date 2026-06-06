@@ -297,8 +297,12 @@ func init() {
 			usage: "[reason]",
 			desc:  "disconnect and exit lurk",
 			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
-				if m.cli != nil {
-					_ = m.cli.Quit(rest)
+				// Send QUIT to every connected network so all servers see a
+				// clean disconnect rather than a silent TCP drop.
+				for _, n := range m.networks {
+					if n.cli != nil {
+						_ = n.cli.Quit(rest)
+					}
 				}
 				return action{kind: actionNone}, tea.Quit
 			},
