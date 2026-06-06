@@ -3,6 +3,7 @@ package irc
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -218,5 +219,36 @@ func TestParam(t *testing.T) {
 	}
 	if got := m.Param(-1); got != "" {
 		t.Errorf("Param(-1) = %q, want empty", got)
+	}
+}
+
+// TestParseParamCountCap verifies that Parse never returns more than
+// maxParamCount parameters. Without the cap, a caller that passes an
+// unbounded string directly to Parse (bypassing the conn-layer budget)
+// could receive a Params slice with thousands of entries.
+func TestParseParamCountCap(t *testing.T) {
+	// Build a line with maxParamCount+20 single-char non-trailing params.
+	// "CMD a a a a ..." with no ':' prefix so each token is a regular param.
+	total := maxParamCount + 20
+	var b strings.Builder
+	b.WriteString("CMD")
+	for i := 0; i < total; i++ {
+		b.WriteString(" a")
+	}
+	line := b.String()
+
+	m, err := Parse(line)
+	if err != nil {
+		t.Fatalf("Parse: unexpected error: %v", err)
+	}
+	if len(m.Params) > maxParamCount {
+		t.Errorf("Parse returned %d params for a %d-param line, want at most %d",
+			len(m.Params), total, maxParamCount)
+	}
+	// All stored params must be the expected value.
+	for i, p := range m.Params {
+		if p != "a" {
+			t.Errorf("Params[%d] = %q, want \"a\"", i, p)
+		}
 	}
 }

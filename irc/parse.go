@@ -5,6 +5,15 @@ import (
 	"strings"
 )
 
+// maxParamCount is the maximum number of parameters Parse will collect. The
+// IRC spec defines a conventional limit of 15 parameters per message (RFC
+// 1459 §2.3), and no widely-deployed command uses more than a handful.
+// Without an explicit cap, a caller that passes an unbounded string directly
+// to Parse (bypassing the conn-layer budget) could receive a Params slice
+// with thousands of entries. Excess parameters are silently dropped, matching
+// the behaviour of irc-go and Ergo's own parser.
+const maxParamCount = 32
+
 // Wire length budgets from the Modern IRC and message-tags specifications.
 // These are exported so transport/framing code can enforce a shared, correct
 // limit instead of hardcoding magic numbers; the parser itself stays tolerant
@@ -105,8 +114,10 @@ func Parse(line string) (*Message, error) {
 	line = rest
 
 	// Params: space-delimited tokens until a ':'-prefixed trailing param, which
-	// consumes the remainder of the line (and may contain spaces).
-	for {
+	// consumes the remainder of the line (and may contain spaces). At most
+	// maxParamCount parameters are stored; any further tokens are silently
+	// dropped (they cannot affect command dispatch for any standard message).
+	for len(m.Params) < maxParamCount {
 		line = strings.TrimLeft(line, " ")
 		if line == "" {
 			break
