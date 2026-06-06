@@ -25,6 +25,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/exec/lurk/backlog"
@@ -126,6 +127,34 @@ type Server struct {
 	// store is the durable backlog store used to serve CHATHISTORY queries.
 	// Set via WithStore. If nil, CHATHISTORY returns an empty batch.
 	store *backlog.Store
+
+	// mgr is the upstream session manager. Set via WithManager before Serve.
+	// Used by BOUNCER ADDNETWORK/DELNETWORK to start/stop upstreams at runtime.
+	mgr *Manager
+
+	// cfgPath is the on-disk config path used by ADDNETWORK/CHANGENETWORK/DELNETWORK
+	// to persist mutations. Set via WithConfigPath.
+	cfgPath string
+
+	// cfgMu guards ALL access to cfg.Networks. The bouncer is multi-client: a
+	// phone and a laptop may both sit on the control context, so two concurrent
+	// control sessions can race on cfg.Networks (read in BIND validation and
+	// LISTNETWORKS; mutated by ADD/CHANGE/DELNETWORK). Every read or mutation of
+	// cfg.Networks must hold cfgMu. The locked helpers (snapshotNetworks,
+	// findNetworkByID, addNetwork, changeNetwork, delNetwork) in bouncer.go are
+	// the only places that touch cfg.Networks; blocking I/O (mgr.Add/Remove,
+	// sending replies, broadcasting notify) is always done outside the lock.
+	cfgMu sync.Mutex
+
+	// controlMu guards the controlSessions set.
+	controlMu sync.RWMutex
+	// controlSessions is the set of currently-connected, registered, unbound
+	// (netid==0) sessions that have enabled soju.im/bouncer-networks-notify.
+	// Used to broadcast bouncer-networks-notify on ADD/CHANGE/DEL.
+	//
+	// Phase 6b extension point: keying by netid (0=control) will allow bound
+	// sessions to be tracked here too for per-network broadcast.
+	controlSessions map[*session]struct{}
 }
 
 // WithStore configures the Server to use the given backlog store for
@@ -134,9 +163,68 @@ func (s *Server) WithStore(store *backlog.Store) {
 	s.store = store
 }
 
+// WithManager configures the Server to use mgr for runtime upstream
+// management (BOUNCER ADDNETWORK / DELNETWORK). Must be called before
+// Serve/serveConn.
+func (s *Server) WithManager(mgr *Manager) {
+	s.mgr = mgr
+}
+
+// WithConfigPath sets the on-disk path that BOUNCER ADD/CHANGE/DELNETWORK
+// persist mutations to. Must be called before Serve/serveConn.
+func (s *Server) WithConfigPath(path string) {
+	s.cfgPath = path
+}
+
 // New builds a Server from cfg. cfg must not be nil.
 func New(cfg *Config) *Server {
-	return &Server{cfg: cfg, regTimeout: registrationTimeout}
+	return &Server{
+		cfg:             cfg,
+		regTimeout:      registrationTimeout,
+		controlSessions: make(map[*session]struct{}),
+	}
+}
+
+// registerControlSession adds sess to the control-session registry. Called
+// after registration completes for an unbound session that enabled
+// soju.im/bouncer-networks-notify.
+func (s *Server) registerControlSession(sess *session) {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	s.controlSessions[sess] = struct{}{}
+}
+
+// unregisterControlSession removes sess from the control-session registry.
+// Safe to call even if sess was never registered (e.g. bound sessions).
+func (s *Server) unregisterControlSession(sess *session) {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	delete(s.controlSessions, sess)
+}
+
+// broadcastNetworkNotify sends a bouncer-networks-notify NETWORK message to all
+// control sessions (other than the originator, if any). Only sessions that
+// enabled soju.im/bouncer-networks-notify are in controlSessions (the gate in
+// sendWelcome checks the cap before calling registerControlSession), so no
+// per-session cap check is needed here — and deliberately avoided to prevent
+// a data race on capEnabled across goroutines. origin may be nil.
+func (s *Server) broadcastNetworkNotify(origin *session, msg *irc.Message) {
+	s.controlMu.RLock()
+	sessions := make([]*session, 0, len(s.controlSessions))
+	for sess := range s.controlSessions {
+		if sess != origin {
+			sessions = append(sessions, sess)
+		}
+	}
+	s.controlMu.RUnlock()
+
+	for _, sess := range sessions {
+		if err := sess.send(msg); err != nil {
+			// The session may have disconnected between snapshot and send.
+			// Log only; do not tear down the broadcasting session.
+			log.Printf("server: broadcast notify to session: %v", err)
+		}
+	}
 }
 
 // NewListener starts a TCP listener on addr. If the config's Listen block
@@ -344,6 +432,12 @@ type session struct {
 func (s *session) run() error {
 	s.capEnabled = make(map[string]bool)
 
+	// Deregister from the control-session registry on exit. The defer is placed
+	// before registration (below) so it fires even if registration never
+	// completes — unregisterControlSession is a no-op for sessions that were
+	// never registered.
+	defer s.srv.unregisterControlSession(s)
+
 	for {
 		msg, err := s.conn.ReadMessage()
 		if err != nil {
@@ -374,6 +468,8 @@ func (s *session) dispatch(msg *irc.Message) error {
 		// Graceful client quit: close the connection and let run() return.
 		_ = s.conn.Close()
 		return nil
+	case "BOUNCER":
+		return s.handleBOUNCER(msg)
 	case "CHATHISTORY":
 		if !s.registered() {
 			return s.sendNumeric(irc.ERR_NOTREGISTERED, s.clientNick(), "You have not registered")
@@ -385,8 +481,7 @@ func (s *session) dispatch(msg *irc.Message) error {
 		if !s.registered() {
 			return s.sendNumeric(irc.ERR_NOTREGISTERED, s.clientNick(), "You have not registered")
 		}
-		// Post-registration unknown commands: silently ignore for Phase 1.
-		// (Phase 6+ adds BOUNCER verb dispatch, CHATHISTORY, etc.)
+		// Post-registration unknown commands: silently ignore.
 		return nil
 	}
 }
@@ -864,14 +959,18 @@ func (s *session) sendWelcome() error {
 		return err
 	}
 
-	// 005 RPL_ISUPPORT — first token line.
-	// BOUNCER_NETID=0 is the stub value; Phase 6 fills in the real netid.
+	// 005 RPL_ISUPPORT — emit the real BOUNCER_NETID.
+	// Per the soju.im/bouncer-networks spec and §7.5 amendment (b):
+	//   - A bound session (netid > 0) emits BOUNCER_NETID=<netid>.
+	//   - An unbound/control session emits BOUNCER_NETID= (empty value) to
+	//     signal to the client that it is on the control/master context.
+	bounceNetIDToken := fmt.Sprintf("BOUNCER_NETID=%d", s.netid)
 	isupportTokens := []string{
 		"CASEMAPPING=ascii",
 		"CHANTYPES=#",
 		"PREFIX=(qaohv)~&@%+",
 		"NETWORK=lurkd",
-		"BOUNCER_NETID=0",
+		bounceNetIDToken,
 		"are supported by this server",
 	}
 	if err := s.send(&irc.Message{
@@ -880,6 +979,13 @@ func (s *session) sendWelcome() error {
 		Params:  append([]string{nick}, isupportTokens...),
 	}); err != nil {
 		return err
+	}
+
+	// Register as a control session if unbound and the notify cap is enabled.
+	// This must happen after welcome so the client is fully registered before
+	// we might deliver a notify to it.
+	if s.netid == 0 && s.capEnabled["soju.im/bouncer-networks-notify"] {
+		s.srv.registerControlSession(s)
 	}
 
 	// ERR_NOMOTD — lurkd has no MOTD; this is the standard way to signal that.

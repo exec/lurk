@@ -90,9 +90,17 @@ type dialer func(ctx context.Context) (net.Conn, error)
 // Lifecycle: build with NewManager, then call Start (which dials all upstreams),
 // then close with Close when the daemon shuts down. Start and Close must each be
 // called at most once. The zero value is not usable; always use NewManager.
+//
+// Concurrency: Start writes upstreams once before any goroutine reads it.
+// After Start returns, Add and Remove may be called concurrently from any
+// goroutine (e.g. from a session handler). All access to the upstreams slice
+// is guarded by mu (a sync.RWMutex): readers use RLock, writers use Lock.
 type Manager struct {
-	cfg       *Config
-	sink      Sink
+	cfg  *Config
+	sink Sink
+
+	// mu guards the upstreams slice for concurrent Add/Remove and UpstreamState.
+	mu        sync.RWMutex
 	upstreams []*upstreamEntry
 
 	// dialers, when non-nil, maps a network NetID to a custom dialer function.
@@ -155,7 +163,9 @@ func (m *Manager) Start(ctx context.Context) error {
 		})
 
 		entry := &upstreamEntry{netid: nw.NetID, client: cc, state: st}
+		m.mu.Lock()
 		m.upstreams = append(m.upstreams, entry)
+		m.mu.Unlock()
 
 		if err := cc.Connect(ctx); err != nil {
 			// Clean up all upstreams (including the one that failed) and return.
@@ -178,7 +188,11 @@ func (m *Manager) Start(ctx context.Context) error {
 // stop (client.Close is idempotent and non-blocking by design).
 func (m *Manager) Close() {
 	m.closeOnce.Do(func() {
-		for _, e := range m.upstreams {
+		m.mu.RLock()
+		entries := make([]*upstreamEntry, len(m.upstreams))
+		copy(entries, m.upstreams)
+		m.mu.RUnlock()
+		for _, e := range entries {
 			_ = e.client.Close()
 		}
 	})
@@ -187,12 +201,77 @@ func (m *Manager) Close() {
 // UpstreamState returns the current ConnStatus for the network with the given
 // netid, and false if no such network is managed.
 func (m *Manager) UpstreamState(netid int) (ConnStatus, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, e := range m.upstreams {
 		if e.netid == netid {
 			return e.state.get(), true
 		}
 	}
 	return 0, false
+}
+
+// Add builds, connects, and registers a new upstream for nw. It appends the
+// entry to the managed set and returns when the upstream has completed
+// registration. ctx governs the connect+registration phase only.
+//
+// Add is safe to call concurrently with UpstreamState, Close, and other Add
+// or Remove calls; the upstreams slice is guarded by m.mu.
+//
+// The caller must have added nw to Config.Networks before calling Add so that
+// buildClient can find any injected Dialer for nw.NetID.
+func (m *Manager) Add(ctx context.Context, nw *Network) error {
+	cc := m.buildClient(nw)
+	st := &connState{status: ConnConnected}
+
+	cc.HandleReconnecting(func(_ *client.Event) { st.set(ConnReconnecting) })
+	cc.HandleReconnected(func(_ *client.Event) { st.set(ConnConnected) })
+
+	netid := nw.NetID
+	sink := m.sink
+	cc.OnAny(func(ev *client.Event) { sink.Ingest(netid, ev) })
+
+	entry := &upstreamEntry{netid: nw.NetID, client: cc, state: st}
+	m.mu.Lock()
+	m.upstreams = append(m.upstreams, entry)
+	m.mu.Unlock()
+
+	if err := cc.Connect(ctx); err != nil {
+		// Remove the entry we just added so the slice stays consistent.
+		m.mu.Lock()
+		for i, e := range m.upstreams {
+			if e == entry {
+				m.upstreams = append(m.upstreams[:i], m.upstreams[i+1:]...)
+				break
+			}
+		}
+		m.mu.Unlock()
+		return fmt.Errorf("upstream: Add: connect network %d (%s): %w", nw.NetID, nw.Name, err)
+	}
+
+	if len(nw.Channels) > 0 {
+		_ = cc.Join(nw.Channels...)
+	}
+	return nil
+}
+
+// Remove stops and removes the upstream with the given netid. If no such
+// upstream is managed, Remove is a no-op. It is safe to call concurrently.
+func (m *Manager) Remove(netid int) {
+	m.mu.Lock()
+	var found *upstreamEntry
+	for i, e := range m.upstreams {
+		if e.netid == netid {
+			found = e
+			m.upstreams = append(m.upstreams[:i], m.upstreams[i+1:]...)
+			break
+		}
+	}
+	m.mu.Unlock()
+
+	if found != nil {
+		_ = found.client.Close()
+	}
 }
 
 // buildClient constructs a client.Client from a Network config entry, wiring in
