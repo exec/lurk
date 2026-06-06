@@ -193,9 +193,11 @@ func menuEntries(m model) []menuEntry {
 	if b.Kind != BufferChannel || m.cli == nil {
 		return entries
 	}
-	// The Status… sub-menu (grant/revoke modes, kick, ban) is offered only when we
-	// hold operator privileges and can actually act.
-	if strings.ContainsAny(m.cli.SelfPrefixes(b.Title), "~&@") {
+	// The Status… sub-menu (grant/revoke modes, kick, ban) is offered when we hold
+	// any operator-class prefix and can actually act — founder/admin/op/half-op.
+	// Half-ops (%) can kick and set lower modes, so they get it too; plain voice
+	// (+) cannot manage others and is excluded.
+	if strings.ContainsAny(m.cli.SelfPrefixes(b.Title), "~&@%") {
 		entries = append(entries, menuEntry{label: "Status…", act: miStatus})
 	}
 	return entries
