@@ -4,10 +4,9 @@
 // place. It is headless and standard-library only — unlike cmd/lurk it imports no
 // charm UI libraries (enforced by server.TestNoCharmDependency).
 //
-// This is the Phase 0 skeleton: flag parsing and config load only. The TLS
-// listener, the server-side registration/CAP/SASL responder, the upstream session
-// manager, the backlog store, and the soju.im/bouncer-networks surface land in
-// later phases (see docs/LURKD-DESIGN.md).
+// Phase 1: the plain TCP accept loop is wired. TLS wrapping, SASL auth, session
+// multiplexing, backlog store, and soju.im/bouncer-networks land in later phases
+// (see docs/LURKD-DESIGN.md §8).
 package main
 
 import (
@@ -28,7 +27,7 @@ func main() {
 
 	var (
 		configPath  = flag.String("config", os.Getenv("LURKD_CONFIG"), "config-file path (env LURKD_CONFIG); default ~/.config/lurkd/config.json")
-		listenAddr  = flag.String("listen", "", "TLS listen address, overriding the config (e.g. :6697)")
+		listenAddr  = flag.String("listen", "", "listen address, overriding the config (e.g. :6667)")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -47,9 +46,24 @@ func main() {
 	}
 
 	log.Printf("loaded %d network(s) from %s", len(cfg.Networks), path)
-	log.Printf("listen address %q", cfg.Listen.Addr)
-	// Phase 0 skeleton: the listener and session multiplexer are not wired up yet.
-	log.Printf("the TLS listener is not implemented yet (Phase 1) — nothing to serve, exiting")
+
+	addr := cfg.Listen.Addr
+	if addr == "" {
+		log.Printf("no listen address configured and -listen not given; exiting")
+		log.Printf("hint: set listen.addr in %s or pass -listen :6667", path)
+		os.Exit(1)
+	}
+
+	ln, err := server.NewListener(addr)
+	if err != nil {
+		log.Fatalf("listen: %v", err)
+	}
+	log.Printf("listening on %s (plain TCP; TLS enforcement is Phase 2)", ln.Addr())
+
+	s := server.New(cfg)
+	if err := s.Serve(ln); err != nil {
+		log.Fatalf("serve: %v", err)
+	}
 }
 
 // loadConfig loads from an explicit path when one is given (flag or LURKD_CONFIG),
