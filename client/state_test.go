@@ -273,6 +273,115 @@ func TestStateOpenBatchCap(t *testing.T) {
 	}
 }
 
+// TestStateChannelCap verifies that addChannel stops creating new channelState
+// entries once maxChannels is reached, returns nil for new names at the cap,
+// and that the cap never causes a panic in the callers that dereference the
+// result (setTopicText, setTopicMeta, applyNamReply). Existing channels remain
+// accessible and fully functional after the cap is reached.
+func TestStateChannelCap(t *testing.T) {
+	s := newTestState("CHANTYPES=#", "CASEMAPPING=ascii")
+	s.self = "me"
+
+	// Fill the channel map to the cap.
+	for i := 0; i < maxChannels; i++ {
+		cs := s.addChannel("#ch" + strconv.Itoa(i))
+		if cs == nil {
+			t.Fatalf("addChannel returned nil before cap (%d < %d)", i, maxChannels)
+		}
+	}
+	if len(s.channels) != maxChannels {
+		t.Fatalf("channel count = %d, want %d", len(s.channels), maxChannels)
+	}
+
+	// A new channel past the cap must return nil — no panic, no growth.
+	if cs := s.addChannel("#overflow"); cs != nil {
+		t.Errorf("addChannel past cap returned non-nil")
+	}
+	if len(s.channels) != maxChannels {
+		t.Errorf("channel count grew past cap: %d", len(s.channels))
+	}
+
+	// Callers that dereference addChannel's result must not panic at the cap.
+	s.setTopicText("#overflow", "hostile topic")                     // must not panic
+	s.setTopicMeta("#overflow", "x", parseUnixSeconds("1700000000")) // must not panic
+	s.applyNamReply("#overflow", "nick1 nick2")                      // must not panic
+
+	// An already-tracked channel is returned unchanged (not blocked by the cap).
+	cs := s.addChannel("#ch0")
+	if cs == nil {
+		t.Error("addChannel for existing channel returned nil at cap")
+	}
+}
+
+// TestStateMembersPerChannelCap verifies that addMember stops adding new members
+// once maxMembersPerChannel is reached, that updates to already-tracked members
+// still apply, and that the namesSeen map in applyNamReply does not grow beyond
+// the cap (so endNames reconciliation stays consistent).
+func TestStateMembersPerChannelCap(t *testing.T) {
+	s := newTestState("CHANTYPES=#", "CASEMAPPING=ascii", "PREFIX=(ov)@+")
+	s.self = "me"
+	s.addChannel("#big")
+	cs := s.channel("#big")
+
+	// Add members up to the cap.
+	for i := 0; i < maxMembersPerChannel; i++ {
+		cs.addMember(s.foldKey, "nick"+strconv.Itoa(i), "", "", "")
+	}
+	if len(cs.members) != maxMembersPerChannel {
+		t.Fatalf("member count = %d, want %d", len(cs.members), maxMembersPerChannel)
+	}
+
+	// A new member past the cap must be silently dropped, not panicking or growing.
+	cs.addMember(s.foldKey, "overflow", "", "", "")
+	if len(cs.members) > maxMembersPerChannel {
+		t.Errorf("member count grew past cap: %d", len(cs.members))
+	}
+	if _, exists := cs.members[s.foldKey("overflow")]; exists {
+		t.Error("overflow member was admitted past the cap")
+	}
+
+	// An update to an already-tracked member at the cap still applies.
+	cs.addMember(s.foldKey, "nick0", "@", "user", "host")
+	m, ok := cs.members[s.foldKey("nick0")]
+	if !ok {
+		t.Fatal("nick0 missing after update at cap")
+	}
+	if m.Prefixes != "@" || m.User != "user" || m.Host != "host" {
+		t.Errorf("update to nick0 at cap = %+v, want prefixes @ user user host host", m)
+	}
+
+	// applyNamReply respects the cap: namesSeen must not exceed members.
+	s2 := newTestState("CHANTYPES=#", "CASEMAPPING=ascii")
+	s2.self = "me"
+	s2.addChannel("#flood")
+	cs2 := s2.channel("#flood")
+	// Pre-fill to cap via addMember directly.
+	for i := 0; i < maxMembersPerChannel; i++ {
+		cs2.addMember(s2.foldKey, "u"+strconv.Itoa(i), "", "", "")
+	}
+	// Now run applyNamReply with extra nicks; namesSeen must not grow past members.
+	var extra []string
+	for i := 0; i < 10; i++ {
+		extra = append(extra, "extra"+strconv.Itoa(i))
+	}
+	s2.applyNamReply("#flood", strconv.Itoa(0)+" "+joinNicks(extra))
+	if cs2.namesSeen != nil && len(cs2.namesSeen) > len(cs2.members) {
+		t.Errorf("namesSeen (%d) grew beyond members (%d) at cap", len(cs2.namesSeen), len(cs2.members))
+	}
+}
+
+// joinNicks joins a slice of nick strings with spaces for use in a NAMES line.
+func joinNicks(nicks []string) string {
+	result := ""
+	for i, n := range nicks {
+		if i > 0 {
+			result += " "
+		}
+		result += n
+	}
+	return result
+}
+
 func TestStateRenameAndRemoveEverywhere(t *testing.T) {
 	s := newTestState("PREFIX=(ov)@+", "CHANTYPES=#")
 	s.self = "me"

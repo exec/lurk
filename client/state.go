@@ -266,11 +266,25 @@ func (s *state) channel(name string) *channelState {
 	return s.channels[s.foldKey(name)]
 }
 
+// maxChannels caps the number of concurrently-tracked channels. A client
+// joined to tens of thousands of channels is not plausible; the cap bounds
+// memory against a hostile or buggy server that sends an unbounded stream of
+// self-JOIN messages. 4096 is generous for any legitimate usage.
+const maxChannels = 4096
+
 // addChannel records that the client has joined name, creating empty tracking.
+// If name is already tracked it is returned unchanged. If it is new and the
+// channel cap has been reached, nil is returned and no state is created, so an
+// adversarial server cannot exhaust memory by flooding self-JOIN messages.
+// Callers that only care about updating an existing channel should use channel()
+// instead; addChannel is for the self-join path that must create state.
 func (s *state) addChannel(name string) *channelState {
 	key := s.foldKey(name)
 	ch, ok := s.channels[key]
 	if !ok {
+		if len(s.channels) >= maxChannels {
+			return nil // defensive cap: do not create state past the limit
+		}
 		ch = &channelState{name: name, members: make(map[string]*Member)}
 		s.channels[key] = ch
 	}
@@ -282,10 +296,20 @@ func (s *state) removeChannel(name string) {
 	delete(s.channels, s.foldKey(name))
 }
 
+// maxMembersPerChannel caps the number of members tracked per channel. The
+// largest IRC channels on well-known networks (e.g. Libera #linux) typically
+// have a few thousand members; 65536 is a generous bound that covers any real
+// channel while preventing a hostile server from exhausting heap memory by
+// sending an unbounded NAMES burst or a flood of JOIN messages into a channel
+// the client is tracking.
+const maxMembersPerChannel = 65536
+
 // addMember adds or updates a member of a channel with the given prefixes and,
 // when known, ident/host. Empty user/host arguments leave any previously learned
 // values intact, and re-seeing an existing member preserves metadata learned
 // elsewhere (e.g. an Account from extended-join survives a later NAMES sweep).
+// New members past maxMembersPerChannel are silently dropped (updates to already-
+// tracked members still apply regardless of the cap, so existing state is accurate).
 func (cs *channelState) addMember(fold func(string) string, nick, prefixes, user, host string) {
 	key := fold(nick)
 	if m, ok := cs.members[key]; ok {
@@ -300,6 +324,9 @@ func (cs *channelState) addMember(fold func(string) string, nick, prefixes, user
 			m.Host = host
 		}
 		return
+	}
+	if len(cs.members) >= maxMembersPerChannel {
+		return // defensive cap: do not track new members past the limit
 	}
 	cs.members[key] = &Member{Nick: nick, Prefixes: prefixes, User: user, Host: host}
 }
@@ -337,6 +364,9 @@ func (cs *channelState) renameMember(fold func(string) string, oldNick, newNick 
 // learned elsewhere (e.g. an Account from extended-join survives the sweep).
 func (s *state) applyNamReply(channel, names string) {
 	cs := s.addChannel(channel)
+	if cs == nil {
+		return // channel cap reached; skip this burst
+	}
 	if cs.namesSeen == nil {
 		cs.namesSeen = make(map[string]bool)
 	}
@@ -351,7 +381,13 @@ func (s *state) applyNamReply(channel, names string) {
 			continue
 		}
 		cs.addMember(s.foldKey, nick, prefixes, user, host)
-		cs.namesSeen[s.foldKey(nick)] = true
+		// Only record in namesSeen when the member was actually admitted: if
+		// addMember dropped the nick due to the per-channel member cap, the
+		// corresponding namesSeen entry must also be skipped so endNames does
+		// not retain a ghost key that could prevent a later admission.
+		if _, admitted := cs.members[s.foldKey(nick)]; admitted {
+			cs.namesSeen[s.foldKey(nick)] = true
+		}
 	}
 }
 
@@ -501,6 +537,9 @@ func (s *state) isChannel(target string) bool {
 // for a channel the client is watching). setBy/at are left to setTopicMeta.
 func (s *state) setTopicText(channel, topic string) {
 	cs := s.addChannel(channel)
+	if cs == nil {
+		return // channel cap reached; skip
+	}
 	cs.topic = topic
 }
 
@@ -508,6 +547,9 @@ func (s *state) setTopicText(channel, topic string) {
 // 333, or from a live TOPIC command's source/time).
 func (s *state) setTopicMeta(channel, setBy string, at time.Time) {
 	cs := s.addChannel(channel)
+	if cs == nil {
+		return // channel cap reached; skip
+	}
 	cs.topicSetBy = setBy
 	cs.topicAt = at
 }
