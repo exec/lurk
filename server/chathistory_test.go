@@ -481,6 +481,73 @@ func TestCHTargets(t *testing.T) {
 	}
 }
 
+// TestCHTargetsRejectsNonTimestampRefs verifies that CHATHISTORY TARGETS
+// rejects msgid= and "*" refs with FAIL INVALID_PARAMS. The spec requires
+// timestamp= refs for TARGETS; silently accepting a msgid= or "*" ref would
+// use a zero time as the bound, widening the effective query window.
+func TestCHTargetsRejectsNonTimestampRefs(t *testing.T) {
+	dir := t.TempDir()
+	store, err := backlog.NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Close)
+
+	ts := "timestamp=2024-01-01T00:00:00Z"
+
+	cases := []struct {
+		name    string
+		fromRef string
+		toRef   string
+	}{
+		{"both msgid", "msgid=abc", "msgid=def"},
+		{"from msgid", "msgid=abc", ts},
+		{"to msgid", ts, "msgid=def"},
+		{"from star", "*", ts},
+		{"to star", ts, "*"},
+		{"both star", "*", "*"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := pipeServerCHBound(t, store, 1)
+			doRegister(t, c)
+
+			sendLine(t, c, fmt.Sprintf("CHATHISTORY TARGETS %s %s 5", tc.fromRef, tc.toRef))
+			msg := recvMsg(t, c)
+			assertMsg(t, msg, irc.FAIL, "CHATHISTORY")
+			if !strings.Contains(msg.Param(1), "INVALID_PARAMS") {
+				t.Errorf("TARGETS non-timestamp ref: FAIL code = %q, want INVALID_PARAMS", msg.Param(1))
+			}
+		})
+	}
+}
+
+// TestCHTargetsTimestampRefsAccepted verifies that CHATHISTORY TARGETS with
+// valid timestamp= refs on both sides is not rejected by the new guard.
+func TestCHTargetsTimestampRefsAccepted(t *testing.T) {
+	base := time.Date(2024, 6, 1, 10, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	store, err := backlog.NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Close)
+
+	c := pipeServerCHBound(t, store, 1)
+	doRegister(t, c)
+
+	from := fmt.Sprintf("timestamp=%s", base.Add(-time.Minute).UTC().Format(time.RFC3339))
+	to := fmt.Sprintf("timestamp=%s", base.Add(time.Hour).UTC().Format(time.RFC3339))
+	sendLine(t, c, fmt.Sprintf("CHATHISTORY TARGETS %s %s 10", from, to))
+	batch := recvBatch(t, c)
+
+	// Empty store → empty batch, but it must be a well-formed BATCH, not a FAIL.
+	if batch.btype != "chathistory" {
+		t.Errorf("TARGETS timestamp refs: BATCH type = %q, want chathistory", batch.btype)
+	}
+}
+
 // ─── Limit ceiling tests ──────────────────────────────────────────────────────
 
 // TestCHLimitCeiling verifies that a client-supplied limit above maxCHATHISTORYLimit

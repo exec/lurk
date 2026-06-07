@@ -221,6 +221,15 @@ func (s *session) handleCHTargets(msg *irc.Message) error {
 	if err != nil {
 		return s.sendFail("CHATHISTORY", "INVALID_PARAMS", fmt.Sprintf("CHATHISTORY: invalid toRef: %v", err))
 	}
+
+	// The IRCv3 draft/chathistory spec requires timestamp= refs for TARGETS.
+	// A msgid= or "*" ref is a client error: reject it rather than silently
+	// treating it as a zero time, which would widen the effective query window
+	// in an unpredictable way and violates the spec.
+	if !fromRef.IsTime || !toRef.IsTime {
+		return s.sendFail("CHATHISTORY", "INVALID_PARAMS", "CHATHISTORY TARGETS: fromRef and toRef must be timestamp= refs")
+	}
+
 	limit, ok := parseLimit(limitStr)
 	if !ok {
 		return s.sendFail("CHATHISTORY", "INVALID_PARAMS", "CHATHISTORY: limit must be a positive integer")
@@ -230,14 +239,9 @@ func (s *session) handleCHTargets(msg *irc.Message) error {
 		return s.sendFail("CHATHISTORY", "NO_BOUND_NETWORK", "No network bound to this session")
 	}
 
-	// Resolve time bounds from refs.
-	var fromTime, toTime time.Time
-	if fromRef.IsTime {
-		fromTime = fromRef.Time
-	}
-	if toRef.IsTime {
-		toTime = toRef.Time
-	}
+	// Both refs are guaranteed IsTime by the check above.
+	fromTime := fromRef.Time
+	toTime := toRef.Time
 
 	var targets []backlog.TargetInfo
 	if s.srv.store != nil {
