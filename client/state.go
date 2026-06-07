@@ -311,7 +311,14 @@ const maxMembersPerChannel = 65536
 // New members past maxMembersPerChannel are silently dropped (updates to already-
 // tracked members still apply regardless of the cap, so existing state is accurate).
 func (cs *channelState) addMember(fold func(string) string, nick, prefixes, user, host string) {
-	key := fold(nick)
+	cs.addMemberKeyed(fold(nick), nick, prefixes, user, host)
+}
+
+// addMemberKeyed is the key-already-folded variant of addMember. It is called
+// from applyNamReply, which folds each nick exactly once and reuses the key for
+// the namesSeen record — avoiding two redundant Fold calls per member across the
+// NAMES burst. All other addMember callers continue to use addMember directly.
+func (cs *channelState) addMemberKeyed(key, nick, prefixes, user, host string) {
 	if m, ok := cs.members[key]; ok {
 		m.Nick = nick
 		if prefixes != "" {
@@ -360,8 +367,13 @@ func (cs *channelState) renameMember(fold func(string) string, oldNick, newNick 
 // and the closing 366 (see endNames) prunes any tracked member NOT named in the
 // burst. This reconciles departures — a re-issued NAMES (e.g. after a netsplit)
 // drops members who left rather than leaving them as ghosts. Members named in the
-// burst are added/updated immediately via addMember, which preserves metadata
+// burst are added/updated immediately via addMemberKeyed, which preserves metadata
 // learned elsewhere (e.g. an Account from extended-join survives the sweep).
+//
+// Performance note: each nick is case-folded exactly once (the key is reused for
+// both addMemberKeyed and the namesSeen record), and the names string is walked
+// with a manual index scan rather than strings.Fields to avoid the per-line
+// []string allocation — both matter on a 100k-member NAMES burst.
 func (s *state) applyNamReply(channel, names string) {
 	cs := s.addChannel(channel)
 	if cs == nil {
@@ -371,7 +383,23 @@ func (s *state) applyNamReply(channel, names string) {
 		cs.namesSeen = make(map[string]bool)
 	}
 	symbols := s.feat.PrefixSymbols()
-	for _, raw := range strings.Fields(names) {
+	// Walk names without allocating a []string (strings.Fields would do so).
+	for i := 0; i < len(names); {
+		// Skip leading spaces between tokens.
+		for i < len(names) && names[i] == ' ' {
+			i++
+		}
+		if i >= len(names) {
+			break
+		}
+		// Find the end of this token.
+		j := i
+		for j < len(names) && names[j] != ' ' {
+			j++
+		}
+		raw := names[i:j]
+		i = j
+
 		mask, prefixes := splitPrefixes(raw, symbols)
 		// Under the userhost-in-names capability, each entry is a full
 		// nick!user@host mask rather than a bare nick. A nick can contain
@@ -380,13 +408,16 @@ func (s *state) applyNamReply(channel, names string) {
 		if nick == "" {
 			continue
 		}
-		cs.addMember(s.foldKey, nick, prefixes, user, host)
+		// Fold exactly once and reuse the key for both the member map and the
+		// namesSeen admission record, avoiding two redundant Fold calls per nick.
+		key := s.foldKey(nick)
+		cs.addMemberKeyed(key, nick, prefixes, user, host)
 		// Only record in namesSeen when the member was actually admitted: if
-		// addMember dropped the nick due to the per-channel member cap, the
+		// addMemberKeyed dropped the nick due to the per-channel member cap, the
 		// corresponding namesSeen entry must also be skipped so endNames does
 		// not retain a ghost key that could prevent a later admission.
-		if _, admitted := cs.members[s.foldKey(nick)]; admitted {
-			cs.namesSeen[s.foldKey(nick)] = true
+		if _, admitted := cs.members[key]; admitted {
+			cs.namesSeen[key] = true
 		}
 	}
 }

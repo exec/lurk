@@ -481,6 +481,35 @@ func TestDispatchByCommandAndAny(t *testing.T) {
 	}
 }
 
+// BenchmarkApplyNamReplyLarge measures the cost of processing a large NAMES burst
+// (200 uppercase-heavy nicks per line, as produced by a large-channel server).
+// With the pre-fold optimisation each nick is Fold'd exactly once; previously it
+// was Fold'd three times (addMember + admission check + namesSeen write), causing
+// ~2× the allocations for any nick containing an uppercase letter.
+//
+// Run with:
+//
+//	go test -run=^$ -bench=BenchmarkApplyNamReplyLarge -benchmem ./client/
+func BenchmarkApplyNamReplyLarge(b *testing.B) {
+	const nicksPerLine = 200
+	// Build a names string with uppercase-heavy nicks ("NickNNNN") so Fold must
+	// allocate on every call that is not short-circuited by the fast path.
+	nicks := make([]string, nicksPerLine)
+	for i := range nicks {
+		nicks[i] = "@Nick" + strconv.Itoa(i)
+	}
+	names := joinNicks(nicks)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		s := newTestState("PREFIX=(ov)@+", "CHANTYPES=#", "CASEMAPPING=rfc1459")
+		s.self = "me"
+		s.applyNamReply("#bench", names)
+		s.endNames("#bench")
+	}
+}
+
 func TestConfigDefaults(t *testing.T) {
 	cfg := Config{Nick: "bob"}.withDefaults()
 	if cfg.User != "bob" || cfg.Realname != "bob" {
