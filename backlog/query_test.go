@@ -9,6 +9,7 @@ package backlog
 
 import (
 	"fmt"
+	"os"
 	"testing"
 	"time"
 )
@@ -484,5 +485,101 @@ func TestQueryZeroLimitReturnsNil(t *testing.T) {
 	}
 	if got := s.Targets(1, time.Time{}, time.Now(), 0); len(got) != 0 {
 		t.Errorf("Targets(limit=0): expected nil, got %d", len(got))
+	}
+}
+
+// ─── Targets ring-path regression ─────────────────────────────────────────
+
+// TestTargetsUsesRing verifies that Targets reads the newest-entry time from
+// the in-memory ring rather than opening the JSONL file. It populates a store,
+// then removes the JSONL files from disk and calls Targets — if Targets fell
+// back to disk for ring-populated targets it would find nothing and return an
+// empty result.
+func TestTargetsUsesRing(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(s.Close)
+
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	targets := []string{"#alpha", "#beta", "#gamma"}
+	for i, tgt := range targets {
+		ev := makeEventWithTime("PRIVMSG", "n!u@h", []string{tgt, "msg"},
+			base.Add(time.Duration(i)*time.Minute))
+		s.Ingest(1, ev)
+	}
+
+	// Remove the JSONL files so a disk-based Targets would find nothing.
+	for _, tgt := range targets {
+		safe := safeName(tgt)
+		path := jsonlPath(dir, 1, safe)
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("remove JSONL %s: %v", path, err)
+		}
+	}
+
+	// Targets must still return all three targets (sourced from the ring).
+	results := s.Targets(1, time.Time{}, base.Add(time.Hour), 10)
+	if len(results) != len(targets) {
+		t.Fatalf("Targets after JSONL removal: got %d, want %d (ring path broken)",
+			len(results), len(targets))
+	}
+	// Ordering: #gamma (t+2m) > #beta (t+1m) > #alpha (t+0m) — but clamping
+	// may have set all three to ~now; just assert all three targets appear.
+	seen := make(map[string]bool, len(results))
+	for _, r := range results {
+		seen[r.Target] = true
+	}
+	for _, tgt := range targets {
+		if !seen[safeName(tgt)] {
+			t.Errorf("target %q missing from ring-sourced Targets result", tgt)
+		}
+	}
+}
+
+// ─── Targets benchmark ────────────────────────────────────────────────────
+
+// BenchmarkTargetsRing measures Targets with a fully-populated in-memory ring
+// (the common case after steady-state operation). With the ring-first fix,
+// Targets must complete without any disk I/O: all latest times come from
+// b.ring[len-1] and no os.Open calls are issued.
+//
+// Run with:
+//
+//	go test -bench=BenchmarkTargetsRing -benchmem ./backlog/
+func BenchmarkTargetsRing(b *testing.B) {
+	const (
+		nTargets = 500 // DefaultMaxTargetsPerNet
+		nEntries = 100 // entries per ring (well below DefaultRingSize=500)
+	)
+
+	dir := b.TempDir()
+	s, err := NewStore(dir, WithMaxTargetsPerNet(nTargets))
+	if err != nil {
+		b.Fatalf("NewStore: %v", err)
+	}
+	defer s.Close()
+
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	for i := 0; i < nTargets; i++ {
+		tgt := fmt.Sprintf("#chan%04d", i)
+		for j := 0; j < nEntries; j++ {
+			ev := makeEventWithTime("PRIVMSG", "n!u@h", []string{tgt, "msg"},
+				base.Add(time.Duration(i*nEntries+j)*time.Second))
+			s.Ingest(1, ev)
+		}
+	}
+
+	toTime := base.Add(24 * time.Hour)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		results := s.Targets(1, time.Time{}, toTime, nTargets)
+		if len(results) == 0 {
+			b.Fatal("Targets returned no results")
+		}
 	}
 }

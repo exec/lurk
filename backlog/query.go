@@ -17,11 +17,15 @@
 //
 // All boundary queries (Before/After/Around/Between) scan the on-disk JSONL
 // file rather than the in-memory ring. The ring is only a fast path for Latest
-// (newest-N without a reference). JSONL files are bounded by DefaultRingSize
-// entries per target (drop-oldest during Ingest), so a full scan is O(ring-cap)
-// lines — small by design. A per-call hard cap (maxScanLines) guards against
-// pathologically large files that could accumulate before the ring cap takes
-// full effect on an older store.
+// (newest-N without a reference) and Targets (newest-entry time per target).
+// JSONL files are bounded by DefaultRingSize entries per target (drop-oldest
+// during Ingest), so a full scan is O(ring-cap) lines — small by design. A
+// per-call hard cap (maxScanLines) guards against pathologically large files
+// that could accumulate before the ring cap takes full effect on an older store.
+//
+// Targets reads the ring's newest entry (ring[len-1]) under b.mu — O(1) per
+// target, no disk I/O — and falls back to a JSONL scan only for targets whose
+// ring is empty (unusual; would happen if rehydration found no valid entries).
 package backlog
 
 import (
@@ -92,7 +96,7 @@ func ParseRef(s string) (Ref, error) {
 type TargetInfo struct {
 	// Target is the normalised routing target (as stored in Entry.Target).
 	Target string
-	// Latest is the Time of the most recent entry in that target's JSONL.
+	// Latest is the Time of the most recent entry for this target.
 	Latest time.Time
 }
 
@@ -251,6 +255,11 @@ func (s *Store) Between(netid int, target string, fromRef, toRef Ref, limit int)
 // fromTime and toTime are the wall-clock times from the timestamp= refs in the
 // CHATHISTORY TARGETS command. A zero fromTime is treated as the beginning of
 // time; a zero toTime is treated as now.
+//
+// The newest-entry time is read from the in-memory ring (O(1) per target, no
+// disk I/O) because ring[len-1] is always the most recent ingested entry.
+// Only when a target's ring is empty (e.g. rehydration loaded zero valid
+// entries) does this method fall back to a full JSONL scan for that target.
 func (s *Store) Targets(netid int, fromTime, toTime time.Time, limit int) []TargetInfo {
 	if limit <= 0 {
 		return nil
@@ -259,28 +268,49 @@ func (s *Store) Targets(netid int, fromTime, toTime time.Time, limit int) []Targ
 		toTime = time.Now()
 	}
 
-	// Enumerate known bufferKeys for this netid.
+	// Snapshot (key → *bufferEntry) for this netid under s.mu, then release
+	// the global lock before doing any per-entry work. This keeps the critical
+	// section short even when there are hundreds of targets.
 	s.mu.Lock()
-	var keys []bufferKey
-	for k := range s.buffers {
+	type kbPair struct {
+		k bufferKey
+		b *bufferEntry
+	}
+	pairs := make([]kbPair, 0, len(s.buffers))
+	for k, b := range s.buffers {
 		if k.netid == netid {
-			keys = append(keys, k)
+			pairs = append(pairs, kbPair{k, b})
 		}
 	}
 	s.mu.Unlock()
 
 	var results []TargetInfo
-	for _, k := range keys {
-		// Read the JSONL to find the latest entry time.
-		path := jsonlPath(s.dir, k.netid, k.target)
-		entries, err := readJSONLFull(path)
-		if err != nil || len(entries) == 0 {
-			continue
+	for _, p := range pairs {
+		// Fast path: read the newest entry's time from the in-memory ring.
+		// ring is newest-last, so ring[len-1] is the most recent entry.
+		// No disk I/O required for any target that has at least one ring entry.
+		var latest time.Time
+		p.b.mu.Lock()
+		if n := len(p.b.ring); n > 0 {
+			latest = p.b.ring[n-1].Time
 		}
-		latest := entries[len(entries)-1].Time
+		p.b.mu.Unlock()
+
 		if latest.IsZero() {
-			continue
+			// Slow path: ring is empty (target was rehydrated but had no valid
+			// JSONL entries, or the ring was trimmed to zero). Fall back to a
+			// full JSONL scan to find the latest time.
+			path := jsonlPath(s.dir, p.k.netid, p.k.target)
+			entries, err := readJSONLFull(path)
+			if err != nil || len(entries) == 0 {
+				continue
+			}
+			latest = entries[len(entries)-1].Time
+			if latest.IsZero() {
+				continue
+			}
 		}
+
 		// Apply time window filter.
 		if !fromTime.IsZero() && latest.Before(fromTime) {
 			continue
@@ -288,7 +318,7 @@ func (s *Store) Targets(netid int, fromTime, toTime time.Time, limit int) []Targ
 		if latest.After(toTime) {
 			continue
 		}
-		results = append(results, TargetInfo{Target: k.target, Latest: latest})
+		results = append(results, TargetInfo{Target: p.k.target, Latest: latest})
 	}
 
 	// Sort by latest descending.
