@@ -764,3 +764,77 @@ func TestAddDuplicateNetIDReplacesOld(t *testing.T) {
 		t.Errorf("upstream entry count for netid=%d = %d after duplicate Add, want 1", netid, count)
 	}
 }
+
+// ─── TestUpstreamRegistrationTimeout ─────────────────────────────────────────
+
+// TestUpstreamRegistrationTimeout verifies that scheduleRetry bounds each
+// Connect attempt with Manager.registrationTimeout: a hostile upstream that
+// accepts the TCP connection but never sends RPL_WELCOME must not park the
+// retry goroutine forever, which would block Manager.Close via retryWg.Wait.
+//
+// Without the fix, Manager.Close would never return in this test (the retry
+// goroutine blocks on <-c.registered with context.Background()). With the fix,
+// the registration attempt times out after registrationTimeout and Close
+// returns promptly.
+func TestUpstreamRegistrationTimeout(t *testing.T) {
+	const (
+		nickD  = "nickd"
+		netidD = 20
+	)
+
+	var down atomic.Bool
+	testDone := make(chan struct{})
+	t.Cleanup(func() { close(testDone) })
+	t.Cleanup(func() { down.Store(true) })
+
+	// dialD: accepts the connection but sends nothing — simulates a hostile
+	// upstream that stalls registration indefinitely.
+	dialD := pipeDialer(t, &down, func(su *scriptedUpstream) {
+		// Intentionally do nothing: do not complete the registration handshake.
+		// Hold the connection open until the test ends (or we are closed first).
+		<-testDone
+	})
+
+	cfg := &Config{
+		Networks: []Network{
+			{NetID: netidD, Name: "StallNet", Addr: "stall.local:6667",
+				Identity: Identity{Nick: nickD, User: "u", Realname: "r"}},
+		},
+	}
+	sink := &collectSink{}
+	mgr := NewManager(cfg, sink)
+	mgr.dialers = map[int]dialer{netidD: dialD}
+	// Very short backoff so the retry fires quickly.
+	mgr.retryBase = 20 * time.Millisecond
+	mgr.retryMax = 50 * time.Millisecond
+	// Short registration timeout — far shorter than the test budget — so the
+	// stalling upstream is detected fast without making the test slow.
+	mgr.registrationTimeout = 100 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Start must return non-nil (initial connect fails: no registration sent).
+	// The network is marked ConnDisconnected and a retry goroutine is spawned.
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Manager.Start: %v", err)
+	}
+
+	// Let one retry cycle fire (backoff + registration timeout).
+	time.Sleep(mgr.retryBase + mgr.registrationTimeout + 50*time.Millisecond)
+
+	// Close must return well within 1 s. Without the fix it blocks forever
+	// because the retry goroutine is parked on <-c.registered.
+	closeDone := make(chan struct{})
+	go func() {
+		mgr.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+		// Good: Close returned promptly.
+	case <-time.After(2 * time.Second):
+		t.Error("Manager.Close did not return within 2 s — retry goroutine leaked (registration timeout not applied?)")
+	}
+}

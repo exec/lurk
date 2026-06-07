@@ -74,6 +74,16 @@ const (
 const initialRetryBase = 2 * time.Second
 const initialRetryMax = 120 * time.Second
 
+// defaultRegistrationTimeout is the maximum time a single registration attempt
+// (TCP handshake + CAP/SASL + RPL_WELCOME) is allowed to take inside
+// scheduleRetry. A hostile upstream that accepts the connection but stalls
+// registration (sends no 001, or holds CAP open indefinitely) would otherwise
+// park the retry goroutine forever, blocking Manager.Close via retryWg.Wait().
+// The default is generous (60 s) so a legitimately slow server is not
+// prematurely rejected, while still bounding Close to a finite wait.
+// Tests override this via Manager.registrationTimeout.
+const defaultRegistrationTimeout = 60 * time.Second
+
 // connState tracks one upstream's connection status. It is guarded by its own
 // mutex because the reconnect handlers run on the client's goroutine while
 // callers may read the state concurrently.
@@ -151,6 +161,11 @@ type Manager struct {
 	// initialRetryMax). Set by tests for fast retry.
 	retryBase time.Duration
 	retryMax  time.Duration
+
+	// registrationTimeout caps how long a single Connect call inside
+	// scheduleRetry may block waiting for RPL_WELCOME. A zero value means use
+	// defaultRegistrationTimeout. Set by tests for fast failure.
+	registrationTimeout time.Duration
 }
 
 // NewManager builds a Manager for the given config and sink. It does not
@@ -231,7 +246,10 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // scheduleRetry starts a background goroutine that retries the initial connect
 // for the given network entry until it succeeds or Close is called. The retry
-// uses capped exponential back-off (retryBase → retryMax). The goroutine is
+// uses capped exponential back-off (retryBase → retryMax). Each Connect
+// attempt is bounded by registrationTimeout so a hostile upstream that accepts
+// the TCP connection but stalls registration cannot park this goroutine (and
+// thereby block Manager.Close via retryWg.Wait) forever. The goroutine is
 // tracked in retryWg so Close can join it.
 func (m *Manager) scheduleRetry(nw *Network, entry *upstreamEntry) {
 	base := m.retryBase
@@ -241,6 +259,10 @@ func (m *Manager) scheduleRetry(nw *Network, entry *upstreamEntry) {
 	max := m.retryMax
 	if max <= 0 {
 		max = initialRetryMax
+	}
+	regTimeout := m.registrationTimeout
+	if regTimeout <= 0 {
+		regTimeout = defaultRegistrationTimeout
 	}
 
 	m.retryWg.Add(1)
@@ -273,9 +295,13 @@ func (m *Manager) scheduleRetry(nw *Network, entry *upstreamEntry) {
 
 			log.Printf("upstream: retrying initial connect for network %d (%s)", nw.NetID, nw.Name)
 
-			// Use a background context: the startup context may already be done.
-			// The retry is intentionally unbounded in time.
-			if err := entry.client.Connect(context.Background()); err != nil {
+			// Bound the registration attempt: a hostile upstream that accepts
+			// the connection but never sends RPL_WELCOME would otherwise park
+			// this goroutine indefinitely, blocking Manager.Close.
+			regCtx, cancel := context.WithTimeout(context.Background(), regTimeout)
+			err := entry.client.Connect(regCtx)
+			cancel()
+			if err != nil {
 				log.Printf("upstream: retry connect network %d (%s): %v", nw.NetID, nw.Name, err)
 				continue
 			}
