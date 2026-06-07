@@ -651,6 +651,101 @@ func TestADDNETWORKLimit(t *testing.T) {
 	}
 }
 
+// ─── Port-validation tests ────────────────────────────────────────────────────
+
+// TestADDNETWORKInvalidPort verifies that BOUNCER ADDNETWORK with a non-numeric
+// or out-of-range port returns FAIL INVALID_PARAMS rather than propagating a
+// malformed addr to the dialer (which would produce an opaque dial error).
+func TestADDNETWORKInvalidPort(t *testing.T) {
+	cases := []struct {
+		name      string
+		attrLine  string
+		wantFail  bool
+		wantValid bool // true when we expect success (valid port)
+	}{
+		{"non-numeric port", "name=Net;host=irc.example.com;port=abc", true, false},
+		{"zero port", "name=Net;host=irc.example.com;port=0", true, false},
+		{"negative port", "name=Net;host=irc.example.com;port=-1", true, false},
+		{"port too large", "name=Net;host=irc.example.com;port=99999", true, false},
+		{"port 65536 OOB", "name=Net;host=irc.example.com;port=65536", true, false},
+		{"valid port 6697", "name=Net;host=irc.example.com;port=6697", false, true},
+		{"valid port 1", "name=Net;host=irc.example.com;port=1", false, true},
+		{"valid port 65535", "name=Net;host=irc.example.com;port=65535", false, true},
+		{"no port given", "name=Net;host=irc.example.com", false, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{}
+			c := pipeServerWith(t, cfg, false)
+			doRegisterSimple(t, c, "porttest")
+
+			sendLine(t, c, "BOUNCER ADDNETWORK "+tc.attrLine)
+			msg := recvMsg(t, c)
+
+			if tc.wantFail {
+				if msg.Command != irc.FAIL {
+					t.Fatalf("expected FAIL for %q, got %s", tc.attrLine, msg.Command)
+				}
+				if msg.Param(1) != "INVALID_PARAMS" {
+					t.Errorf("FAIL code = %q, want INVALID_PARAMS", msg.Param(1))
+				}
+				// Config must be unchanged — no network was added.
+				if len(cfg.Networks) != 0 {
+					t.Errorf("network count = %d after invalid-port FAIL, want 0", len(cfg.Networks))
+				}
+			}
+			if tc.wantValid {
+				if msg.Command == irc.FAIL {
+					t.Errorf("unexpected FAIL for valid port case %q: code=%s desc=%s",
+						tc.attrLine, msg.Param(1), msg.Param(2))
+				}
+			}
+		})
+	}
+}
+
+// TestCHANGENETWORKInvalidPort verifies that BOUNCER CHANGENETWORK with an
+// invalid port returns FAIL INVALID_PARAMS without modifying the stored network.
+func TestCHANGENETWORKInvalidPort(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	cfg := &Config{
+		Networks: []Network{
+			{NetID: 11, Name: "Stable", Addr: "irc.example.com:6697",
+				Identity: Identity{Nick: "n", User: "u", Realname: "r"}},
+		},
+	}
+	if err := Save(cfg, cfgPath); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	srv := New(cfg)
+	srv.WithConfigPath(cfgPath)
+
+	c1, _ := pipeServerSharedSrv(t, srv)
+	doRegisterSimple(t, c1, "chgport")
+
+	// Send a CHANGENETWORK with a non-numeric port.
+	sendLine(t, c1, "BOUNCER CHANGENETWORK 11 port=notaport")
+	msg := recvMsg(t, c1)
+	if msg.Command != irc.FAIL {
+		t.Fatalf("expected FAIL for invalid port in CHANGENETWORK, got %s", msg.Command)
+	}
+	if msg.Param(1) != "INVALID_PARAMS" {
+		t.Errorf("FAIL code = %q, want INVALID_PARAMS", msg.Param(1))
+	}
+
+	// The network addr must be unchanged.
+	nets := srv.snapshotNetworks()
+	if len(nets) != 1 {
+		t.Fatalf("network count = %d, want 1", len(nets))
+	}
+	if nets[0].Addr != "irc.example.com:6697" {
+		t.Errorf("addr changed to %q after invalid-port CHANGENETWORK, want unchanged", nets[0].Addr)
+	}
+}
+
 // ─── DELNETWORK tests ─────────────────────────────────────────────────────────
 
 // TestDELNETWORK verifies that DELNETWORK removes the network from config,

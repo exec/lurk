@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/exec/lurk/bouncer"
@@ -169,6 +170,12 @@ func (s *session) handleBouncerADDNETWORK(cmd bouncer.Cmd) error {
 		return err
 	}
 
+	// Validate the port attr before touching config or disk.
+	if err := validateAttrsPort(cmd.Attrs); err != nil {
+		return s.sendFail("BOUNCER", "INVALID_PARAMS",
+			fmt.Sprintf("ADDNETWORK: %v", err))
+	}
+
 	// Allocate the netid, append, and persist under cfgMu. addNetwork returns a
 	// COPY of the appended network, safe to use after the lock is released.
 	added, err := s.srv.addNetwork(attrsToNetwork(cmd.Attrs))
@@ -220,6 +227,12 @@ func (s *session) handleBouncerADDNETWORK(cmd bouncer.Cmd) error {
 func (s *session) handleBouncerCHANGENETWORK(cmd bouncer.Cmd) error {
 	if err := s.gateManagementOp("CHANGENETWORK"); err != nil {
 		return err
+	}
+
+	// Validate the port attr before touching config or disk.
+	if err := validateAttrsPort(cmd.Attrs); err != nil {
+		return s.sendFail("BOUNCER", "INVALID_PARAMS",
+			fmt.Sprintf("CHANGENETWORK: %v", err))
 	}
 
 	// Find, apply, and persist under cfgMu. changeNetwork returns both the
@@ -525,6 +538,23 @@ func attrsToNetwork(attrs map[string]string) Network {
 		nw.Addr = host
 	}
 	return nw
+}
+
+// validateAttrsPort checks the "port" attribute, if present, and returns an
+// error when the value is not a decimal integer in [1, 65535]. An absent or
+// empty port ("") is accepted — the caller merges host-only addrs without a
+// port. A non-numeric or out-of-range value would be silently concatenated into
+// Network.Addr and then cause a runtime dial error instead of a clean FAIL.
+func validateAttrsPort(attrs map[string]string) error {
+	p, ok := attrs["port"]
+	if !ok || p == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("invalid port %q: must be an integer in [1, 65535]", p)
+	}
+	return nil
 }
 
 // applyAttrsToNetwork applies only the attrs present in the map to an existing
