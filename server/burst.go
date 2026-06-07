@@ -57,17 +57,18 @@ const detachedAwayMessage = ":detached"
 // maxBurstChannels is the maximum number of channels included in a single
 // state burst (the synthetic JOIN+topic+NAMES sequence sent to an attaching
 // client). Without this cap, a hostile upstream that has forced lurkd to
-// join thousands of channels would cause sendStateBurst to emit O(n) messages
-// to every attaching client — an unbounded amplification.
+// join a large number of channels would cause sendStateBurst to emit O(n)
+// writes to every attaching client — a write-amplification attack.
 //
-// This is a secondary defence at the burst serialisation layer. The primary
-// defence is the client-state channel cap (task #3), which limits how many
-// channels the upstream client.Client can be in. If that cap is in place, the
-// upstream slice will never exceed it; this guard protects against that cap
-// being absent or bypassed, and makes the invariant explicit here.
+// This is a secondary, burst-specific defence. The primary defence is the
+// client-state channel cap in client.Client (maxUpstreamChannels), which
+// bounds how many channels the upstream can push lurkd into in the first
+// place. This cap is set deliberately tighter: it bounds attach-time write
+// amplification independently of whatever the client-state cap allows.
 //
-// 500 matches DefaultMaxTargetsPerNet in the backlog store, keeping the three
-// related caps consistent.
+// Trade-off: a user legitimately in more than 500 channels (rare in practice)
+// will receive a truncated state burst on attach — an acceptable degradation,
+// since the missing channels' backlogs are still available via CHATHISTORY.
 const maxBurstChannels = 500
 
 // sendStateBurst emits the synthetic channel-state burst to sess.
