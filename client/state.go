@@ -356,6 +356,19 @@ func (cs *channelState) renameMember(fold func(string) string, oldNick, newNick 
 	cs.members[fold(newNick)] = m
 }
 
+// renameMemberKeyed is the key-already-folded variant of renameMember. It is
+// called from renameEverywhere, which pre-folds old/new keys once and reuses
+// them across every channel — avoiding two redundant Fold calls per channel.
+func (cs *channelState) renameMemberKeyed(oldKey, newKey, newNick string) {
+	m, ok := cs.members[oldKey]
+	if !ok {
+		return
+	}
+	delete(cs.members, oldKey)
+	m.Nick = newNick
+	cs.members[newKey] = m
+}
+
 // applyNamReply parses a RPL_NAMREPLY (353) line and records its members in the
 // named channel. The names parameter is a space-separated list of nicks, each
 // optionally prefixed with one or more membership symbols (e.g. "@+nick" under
@@ -608,11 +621,15 @@ func (s *state) channelNames() []string {
 
 // renameEverywhere renames a member across every channel they're in (for a NICK
 // change), and updates self if the change is the client's own nick.
-func (s *state) renameEverywhere(oldNick, newNick string) {
+// oldKey and newKey must already be folded with s.foldKey (matching the
+// updateMemberEverywhere contract); newNick is the display-case form stored on
+// Member.Nick. Callers fold once and pass the keys through so the per-channel
+// fold inside renameMember is not repeated for every channel in s.channels.
+func (s *state) renameEverywhere(oldKey, newKey, newNick string) {
 	for _, cs := range s.channels {
-		cs.renameMember(s.foldKey, oldNick, newNick)
+		cs.renameMemberKeyed(oldKey, newKey, newNick)
 	}
-	if s.foldKey(oldNick) == s.foldKey(s.self) {
+	if oldKey == s.foldKey(s.self) {
 		s.self = newNick
 	}
 }
@@ -633,9 +650,11 @@ func (s *state) channelsWith(nick string) []string {
 }
 
 // removeEverywhere drops a member from every channel (for a QUIT).
-func (s *state) removeEverywhere(nick string) {
+// foldedKey must already be folded with s.foldKey; the caller folds once so the
+// per-channel fold inside removeMember is not repeated for every channel.
+func (s *state) removeEverywhere(foldedKey string) {
 	for _, cs := range s.channels {
-		cs.removeMember(s.foldKey, nick)
+		delete(cs.members, foldedKey)
 	}
 }
 

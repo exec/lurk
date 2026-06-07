@@ -388,7 +388,7 @@ func TestStateRenameAndRemoveEverywhere(t *testing.T) {
 	s.applyNamReply("#a", "@bob")
 	s.applyNamReply("#b", "+bob")
 
-	s.renameEverywhere("bob", "rob")
+	s.renameEverywhere(s.foldKey("bob"), s.foldKey("rob"), "rob")
 	for _, ch := range []string{"#a", "#b"} {
 		cs := s.channel(ch)
 		if _, gone := cs.members[s.foldKey("bob")]; gone {
@@ -399,7 +399,7 @@ func TestStateRenameAndRemoveEverywhere(t *testing.T) {
 		}
 	}
 
-	s.removeEverywhere("rob")
+	s.removeEverywhere(s.foldKey("rob"))
 	for _, ch := range []string{"#a", "#b"} {
 		if _, here := s.channel(ch).members[s.foldKey("rob")]; here {
 			t.Errorf("%s still has rob after removeEverywhere", ch)
@@ -410,7 +410,7 @@ func TestStateRenameAndRemoveEverywhere(t *testing.T) {
 func TestStateSelfNickFollowsOwnNickChange(t *testing.T) {
 	s := newTestState("CHANTYPES=#")
 	s.self = "me"
-	s.renameEverywhere("me", "newme")
+	s.renameEverywhere(s.foldKey("me"), s.foldKey("newme"), "newme")
 	if s.self != "newme" {
 		t.Errorf("self = %q, want newme after own NICK change", s.self)
 	}
@@ -507,6 +507,40 @@ func BenchmarkApplyNamReplyLarge(b *testing.B) {
 		s.self = "me"
 		s.applyNamReply("#bench", names)
 		s.endNames("#bench")
+	}
+}
+
+// BenchmarkQuitLargeChannelSet measures the cost of removeEverywhere across a
+// large channel set — the dominant work for a QUIT from a nick shared with us in
+// many channels. With the pre-folded-key optimisation the nick is Fold'd exactly
+// once by the caller; previously removeEverywhere called removeMember on each
+// channel which re-folded the nick per channel (O(C) redundant folds).
+//
+// Run with:
+//
+//	go test -run=^$ -bench=BenchmarkQuitLargeChannelSet -benchmem ./client/
+func BenchmarkQuitLargeChannelSet(b *testing.B) {
+	const channelCount = 500
+	// Build state with channelCount channels, each containing a shared nick.
+	buildState := func() (*state, string) {
+		s := newTestState("PREFIX=(ov)@+", "CHANTYPES=#", "CASEMAPPING=rfc1459")
+		s.self = "me"
+		for i := range channelCount {
+			ch := "#chan" + strconv.Itoa(i)
+			s.addChannel(ch)
+			s.channel(ch).addMember(s.foldKey, "SharedNick", "", "", "")
+		}
+		return s, "SharedNick"
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		b.StopTimer()
+		s, nick := buildState()
+		b.StartTimer()
+		key := s.foldKey(nick)
+		s.removeEverywhere(key)
 	}
 }
 

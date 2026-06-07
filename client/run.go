@@ -276,7 +276,7 @@ func (c *Client) track(m *irc.Message) {
 	case irc.PART:
 		c.trackPart(m)
 	case irc.QUIT:
-		c.st.removeEverywhere(m.Nick())
+		c.st.removeEverywhere(c.st.foldKey(m.Nick()))
 	case irc.KICK:
 		c.trackKick(m)
 	case irc.NICK:
@@ -458,7 +458,8 @@ func (c *Client) trackKick(m *irc.Message) {
 
 // trackNick records a NICK change across every channel the user shares.
 func (c *Client) trackNick(m *irc.Message) {
-	c.st.renameEverywhere(m.Nick(), m.Param(0))
+	oldNick, newNick := m.Nick(), m.Param(0)
+	c.st.renameEverywhere(c.st.foldKey(oldNick), c.st.foldKey(newNick), newNick)
 }
 
 // trackAccount records an account-notify ":nick!user@host ACCOUNT <account>"
