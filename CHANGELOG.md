@@ -6,6 +6,32 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **`/list` on a large network no longer drops channels.** A big `LIST` reply
+  flooded the event stream faster than the TUI could drain it, overrunning the
+  drop-oldest buffer — producing "lost N events (UI fell behind)" lines and an
+  incomplete channel list. The TUI now batch-drains the event stream (one render
+  per burst), so a large `/list` (or any flood) is applied completely.
+- The **nicklist updates live again** on JOIN/PART/NICK in the channel you are
+  viewing — a sort cache could otherwise serve a stale member list until you
+  switched buffers.
+
+### Changed
+- **Large-server efficiency pass** — a sweep of hot-path optimizations, each
+  benchmark-backed, so the client and daemon stay responsive on big servers:
+  - **TUI:** refresh the active viewport once per event-batch instead of once per
+    event (was O(batch × scrollback) per update); compute the nicklist sort once
+    per update instead of 3–5× per keystroke in a large channel.
+  - **Client:** in a large NAMES burst, fold each nick once (was 3×) and split the
+    line without a per-line allocation; QUIT/NICK pass a pre-folded key through
+    the channel update (was O(channels) redundant folds per message).
+  - **conn:** coalesce a queued write burst into a single flush (one syscall per
+    burst instead of per message).
+  - **lurkd:** `CHATHISTORY TARGETS` reads each target's newest time from the
+    in-memory ring instead of scanning every JSONL file (a reattach was a disk-I/O
+    storm); the backlog ring is now circular — O(1) eviction instead of an
+    O(ring-size) memmove per stored message.
+
 ## [1.2.3] - 2026-06-07
 
 ### Security
