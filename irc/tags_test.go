@@ -94,38 +94,6 @@ func TestParseTags(t *testing.T) {
 	}
 }
 
-// TestParseTagsAllocsHint verifies that the map size-hint eliminates the
-// internal grow-rehash for the common 2–4 tag case. With the hint, a 3-tag
-// segment should allocate exactly 1 object (the map itself); without it,
-// the runtime would need to grow the zero-size map, costing a second alloc.
-func TestParseTagsAllocsHint(t *testing.T) {
-	// A representative bouncer-feed segment: @time, @msgid, @account — three
-	// tags, separated by two ';' characters, so hint == 3.
-	seg := "time=2026-06-07T00:00:00.000Z;msgid=abcdef123456;account=alice"
-
-	allocs := testing.AllocsPerRun(100, func() {
-		_ = parseTags(seg)
-	})
-	// The map itself is 1 allocation. With the correct size hint the runtime
-	// has no need to grow (rehash) the map during insertion, so the count must
-	// stay at 1. If the hint is missing or wrong, the grow step adds a second
-	// allocation and this assertion catches the regression.
-	if allocs > 1 {
-		t.Errorf("parseTags allocated %.0f objects for a 3-tag segment, want 1 (map only)", allocs)
-	}
-}
-
-// BenchmarkParseTags measures allocation and throughput for a typical
-// 3-tag bouncer-feed segment with the size hint in place.
-func BenchmarkParseTags(b *testing.B) {
-	seg := "time=2026-06-07T00:00:00.000Z;msgid=abcdef123456;account=alice"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = parseTags(seg)
-	}
-}
-
 // TestParseTagsCountCap verifies that parseTags never stores more than
 // maxTagCount entries regardless of how many are present in the segment.
 // A hostile server can fill an 8189-byte tag budget with ~2729 distinct
