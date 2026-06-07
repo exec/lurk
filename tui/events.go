@@ -346,6 +346,24 @@ func routeMembership(m model, net *network, ev client.Event) model {
 	}
 
 	target := ev.Param(0)
+
+	// Our own JOIN opens the channel's buffer (and its sidebar entry) right away,
+	// so an autojoined or /join'd channel appears immediately rather than only
+	// once the first message or history line arrives — previously a quiet joined
+	// channel was tracked (members/NAMES) but never shown in the sidebar. Bounded
+	// by maxAutoBuffers so a hostile server that force-joins us into endless
+	// channels can't grow the buffer list without limit.
+	if ev.Command() == irc.JOIN && isChannel(target) && equalFold(ev.Nick(), net.nick()) {
+		b := m.netBuffer(net, target)
+		if b == nil && len(m.buffers) < maxAutoBuffers {
+			b, _ = m.ensureBufferIn(net, target, BufferChannel)
+		}
+		if b == nil {
+			b = m.serverBuffer(net)
+		}
+		return appendLine(m, b, ev)
+	}
+
 	if isChannel(target) {
 		if b := m.netBuffer(net, target); b != nil {
 			return appendLine(m, b, ev)
