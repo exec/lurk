@@ -431,6 +431,87 @@ func TestCHBetween(t *testing.T) {
 	}
 }
 
+// TestCHBetweenReversedTimestampBounds verifies that CHATHISTORY BETWEEN rejects
+// reversed (toRef <= fromRef) timestamp bounds with FAIL INVALID_PARAMS rather
+// than silently triggering a full JSONL scan that returns an empty batch.
+func TestCHBetweenReversedTimestampBounds(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := backlog.NewStore(dir)
+	t.Cleanup(store.Close)
+
+	t0 := "timestamp=2024-01-01T00:00:00Z"
+	t1 := "timestamp=2024-06-01T00:00:00Z"
+
+	cases := []struct {
+		name string
+		from string
+		to   string
+	}{
+		{"reversed", t1, t0}, // toRef strictly before fromRef
+		{"equal", t0, t0},    // toRef == fromRef
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := pipeServerCHBound(t, store, 1)
+			doRegister(t, c)
+
+			sendLine(t, c, fmt.Sprintf("CHATHISTORY BETWEEN #foo %s %s 5", tc.from, tc.to))
+			msg := recvMsg(t, c)
+			assertMsg(t, msg, irc.FAIL, "CHATHISTORY")
+			if !strings.Contains(msg.Param(1), "INVALID_PARAMS") {
+				t.Errorf("BETWEEN %s: FAIL code = %q, want INVALID_PARAMS", tc.name, msg.Param(1))
+			}
+		})
+	}
+}
+
+// TestCHBetweenValidTimestampBounds verifies that BETWEEN with a valid
+// (fromRef strictly before toRef) timestamp window is not rejected.
+func TestCHBetweenValidTimestampBounds(t *testing.T) {
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	store, stored := makeTestStore(t, 1, "#bvalid",
+		[]string{"v0", "v1", "v2", "v3"}, base)
+
+	c := pipeServerCHBound(t, store, 1)
+	doRegister(t, c)
+
+	// Use timestamp refs that bracket v1 and v2 (from strictly before v1's time,
+	// to strictly after v2's time but before v3's time).
+	from := fmt.Sprintf("timestamp=%s", stored[0].Time.UTC().Format(time.RFC3339))
+	to := fmt.Sprintf("timestamp=%s", stored[3].Time.UTC().Format(time.RFC3339))
+	sendLine(t, c, fmt.Sprintf("CHATHISTORY BETWEEN #bvalid %s %s 10", from, to))
+	batch := recvBatch(t, c)
+
+	// Must get a BATCH, not a FAIL.
+	if batch.btype != "chathistory" {
+		t.Errorf("valid BETWEEN: BATCH type = %q, want chathistory", batch.btype)
+	}
+}
+
+// TestCHBetweenMsgIDRefsUnaffected verifies that the reversed-bounds guard
+// does not affect msgid= refs (we cannot compare msgids for ordering).
+func TestCHBetweenMsgIDRefsUnaffected(t *testing.T) {
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	store, stored := makeTestStore(t, 1, "#bmsgid",
+		[]string{"m0", "m1", "m2", "m3"}, base)
+
+	c := pipeServerCHBound(t, store, 1)
+	doRegister(t, c)
+
+	// Supply msgid refs in "reversed" logical order — guard must not fire;
+	// the store handles these by returning an empty result.
+	from := "msgid=" + stored[3].MsgID
+	to := "msgid=" + stored[0].MsgID
+	sendLine(t, c, fmt.Sprintf("CHATHISTORY BETWEEN #bmsgid %s %s 10", from, to))
+	batch := recvBatch(t, c)
+
+	// No FAIL — the response must be a BATCH (empty result is fine).
+	if batch.btype != "chathistory" {
+		t.Errorf("msgid BETWEEN: expected BATCH response, got BATCH type %q", batch.btype)
+	}
+}
+
 // ─── CHATHISTORY TARGETS tests ────────────────────────────────────────────────
 
 // TestCHTargets verifies CHATHISTORY TARGETS returns target info in a BATCH.

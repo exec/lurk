@@ -185,6 +185,15 @@ func (s *session) handleCHBetween(msg *irc.Message) error {
 	if err != nil {
 		return s.sendFail("CHATHISTORY", "INVALID_PARAMS", fmt.Sprintf("CHATHISTORY: invalid toRef: %v", err))
 	}
+
+	// When both refs are timestamps we can validate the window before touching
+	// the store. A toRef that is at or before fromRef produces an empty result
+	// by definition, but still forces a full JSONL scan (up to maxScanLines).
+	// Reject it up-front to close the cheap-request IO/CPU amplifier.
+	if fromRef.IsTime && toRef.IsTime && !fromRef.Time.Before(toRef.Time) {
+		return s.sendFail("CHATHISTORY", "INVALID_PARAMS", "CHATHISTORY BETWEEN: fromRef must be strictly before toRef")
+	}
+
 	limit, ok := parseLimit(limitStr)
 	if !ok {
 		return s.sendFail("CHATHISTORY", "INVALID_PARAMS", "CHATHISTORY: limit must be a positive integer")
