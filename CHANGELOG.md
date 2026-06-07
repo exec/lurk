@@ -6,6 +6,29 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Security
+- **Hardened lurkd against a hostile or flapping upstream IRC server** — the
+  daemon's connection *out* to the real networks, defense-in-depth on top of the
+  client-layer bounds each upstream already inherits:
+  - **Manager resilience:** bound the upstream registration retry with a timeout
+    (a stalling upstream could otherwise wedge `Manager.Close()` forever — a
+    clean-shutdown DoS); reset the reconnect backoff on a successful reconnect
+    (a flapping upstream no longer plateaus at the 30 s maximum); and drain a
+    removed upstream before returning, so a late event can't land in the backlog
+    under a reused netid.
+  - **Fanout amplification:** the per-session relay send is now non-blocking
+    (drop + log on a full queue), so one slow or stuck client can no longer stall
+    the upstream goroutine and freeze fan-out to every attached session; skip the
+    live fan-out entirely when no client is attached; and suppress `KILL`/`ERROR`
+    from the upstream→client relay — a hostile upstream `KILL`ing lurkd's nick was
+    relayed verbatim and disconnected every attached client.
+  - **Ingest trust:** clamp a hostile upstream's forged `@time` to a sane window
+    at ingestion (it could otherwise skew CHATHISTORY ordering and the
+    `BEFORE`/`AFTER`/`AROUND`/`BETWEEN`/`TARGETS` windows), and honor the
+    per-target cap during backlog rehydration too.
+  - **State burst:** sanitize the ISUPPORT-derived PREFIX symbols before they
+    reach attached clients in the synthetic NAMES attach-burst.
+
 ## [1.2.2] - 2026-06-06
 
 ### Security
