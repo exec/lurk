@@ -6,6 +6,29 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Security
+- **Hardened the lurkd↔client trust boundary** — defense-in-depth for the
+  bouncer's two trust edges. (The primary recommendation remains to restrict
+  network access to the bouncer; see the new "Network access" section in
+  [`docs/LURKD.md`](docs/LURKD.md).)
+  - **Against a hostile client attacking the bouncer:** gate `BOUNCER BIND` on
+    authentication (closes a pre-auth netid-existence oracle); cap concurrent
+    sessions against goroutine/FD exhaustion; cap configured networks at
+    `BOUNCER ADDNETWORK` (256) against config/disk/FD exhaustion and an O(N²)
+    netid scan; bound BOUNCER attr parsing (≤32 keys, ≤512-byte values); validate
+    `ADDNETWORK`/`CHANGENETWORK` `host:port` (numeric port, well-formed address)
+    before persisting or dialing; and reject malformed `CHATHISTORY` requests —
+    `TARGETS` non-timestamp refs, and `BETWEEN` reversed/equal bounds that forced
+    a full backlog scan for an empty result.
+  - **Against a hostile/compromised bouncer attacking the client:** add
+    `client.ParseBouncerAttrs`, which strips terminal-escape/bidi controls from
+    bouncer-supplied network names and identities before they reach a consumer;
+    the attr key/value caps above also bound a hostile bouncer's `LISTNETWORKS`
+    reply.
+- **`docs/LURKD.md`:** a new **Network access** section recommending loopback
+  binding / firewall restriction as the primary hardening, with the code-level
+  bounds framed as defense-in-depth, not a substitute.
+
 ## [1.2.1] - 2026-06-06
 
 ### Security
