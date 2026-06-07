@@ -45,7 +45,7 @@ just the daemon. See [`PACKAGING.md`](PACKAGING.md) for the full matrix.
 
    ```json
    {
-     "listen": { "addr": ":6697" },
+     "listen": { "addr": "127.0.0.1:6697" },
      "bouncer_auth": {
        "user": "alice",
        "password_hash": ""
@@ -273,6 +273,39 @@ A short tour; the full design is in [`LURKD-DESIGN.md`](LURKD-DESIGN.md).
   - cursors — `~/.local/share/lurkd/cursors/cursors.json`
 
   All credential- and message-bearing files are written `0600`.
+
+---
+
+## Network access
+
+> **Restrict network access first.** The code-level input bounds (registration
+> timeout, SASL authentication, TLS gate) are defence-in-depth for when network
+> restrictions are absent. The single most effective hardening step is to limit
+> who can reach the listener at the network layer.
+
+lurkd is a **single-user** daemon. If you run it on the same machine as your
+IRC client, bind to loopback — no remote access is needed and the attack surface
+shrinks to zero for anyone off the machine:
+
+```json
+"listen": { "addr": "127.0.0.1:6697" }
+```
+
+If you run lurkd on a remote host and connect to it from a laptop or phone:
+
+- **Prefer a firewall rule** that allows only your own IP(s) to reach the listen
+  port (`ufw allow from 203.0.113.42 to any port 6697`, or equivalent). A VPN or
+  SSH tunnel achieves the same isolation without a public port.
+- Avoid binding to `0.0.0.0` / `::` (all interfaces) on an internet-facing host
+  without such a restriction: even with SASL authentication and a strong password,
+  an open port increases the exposure window for future vulnerabilities.
+- If you need a public-facing bouncer accessible from multiple clients, consider
+  running lurkd behind a reverse proxy or within a private network segment.
+
+The listener is **TLS-only**: credentials are never decoded over plaintext. SASL
+authentication is required when `bouncer_auth` is configured. These guarantees
+hold regardless of network topology, but they are not a substitute for limiting
+which hosts can attempt a connection in the first place.
 
 ---
 
