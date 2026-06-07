@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"strconv"
 	"strings"
 
@@ -171,7 +172,7 @@ func (s *session) handleBouncerADDNETWORK(cmd bouncer.Cmd) error {
 	}
 
 	// Validate the port attr before touching config or disk.
-	if err := validateAttrsPort(cmd.Attrs); err != nil {
+	if err := validateAttrsAddr(cmd.Attrs); err != nil {
 		return s.sendFail("BOUNCER", "INVALID_PARAMS",
 			fmt.Sprintf("ADDNETWORK: %v", err))
 	}
@@ -230,7 +231,7 @@ func (s *session) handleBouncerCHANGENETWORK(cmd bouncer.Cmd) error {
 	}
 
 	// Validate the port attr before touching config or disk.
-	if err := validateAttrsPort(cmd.Attrs); err != nil {
+	if err := validateAttrsAddr(cmd.Attrs); err != nil {
 		return s.sendFail("BOUNCER", "INVALID_PARAMS",
 			fmt.Sprintf("CHANGENETWORK: %v", err))
 	}
@@ -540,20 +541,42 @@ func attrsToNetwork(attrs map[string]string) Network {
 	return nw
 }
 
-// validateAttrsPort checks the "port" attribute, if present, and returns an
-// error when the value is not a decimal integer in [1, 65535]. An absent or
-// empty port ("") is accepted — the caller merges host-only addrs without a
-// port. A non-numeric or out-of-range value would be silently concatenated into
-// Network.Addr and then cause a runtime dial error instead of a clean FAIL.
-func validateAttrsPort(attrs map[string]string) error {
-	p, ok := attrs["port"]
-	if !ok || p == "" {
-		return nil
+// validateAttrsAddr validates the host and port attributes from a parsed bouncer
+// attribute map and returns an error when either would produce a malformed
+// Network.Addr. Two checks are applied:
+//
+//  1. Port (if present and non-empty) must be a decimal integer in [1, 65535].
+//     A non-numeric or out-of-range value would be silently concatenated into
+//     Network.Addr and then cause a runtime dial error instead of a clean FAIL.
+//
+//  2. When both host and port are present, the assembled "host:port" string is
+//     validated with net.SplitHostPort. This rejects unbracketed IPv6 literals
+//     (e.g. host=::1 port=6697 assembles "::1:6697" which net.Dial cannot
+//     parse), while correctly accepting bracketed IPv6 (host=[::1]) and normal
+//     hostnames. A host-only addr (no port attr) is not assembled with a colon
+//     and requires no SplitHostPort check.
+func validateAttrsAddr(attrs map[string]string) error {
+	p := attrs["port"]
+	h := attrs["host"]
+
+	// Port numeric check (applies whenever port is supplied).
+	if p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("invalid port %q: must be an integer in [1, 65535]", p)
+		}
 	}
-	n, err := strconv.Atoi(p)
-	if err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("invalid port %q: must be an integer in [1, 65535]", p)
+
+	// Host+port assembly check: only needed when both are present, because
+	// attrsToNetwork/applyAttrsToNetwork only concatenates "host:port" in that
+	// case. A host-only addr (no port) is stored as-is and does not need a
+	// SplitHostPort round-trip.
+	if h != "" && p != "" {
+		if _, _, err := net.SplitHostPort(h + ":" + p); err != nil {
+			return fmt.Errorf("invalid host %q with port %q: %v", h, p, err)
+		}
 	}
+
 	return nil
 }
 

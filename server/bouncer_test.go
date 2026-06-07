@@ -651,18 +651,20 @@ func TestADDNETWORKLimit(t *testing.T) {
 	}
 }
 
-// ─── Port-validation tests ────────────────────────────────────────────────────
+// ─── Addr-validation tests ────────────────────────────────────────────────────
 
-// TestADDNETWORKInvalidPort verifies that BOUNCER ADDNETWORK with a non-numeric
-// or out-of-range port returns FAIL INVALID_PARAMS rather than propagating a
-// malformed addr to the dialer (which would produce an opaque dial error).
+// TestADDNETWORKInvalidAddr verifies that BOUNCER ADDNETWORK with a non-numeric
+// or out-of-range port, or with an unbracketed IPv6 host, returns FAIL
+// INVALID_PARAMS rather than propagating a malformed addr to the dialer (which
+// would produce an opaque dial error instead of a clean client-facing FAIL).
 func TestADDNETWORKInvalidPort(t *testing.T) {
 	cases := []struct {
 		name      string
 		attrLine  string
 		wantFail  bool
-		wantValid bool // true when we expect success (valid port)
+		wantValid bool // true when we expect success (valid addr)
 	}{
+		// ── port validation ──
 		{"non-numeric port", "name=Net;host=irc.example.com;port=abc", true, false},
 		{"zero port", "name=Net;host=irc.example.com;port=0", true, false},
 		{"negative port", "name=Net;host=irc.example.com;port=-1", true, false},
@@ -672,6 +674,13 @@ func TestADDNETWORKInvalidPort(t *testing.T) {
 		{"valid port 1", "name=Net;host=irc.example.com;port=1", false, true},
 		{"valid port 65535", "name=Net;host=irc.example.com;port=65535", false, true},
 		{"no port given", "name=Net;host=irc.example.com", false, true},
+		// ── IPv6 host validation ──
+		// Unbracketed IPv6 + port assembles "::1:6697" which net.Dial cannot parse.
+		{"unbracketed IPv6", "name=Net;host=::1;port=6697", true, false},
+		// Bracketed IPv6 is the correct form and must be accepted.
+		{"bracketed IPv6", "name=Net;host=[::1];port=6697", false, true},
+		// Normal hostname is always fine.
+		{"normal hostname", "name=Net;host=irc.libera.chat;port=6697", false, true},
 	}
 
 	for _, tc := range cases {
@@ -744,6 +753,42 @@ func TestCHANGENETWORKInvalidPort(t *testing.T) {
 	if nets[0].Addr != "irc.example.com:6697" {
 		t.Errorf("addr changed to %q after invalid-port CHANGENETWORK, want unchanged", nets[0].Addr)
 	}
+}
+
+// TestADDNETWORKIPv6Host verifies that BOUNCER ADDNETWORK with an unbracketed
+// IPv6 host returns FAIL INVALID_PARAMS (the assembled "::1:6697" addr cannot
+// be parsed by net.Dial), while a bracketed IPv6 host is accepted.
+func TestADDNETWORKIPv6Host(t *testing.T) {
+	t.Run("unbracketed IPv6 rejected", func(t *testing.T) {
+		cfg := &Config{}
+		c := pipeServerWith(t, cfg, false)
+		doRegisterSimple(t, c, "v6user")
+
+		sendLine(t, c, "BOUNCER ADDNETWORK name=V6Net;host=::1;port=6697")
+		msg := recvMsg(t, c)
+		if msg.Command != irc.FAIL {
+			t.Fatalf("expected FAIL for unbracketed IPv6 host, got %s", msg.Command)
+		}
+		if msg.Param(1) != "INVALID_PARAMS" {
+			t.Errorf("FAIL code = %q, want INVALID_PARAMS", msg.Param(1))
+		}
+		if len(cfg.Networks) != 0 {
+			t.Errorf("network count = %d after IPv6 FAIL, want 0", len(cfg.Networks))
+		}
+	})
+
+	t.Run("bracketed IPv6 accepted", func(t *testing.T) {
+		cfg := &Config{}
+		c := pipeServerWith(t, cfg, false)
+		doRegisterSimple(t, c, "v6ok")
+
+		sendLine(t, c, "BOUNCER ADDNETWORK name=V6OK;host=[::1];port=6697")
+		msg := recvMsg(t, c)
+		if msg.Command == irc.FAIL {
+			t.Errorf("unexpected FAIL for bracketed IPv6: code=%s desc=%s",
+				msg.Param(1), msg.Param(2))
+		}
+	})
 }
 
 // ─── DELNETWORK tests ─────────────────────────────────────────────────────────

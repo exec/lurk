@@ -70,6 +70,9 @@ const maxCapRequests = 256
 // network, and make NextNetID's linear scan increasingly expensive (O(N²) over
 // N successive ADDs). A cap of 256 is far above any realistic single-user
 // configuration and keeps the worst-case config file well under ~200 KiB.
+// Note: configs loaded from disk are not subject to this cap — it applies only
+// at BOUNCER ADDNETWORK time, so an operator can pre-configure more networks
+// via config.json without hitting the per-session limit.
 const maxNetworks = 256
 
 // registrationTimeout is the maximum time a client has to complete the
