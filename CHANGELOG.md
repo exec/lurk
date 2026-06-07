@@ -6,6 +6,13 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **A joined channel now appears in the sidebar immediately.** A channel you
+  autojoin (including a comma-separated `#a,#b` list) or `/join` was tracked
+  (members/NAMES) but not shown in the sidebar until its first message or history
+  line arrived — so a quiet channel could stay invisible. Your own JOIN now opens
+  the channel's buffer right away.
+
 ## [1.2.4] - 2026-06-07
 
 ### Fixed
