@@ -169,6 +169,91 @@ func TestEncodeBouncerAttrs(t *testing.T) {
 	}
 }
 
+// TestParseBouncerAttrs is a pure-unit test for the sanitizing wrapper.
+// It verifies that:
+//   - normal attr values pass through unchanged;
+//   - terminal control bytes (ESC, C1, bidi marks) in attr values are stripped;
+//   - the wire-escape sequences (\s \: \\ \r \n) are still correctly unescaped
+//     (SanitizeTerminal must not be called on the raw wire string before
+//     unescaping, since backslash escapes contain only ASCII-safe bytes).
+func TestParseBouncerAttrs(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		key   string
+		want  string
+	}{
+		{
+			name:  "clean value passes through",
+			input: "name=Libera.Chat",
+			key:   "name",
+			want:  "Libera.Chat",
+		},
+		{
+			name:  "wire-escaped space is unescaped",
+			input: `realname=My\sName`,
+			key:   "realname",
+			want:  "My Name",
+		},
+		{
+			name:  "wire-escaped semicolon is unescaped",
+			input: `name=Net\:Work`,
+			key:   "name",
+			want:  "Net;Work",
+		},
+		{
+			// ESC byte smuggled in a value — SanitizeTerminal strips the ESC (0x1b)
+			// but leaves the remaining ASCII bytes, so "name=\x1b[Ahello" becomes
+			// "[Ahello" (the CSI sequence letter and payload remain, ESC is gone).
+			// This is correct: the threat is the ESC introducer that triggers terminal
+			// parsing; without it the printable bytes are inert.
+			name:  "ESC byte stripped from name",
+			input: "name=\x1b[Ahello",
+			key:   "name",
+			want:  "[Ahello",
+		},
+		{
+			// C1 control in valid UTF-8 encoding (U+009B CSI, encoded as \xc2\x9b).
+			// SanitizeTerminal drops runes in the range 0x80–0x9F.
+			name:  "C1 CSI control stripped (valid UTF-8)",
+			input: "host=\xc2\x9bowned.example.com",
+			key:   "host",
+			want:  "owned.example.com",
+		},
+		{
+			// Trojan-Source bidi override (U+202E RIGHT-TO-LEFT OVERRIDE).
+			name:  "bidi override stripped from realname",
+			input: "realname=alice‮bob",
+			key:   "realname",
+			want:  "alicebob",
+		},
+		{
+			// Empty input returns an empty map without panicking.
+			name:  "empty input",
+			input: "",
+			key:   "name",
+			want:  "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := ParseBouncerAttrs(tt.input)
+			got := m[tt.key]
+			if got != tt.want {
+				t.Errorf("ParseBouncerAttrs(%q)[%q] = %q, want %q", tt.input, tt.key, got, tt.want)
+			}
+			// No value in the map may contain an ESC byte.
+			for k, v := range m {
+				for _, r := range v {
+					if r == 0x1b {
+						t.Errorf("ParseBouncerAttrs(%q): key %q still contains ESC in value %q", tt.input, k, v)
+					}
+				}
+			}
+		})
+	}
+}
+
 // doMinimalReg drives a bare-minimum registration for the bouncer test helpers:
 // CAP LS (no special caps needed), NICK/USER, welcome. This is used by tests
 // that only care about lines sent after registration.

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/exec/lurk/bouncer"
 )
 
 // Bouncer consumer methods — send-side BOUNCER verbs.
@@ -17,8 +19,7 @@ import (
 //	c.On("BOUNCER", func(ev *Event) {
 //	    sub := ev.Param(0) // "NETWORK"
 //	    netid := ev.Param(1)
-//	    attrs := ev.Param(2)
-//	    // parse attrs with the bouncer package if needed
+//	    attrs := ParseBouncerAttrs(ev.Param(2)) // sanitized key→value map
 //	})
 //
 // For LISTNETWORKS the response arrives inside a "soju.im/bouncer-networks"
@@ -78,6 +79,30 @@ func (c *Client) BouncerChangeNetwork(netid int, attrs map[string]string) error 
 // control sessions.
 func (c *Client) BouncerDelNetwork(netid int) error {
 	return c.write("BOUNCER", "DELNETWORK", fmt.Sprintf("%d", netid))
+}
+
+// ParseBouncerAttrs parses the semicolon-delimited attribute string from an
+// inbound BOUNCER NETWORK event param and sanitizes every value through
+// SanitizeTerminal before returning the map.
+//
+// A hostile or compromised bouncer can embed terminal control sequences (ESC,
+// C1 controls, Trojan-Source bidi marks) in attr values such as "name" or
+// "realname". bouncer.UnescapeAttrValue only reverses the five wire-escapes
+// (\\ \: \s \r \n); it does not strip those bytes. ParseBouncerAttrs is the
+// safe consumer-side entry point: call it instead of bouncer.ParseAttrs
+// directly whenever attr values will be displayed or stored in client state.
+//
+// The bouncer package cannot import client (that would reverse the allowed
+// dependency direction), so this wrapper lives here where SanitizeTerminal is
+// already available.
+func ParseBouncerAttrs(s string) map[string]string {
+	m := bouncer.ParseAttrs(s)
+	for k, v := range m {
+		if sanitized := SanitizeTerminal(v); sanitized != v {
+			m[k] = sanitized
+		}
+	}
+	return m
 }
 
 // encodeBouncerAttrs encodes a key→value map into the semicolon-delimited
