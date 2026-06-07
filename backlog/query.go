@@ -23,7 +23,7 @@
 // per-call hard cap (maxScanLines) guards against pathologically large files
 // that could accumulate before the ring cap takes full effect on an older store.
 //
-// Targets reads the ring's newest entry (ring[len-1]) under b.mu — O(1) per
+// Targets reads the ring's newest entry via ringNewest under b.mu — O(1) per
 // target, no disk I/O — and falls back to a JSONL scan only for targets whose
 // ring is empty (unusual; would happen if rehydration found no valid entries).
 package backlog
@@ -256,10 +256,10 @@ func (s *Store) Between(netid int, target string, fromRef, toRef Ref, limit int)
 // CHATHISTORY TARGETS command. A zero fromTime is treated as the beginning of
 // time; a zero toTime is treated as now.
 //
-// The newest-entry time is read from the in-memory ring (O(1) per target, no
-// disk I/O) because ring[len-1] is always the most recent ingested entry.
-// Only when a target's ring is empty (e.g. rehydration loaded zero valid
-// entries) does this method fall back to a full JSONL scan for that target.
+// The newest-entry time is read from the in-memory ring via ringNewest (O(1)
+// per target, no disk I/O). Only when a target's ring is empty (e.g.
+// rehydration loaded zero valid entries) does this method fall back to a full
+// JSONL scan for that target.
 func (s *Store) Targets(netid int, fromTime, toTime time.Time, limit int) []TargetInfo {
 	if limit <= 0 {
 		return nil
@@ -287,12 +287,11 @@ func (s *Store) Targets(netid int, fromTime, toTime time.Time, limit int) []Targ
 	var results []TargetInfo
 	for _, p := range pairs {
 		// Fast path: read the newest entry's time from the in-memory ring.
-		// ring is newest-last, so ring[len-1] is the most recent entry.
-		// No disk I/O required for any target that has at least one ring entry.
+		// ringNewest returns the most recent entry in O(1) with no disk I/O.
 		var latest time.Time
 		p.b.mu.Lock()
-		if n := len(p.b.ring); n > 0 {
-			latest = p.b.ring[n-1].Time
+		if newest, ok := ringNewest(p.b); ok {
+			latest = newest.Time
 		}
 		p.b.mu.Unlock()
 

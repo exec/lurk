@@ -1248,3 +1248,56 @@ func TestOversizedLineDoesNotCrashRehydrate(t *testing.T) {
 	// the oversized line may or may not be recovered depending on the scanner state.
 	// The key invariant is that NewStore returns successfully (no panic, no error).
 }
+
+// ─── Ring benchmarks ──────────────────────────────────────────────────────────
+
+// BenchmarkPushRingFull measures the cost of pushRing when the ring is already
+// at full capacity (the hot path during steady-state operation). With the
+// circular buffer, each push is O(1) — one indexed write plus one index
+// arithmetic step — regardless of ringSize. The old implementation did a full
+// O(ringSize) memmove (copy(b.ring, b.ring[1:])) on every push to a full ring.
+//
+// Run with:
+//
+//	go test -bench=BenchmarkPushRingFull -benchmem ./backlog/
+func BenchmarkPushRingFull(b *testing.B) {
+	const ringSize = 500 // DefaultRingSize
+	be := &bufferEntry{}
+	// Pre-fill the ring to capacity.
+	e := Entry{MsgID: "seed", Command: "PRIVMSG"}
+	for i := 0; i < ringSize; i++ {
+		pushRing(be, e, ringSize)
+	}
+	if be.ringLen != ringSize {
+		b.Fatalf("setup: expected ringLen=%d, got %d", ringSize, be.ringLen)
+	}
+
+	push := Entry{MsgID: "bench", Command: "PRIVMSG"}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		pushRing(be, push, ringSize)
+	}
+}
+
+// BenchmarkRingReadLatest measures ringReadLatest on a full ring with a typical
+// CHATHISTORY LATEST limit (100), exercising the wrap-around path.
+func BenchmarkRingReadLatest(b *testing.B) {
+	const ringSize = 500
+	const limit = 100
+	be := &bufferEntry{}
+	e := Entry{MsgID: "seed", Command: "PRIVMSG"}
+	// Fill past wrap-around: push 750 entries into a 500-slot ring so ringHead > 0.
+	for i := 0; i < 750; i++ {
+		pushRing(be, e, ringSize)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		got := ringReadLatest(be, limit)
+		if len(got) != limit {
+			b.Fatalf("expected %d entries, got %d", limit, len(got))
+		}
+	}
+}

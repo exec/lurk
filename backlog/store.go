@@ -162,11 +162,20 @@ type Entry struct {
 	Lossy bool `json:"lossy,omitempty"`
 }
 
-// bufferEntry holds one (netid, target) in-memory ring and open file handle.
+// bufferEntry holds one (netid, target) circular ring and open file handle.
+//
+// The ring is a fixed-capacity circular buffer allocated once to ringSize
+// slots. ringHead is the index of the oldest valid entry; ringLen is the count
+// of valid entries (0 ≤ ringLen ≤ cap(ring)). The newest entry sits at index
+// (ringHead+ringLen-1) % cap(ring). pushRing is O(1): it writes to the next
+// slot and, when the buffer is full, advances ringHead (evicting the oldest)
+// without copying any existing entries.
 type bufferEntry struct {
-	mu   sync.Mutex
-	ring []Entry  // newest-last; len <= ringSize
-	f    *os.File // nil until first write (or nil after Close)
+	mu       sync.Mutex
+	ring     []Entry  // circular backing slice, len == cap == ringSize once allocated
+	ringHead int      // index of the oldest entry
+	ringLen  int      // number of valid entries currently stored
+	f        *os.File // nil until first write (or nil after Close)
 }
 
 // bufferKey identifies one (netid, safe-target-name) pair.
@@ -394,17 +403,7 @@ func (s *Store) Latest(netid int, target string, limit int) []Entry {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	n := len(b.ring)
-	if n == 0 {
-		return nil
-	}
-	start := n - limit
-	if start < 0 {
-		start = 0
-	}
-	out := make([]Entry, n-start)
-	copy(out, b.ring[start:])
-	return out
+	return ringReadLatest(b, limit)
 }
 
 // Rehydrate scans s.dir for existing JSONL files and refills each ring from
@@ -681,16 +680,76 @@ func openJSONLFile(dir string, netid int, safeTarget string) (*os.File, error) {
 	return f, nil
 }
 
-// pushRing appends e to b.ring, evicting the oldest entry if the ring is full.
-// The caller must hold b.mu.
+// pushRing appends e to the circular ring, evicting the oldest entry when the
+// ring is full. O(1): no slice shifting. The caller must hold b.mu.
+//
+// The ring is allocated lazily to ringSize slots on the first push, then reused
+// for the lifetime of the bufferEntry. Once the ring reaches capacity, each new
+// entry overwrites the oldest slot (ringHead advances mod cap(ring)).
 func pushRing(b *bufferEntry, e Entry, ringSize int) {
-	if len(b.ring) >= ringSize {
-		// Drop oldest: shift left by one. We keep the slice at exactly ringSize
-		// after this call, avoiding unbounded growth.
-		copy(b.ring, b.ring[1:])
-		b.ring = b.ring[:len(b.ring)-1]
+	cap := ringSize
+	if len(b.ring) == 0 {
+		// First push: allocate the backing slice.
+		b.ring = make([]Entry, cap)
+		b.ringHead = 0
+		b.ringLen = 0
 	}
-	b.ring = append(b.ring, e)
+	if b.ringLen < cap {
+		// Ring not yet full: write to the next free slot and grow ringLen.
+		b.ring[(b.ringHead+b.ringLen)%cap] = e
+		b.ringLen++
+	} else {
+		// Ring full: overwrite the oldest slot (ringHead), then advance ringHead.
+		b.ring[b.ringHead] = e
+		b.ringHead = (b.ringHead + 1) % cap
+	}
+}
+
+// ringReadLatest returns the most recent limit entries from b in chronological
+// order (oldest first). The caller must hold b.mu. Returns nil if the ring is
+// empty or limit <= 0.
+//
+// The circular ring stores entries at indices ringHead, ringHead+1, …
+// (mod cap(ring)), in order from oldest to newest. Reading the last min(limit,
+// ringLen) entries requires at most two copy calls for the wrap-around case.
+func ringReadLatest(b *bufferEntry, limit int) []Entry {
+	if b.ringLen == 0 || limit <= 0 {
+		return nil
+	}
+	cap := len(b.ring)
+	count := b.ringLen
+	if count > limit {
+		count = limit
+	}
+	// The last `count` entries start at index:
+	//   start = (ringHead + ringLen - count) % cap
+	startOff := b.ringLen - count // offset from ringHead (0-based, ≥ 0)
+	start := (b.ringHead + startOff) % cap
+
+	out := make([]Entry, count)
+	// Copy in one or two segments depending on whether the range wraps.
+	end := start + count
+	if end <= cap {
+		// Contiguous — single copy.
+		copy(out, b.ring[start:end])
+	} else {
+		// Wraps around the end of the backing slice — two copies.
+		first := cap - start
+		copy(out[:first], b.ring[start:])
+		copy(out[first:], b.ring[:end-cap])
+	}
+	return out
+}
+
+// ringNewest returns the newest entry in b and true, or the zero Entry and
+// false if the ring is empty. The caller must hold b.mu.
+func ringNewest(b *bufferEntry) (Entry, bool) {
+	if b.ringLen == 0 {
+		return Entry{}, false
+	}
+	cap := len(b.ring)
+	idx := (b.ringHead + b.ringLen - 1) % cap
+	return b.ring[idx], true
 }
 
 // newMsgID generates a crypto/rand 18-byte opaque identifier encoded as
