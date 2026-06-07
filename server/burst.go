@@ -167,7 +167,14 @@ func (s *Server) sendChannelBurst(sess *session, cc *client.Client, upstreamNick
 	// map mode letters to symbols. We build a space-separated list of
 	// [symbols]nick entries.
 	members := cc.Members(ch)
-	prefixSymbols := cc.PrefixSymbols() // e.g. "~&@%+"
+	// Sanitize the prefix-symbol string before using it to build NAMES entries.
+	// PrefixSymbols is derived from the upstream's ISUPPORT PREFIX= token, which
+	// is attacker-controlled on a hostile upstream. Without this, a crafted
+	// PREFIX value with embedded control bytes (e.g. "\x1b[31m") would be
+	// injected verbatim into every RPL_NAMREPLY prefix column of the burst,
+	// reaching every attaching client. The nick itself is already sanitized below
+	// (line 179); this closes the matching gap on the prefix side.
+	prefixSymbols := client.SanitizeForRelay(cc.PrefixSymbols()) // e.g. "~&@%+"
 
 	// Build the names list in chunks so no single 353 line exceeds the IRC
 	// wire budget. The max line length for a NAMES reply is bounded by the IRC

@@ -617,6 +617,157 @@ collectBatch:
 	}
 }
 
+// ─── Test 7: prefix-symbol sanitization in NAMES burst ───────────────────────
+
+// TestBurstPrefixSymbolSanitization verifies that a hostile upstream advertising
+// a PREFIX ISUPPORT token with embedded control bytes (e.g. ESC) does NOT inject
+// those bytes into the RPL_NAMREPLY (353) params of the state burst sent to an
+// attaching client.
+//
+// The attack: a crafted "PREFIX=(ov)\x1b[31m@+" makes PrefixSymbols() return a
+// string containing ESC. Without sanitization, every prefixed nick in the burst
+// carries those bytes. With it, SanitizeForRelay strips ESC before assembly.
+//
+// The scripted upstream sends a 005 line with the crafted PREFIX token after
+// the 001 welcome (standard IRC registration burst order), then confirms a JOIN
+// with an op (+o) member. We assert the resulting 353 NAMES entry for that
+// member contains no bytes in [0x00, 0x1f] (C0 controls) or 0x7f (DEL).
+func TestBurstPrefixSymbolSanitization(t *testing.T) {
+	const (
+		netid   = 50
+		nick    = "prefixnick"
+		channel = "#prefixchan"
+		opNick  = "alice"
+	)
+
+	// Crafted PREFIX: the op symbol is "\x1b[31m@" — ESC followed by ANSI color
+	// sequence bytes followed by "@". Without the fix, alice's NAMES entry would
+	// be "\x1b[31m@alice".
+	//
+	// We cannot embed raw \x1b directly in the line because scriptedUpstream
+	// writes it verbatim over the wire; the client's parser strips \x00/\r/\n
+	// but passes \x1b through (it is a valid IRC payload byte). This is exactly
+	// the hostile scenario.
+	craftedPREFIX := "PREFIX=(ov)\x1b[31m@+" // op symbol is "\x1b[31m@", voice is "+"
+
+	testDone := make(chan struct{})
+	var down atomic.Bool
+	t.Cleanup(func() { down.Store(true) })
+	t.Cleanup(func() { close(testDone) })
+
+	dialFn := pipeDialer(t, &down, func(su *scriptedUpstream) {
+		// Partial registration: consume the opening lines from the client.
+		su.expect("CAP LS 302")
+		su.expect("NICK " + nick)
+		su.expectPrefix("USER ")
+		su.send("CAP * LS :") // no caps offered
+		su.expect("CAP END")
+
+		// Send 001 welcome.
+		su.send(":upstream.local 001 " + nick + " :Welcome to the test network")
+		// Send 005 with the crafted PREFIX token. The client's handleISupport
+		// folds this into st.feat so PrefixSymbols() returns the crafted string.
+		su.send(":upstream.local 005 " + nick + " CASEMAPPING=ascii " + craftedPREFIX + " :are supported by this server")
+		// Send 376 end-of-MOTD (completes registration).
+		su.send(":upstream.local 376 " + nick + " :End of /MOTD command.")
+
+		// Confirm the autojoin. alice is an op (mode 'o', symbol from PREFIX).
+		su.expectJoin(channel)
+		su.send(
+			":"+nick+"!~u@host JOIN "+channel,
+			// 353 NAMES: alice has the 'o' prefix → symbol is "\x1b[31m@" (crafted).
+			":upstream.local 353 "+nick+" = "+channel+" :\x1b[31m@"+opNick+" "+nick,
+			":upstream.local 366 "+nick+" "+channel+" :End of /NAMES list.",
+		)
+
+		<-testDone
+	})
+
+	cfg := &Config{
+		Networks: []Network{
+			{
+				NetID:    netid,
+				Name:     "PrefixNet",
+				Addr:     "upstream.local:6667",
+				Identity: Identity{Nick: nick, User: "u", Realname: "r"},
+				Channels: []string{channel},
+			},
+		},
+	}
+
+	srv := New(cfg)
+	mgr := NewManager(cfg, srv)
+	mgr.dialers = map[int]dialer{netid: dialFn}
+	srv.WithManager(mgr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Manager.Start: %v", err)
+	}
+	t.Cleanup(func() { mgr.Close() })
+
+	// Wait for the upstream client to process the NAMES burst and settle state.
+	time.Sleep(200 * time.Millisecond)
+
+	// Connect a test client and bind — this triggers sendStateBurst.
+	c := connectClientToSrv(t, srv)
+
+	sendLine(t, c, "CAP LS 302")
+	_ = recvMsg(t, c) // CAP LS
+
+	sendLine(t, c, "CAP REQ :soju.im/bouncer-networks multi-prefix")
+	_ = recvMsg(t, c) // CAP ACK
+
+	sendLine(t, c, "NICK testprefix")
+	sendLine(t, c, "USER testprefix 0 * :Test")
+	sendLine(t, c, "BOUNCER BIND "+itoa(netid))
+	sendLine(t, c, "CAP END")
+
+	// Collect all messages up to and including ERR_NOMOTD.
+	var burstMsgs []*irc.Message
+	deadline := time.After(3 * time.Second)
+collectBurstPrefix:
+	for {
+		select {
+		case msg, ok := <-c.Messages():
+			if !ok {
+				break collectBurstPrefix
+			}
+			burstMsgs = append(burstMsgs, msg)
+			if msg.Command == irc.ERR_NOMOTD {
+				break collectBurstPrefix
+			}
+		case <-deadline:
+			break collectBurstPrefix
+		}
+	}
+
+	// Find the RPL_NAMREPLY (353) message(s) for our channel.
+	var namesParams []string
+	for _, m := range burstMsgs {
+		if m.Command == irc.RPL_NAMREPLY && m.Param(2) == channel {
+			namesParams = append(namesParams, m.Param(3))
+		}
+	}
+
+	if len(namesParams) == 0 {
+		t.Fatal("state burst: no RPL_NAMREPLY (353) found for channel; cannot verify sanitization")
+	}
+
+	// Assert: no C0 control byte (0x00–0x1f) or DEL (0x7f) appears in any NAMES
+	// param. Specifically, \x1b (ESC = 0x1b) must have been stripped.
+	for _, names := range namesParams {
+		for i, b := range []byte(names) {
+			if b < 0x20 || b == 0x7f {
+				t.Errorf("RPL_NAMREPLY param contains control byte 0x%02x at position %d in %q — "+
+					"hostile PREFIX symbols were not sanitized before assembly", b, i, names)
+			}
+		}
+	}
+	t.Logf("RPL_NAMREPLY params (sanitized): %v", namesParams)
+}
+
 // ─── Test 6: burst channel cap ────────────────────────────────────────────────
 
 // TestBurstChannelCap verifies that sendStateBurst caps the number of channel
