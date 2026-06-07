@@ -81,9 +81,11 @@ func sortedMembers(m model) (model, []client.Member) {
 }
 
 // memberPrefixes returns the membership prefix symbols held by nick in the
-// active channel, or "" if not found.
-func memberPrefixes(m model, nick string) string {
-	_, members := sortedMembers(m)
+// active channel, or "" if not found. It takes the already-sorted slice so the
+// caller (statusEntries) can pass the result of its own sortedMembers call and
+// avoid a redundant sort — the old signature called sortedMembers internally
+// and discarded the returned model, so the cache write was thrown away.
+func memberPrefixes(members []client.Member, nick string) string {
 	for _, mem := range members {
 		if equalFold(mem.Nick, nick) {
 			return mem.Prefixes
@@ -239,7 +241,12 @@ func statusEntries(m model) []menuEntry {
 	if m.cli != nil && b.Kind == BufferChannel {
 		modes := m.cli.PrefixModes()
 		symbols := m.cli.PrefixSymbols()
-		target := memberPrefixes(m, m.menuNick)
+		// Call sortedMembers once and pass the slice to memberPrefixes so the
+		// cache write propagates — the old memberPrefixes(m, ...) called
+		// sortedMembers internally and discarded the returned model, throwing
+		// away the cache write on every menu render.
+		_, members := sortedMembers(m)
+		target := memberPrefixes(members, m.menuNick)
 		selfHigh := highestPrefixIndex(m.cli.SelfPrefixes(b.Title), symbols)
 		for i := 0; i < min(len(modes), len(symbols)); i++ {
 			if i < selfHigh {

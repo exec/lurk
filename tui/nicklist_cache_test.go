@@ -92,15 +92,60 @@ func TestEnterNickFocusOneSortCall(t *testing.T) {
 	}
 }
 
-// TestNicklistCacheClearedByMembershipEvent is the regression test for the
-// stale-nicklist bug: the sortedMembers cache was keyed only by buffer pointer,
-// which does not change when a member joins or leaves the currently-active
-// channel. A JOIN/PART/NICK event in the viewed channel would leave the cache
-// populated with the pre-event member list, so the new joiner would not appear
-// (and a parted member would linger) until the user switched away and back.
+// TestNicklistStaleAfterMembershipEvent is the primary staleness proof for the
+// nicklist cache bug. It directly demonstrates the incorrect behavior: without
+// the fix, a JOIN event into the currently-viewed channel would leave the sorted
+// member cache intact, and a subsequent sortedMembers call would return the
+// pre-JOIN snapshot rather than re-reading the (now-updated) member list.
 //
-// The fix clears nicklistSortedFor = nil in the ircMsg and ircBatchMsg handlers
-// before routing events, forcing a fresh sort on the next renderNicklist call.
+// The test fabricates a stale cache entry for the active buffer — a single
+// "ghost" member that the nil-client model would never return from Members() —
+// then delivers a JOIN event for that channel and calls sortedMembers again.
+// Without the fix (nicklistSortedFor = nil in the ircMsg handler), the cache
+// hit fires and the ghost is returned. With the fix the cache is cleared,
+// sortedMembers recomputes from the nil client (empty list), and the ghost
+// is gone — proving the stale data is no longer served.
+func TestNicklistStaleAfterMembershipEvent(t *testing.T) {
+	m := sizedModel(t)
+	_, i := m.ensureBuffer("#chan", BufferChannel)
+	m.switchTo(i)
+	m = layout(m)
+	net := m.activeNet()
+
+	// Inject a stale cache entry: a ghost member that the nil client would
+	// never return. This simulates the in-memory state a live client would
+	// produce after an initial sortedMembers call on a non-empty channel.
+	ghost := client.Member{Nick: "ghost"}
+	m.nicklistSorted = []client.Member{ghost}
+	m.nicklistSortedFor = m.activeBuffer() // same buffer pointer as after a real sort
+
+	// Sanity: the cache is primed and sortedMembers returns the ghost.
+	_, pre := sortedMembers(m)
+	if len(pre) != 1 || pre[0].Nick != "ghost" {
+		t.Fatalf("test setup: sortedMembers did not return cached ghost (got %v)", pre)
+	}
+
+	// Deliver a JOIN event for the same channel. The buffer pointer does NOT
+	// change — only the fix's unconditional nicklistSortedFor = nil clears the cache.
+	joinEv := evt(t, ":newuser!u@h JOIN #chan")
+	tm, _ := m.Update(ircMsg{net: net, ev: joinEv})
+	m = tm.(model)
+
+	// With the fix: cache cleared → sortedMembers recomputes → nil client →
+	// empty list → ghost is gone.
+	// Without the fix: cache hit → ghost returned → stale nicklist.
+	_, post := sortedMembers(m)
+	for _, mem := range post {
+		if mem.Nick == "ghost" {
+			t.Error("sortedMembers returned stale cached member after a JOIN event — nicklist does not update live")
+			return
+		}
+	}
+}
+
+// TestNicklistCacheClearedByMembershipEvent verifies the cache key
+// (nicklistSortedFor) is nil after an ircMsg event, confirming the invalidation
+// fires before the next renderNicklist call.
 func TestNicklistCacheClearedByMembershipEvent(t *testing.T) {
 	m := sizedModel(t)
 	_, i := m.ensureBuffer("#chan", BufferChannel)
