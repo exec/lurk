@@ -6,6 +6,27 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Security
+- **Hardened the client and the lurkd daemon against a malicious server/upstream** —
+  a sweep of hostile-input bounds across every layer, all hermetically tested:
+  - **Wire:** cap per-message IRCv3 tags (64) and parsed params (32) so a hostile
+    line can't explode the tag map or the params slice.
+  - **Client state:** bound tracked channels (4096) and members-per-channel
+    (65536); cap `ERR_NICKNAMEINUSE` retries during registration (no unbounded
+    nick growth under a 433 flood); guard `TOPIC`/`RPL_TOPIC`/`RPL_TOPICWHOTIME`
+    against creating phantom channel state for channels never joined.
+  - **Negotiation:** bound the ISUPPORT token map (512) against `005` floods and
+    clamp ISUPPORT integers (`NICKLEN`/`CHANNELLEN`/`TOPICLEN`/`TARGMAX`) to sane
+    ceilings; reassemble multi-chunk SASL server challenges (8 KiB cap) so a long
+    server nonce can no longer break SASL or exhaust the client.
+  - **TUI:** sanitize and length-cap the server-controlled buffer title in the
+    empty-buffer hint — the one render site that bypassed terminal-escape
+    sanitization.
+  - **lurkd:** cap the per-attach state burst (500 channels) against a hostile
+    upstream's channel flood; right-size the backlog JSONL scanner buffer to
+    16 KiB (was 1 MiB) and add a write-side line-length cap with a matching
+    read/ring invariant.
+
 ## [1.2.0] - 2026-06-06
 
 ### Added
