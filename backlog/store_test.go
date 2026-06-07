@@ -896,17 +896,15 @@ func TestNoRotationWhenCapIsZero(t *testing.T) {
 
 // ─── JSONL line-size cap tests ────────────────────────────────────────────────
 
-// TestOversizedLineDroppedByIngest verifies that appendLineLocked drops an entry
-// whose marshalled JSON exceeds maxJSONLLineBytes instead of writing it to disk.
-// The ring is also left unaffected (the drop happens before pushRing because the
-// Ingest return value indicates stored=true for the ring push — but we verify the
-// on-disk file stays empty/absent, which is the hard invariant).
+// TestOversizedLineDroppedByIngest verifies that when an entry's marshalled JSON
+// exceeds maxJSONLLineBytes, Ingest drops it from BOTH disk and the in-memory
+// ring. A ring entry without a disk record would diverge from on-disk state and
+// be silently lost on restart, so the two must stay in sync.
 //
-// To force a line > maxJSONLLineBytes we directly write a JSONL file containing
-// an oversized line and then verify rehydration skips it cleanly.
-// For the write-side path, we manipulate an Entry's Params to produce a JSON
-// object that exceeds the cap; we assert the JSONL file does NOT contain the
-// oversized body string.
+// Assertions:
+//   - Ingest returns stored=false for the oversized entry.
+//   - Latest returns 0 entries (ring is not populated).
+//   - The JSONL file (if it exists) does not contain the oversized body.
 func TestOversizedLineDroppedByIngest(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewStore(dir)
@@ -919,22 +917,32 @@ func TestOversizedLineDroppedByIngest(t *testing.T) {
 	// exceeds maxJSONLLineBytes (16 KiB). The JSON framing adds ~200 bytes;
 	// a body of 17000 bytes is well above the threshold.
 	bigBody := strings.Repeat("x", 17000)
-	ev := makeEvent("PRIVMSG", "nick!u@h", []string{"#chan", bigBody})
-	_, _ = s.Ingest(1, ev)
+	ev := makeEvent("PRIVMSG", "nick!u@h", []string{"#oversized", bigBody})
+	_, stored := s.Ingest(1, ev)
 
-	// The JSONL file should either not exist or not contain the oversized body.
-	jsonlFile := filepath.Join(dir, "1", "#chan.jsonl")
-	data, err := os.ReadFile(jsonlFile)
-	if os.IsNotExist(err) {
-		// Fine: appendLine opened the file lazily but dropped before writing.
-		return
+	// Ingest must report the entry as not stored.
+	if stored {
+		t.Errorf("Ingest returned stored=true for oversized entry; expected false")
 	}
-	if err != nil {
-		t.Fatalf("read JSONL: %v", err)
+
+	// Ring must be empty — Latest must return nothing.
+	entries := s.Latest(1, "#oversized", 10)
+	if len(entries) != 0 {
+		t.Errorf("ring has %d entries after oversized Ingest; expected 0 (ring/disk must stay in sync)",
+			len(entries))
 	}
-	// If the file exists it must not contain the oversized body.
+
+	// Disk file must either not exist or not contain the oversized body.
+	jsonlFile := filepath.Join(dir, "1", "#oversized.jsonl")
+	data, readErr := os.ReadFile(jsonlFile)
+	if os.IsNotExist(readErr) {
+		return // fine: file was never opened
+	}
+	if readErr != nil {
+		t.Fatalf("read JSONL: %v", readErr)
+	}
 	if strings.Contains(string(data), bigBody) {
-		t.Errorf("oversized entry was written to JSONL file (%d bytes in file); expected it to be dropped",
+		t.Errorf("oversized entry was written to JSONL file (%d bytes); expected it to be dropped from disk",
 			len(data))
 	}
 }

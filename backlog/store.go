@@ -339,9 +339,16 @@ func (s *Store) Ingest(netid int, ev *client.Event) (msgid string, stored bool) 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if err := s.appendLineLocked(b, netid, safe, entry); err != nil {
+	written, err := s.appendLineLocked(b, netid, safe, entry)
+	if err != nil {
 		// I/O errors are swallowed — backlog must never disrupt the IRC session.
 		log.Printf("backlog: ingest netid=%d target=%q: write: %v", netid, target, err)
+	}
+	if !written {
+		// The line was dropped (size cap or I/O error): do not push to the ring.
+		// A ring entry without a corresponding disk record would serve stale data
+		// and be silently lost on restart.
+		return "", false
 	}
 	pushRing(b, entry, s.ringSize)
 	return entry.MsgID, true
@@ -528,36 +535,42 @@ func (s *Store) getOrCreate(netid int, safe string) (*bufferEntry, bool) {
 // is called to rename the current file to .jsonl.1 and open a fresh .jsonl.
 // The caller must hold b.mu.
 //
+// Returns (written=true, nil) when the line is successfully written to disk.
+// Returns (written=false, nil) when the line is dropped by the size cap — the
+// caller must NOT push the entry into the ring, since a ring entry without a
+// corresponding disk entry would diverge from the on-disk state and be lost
+// on restart. Returns (false, err) on I/O failure.
+//
 // A single Write call ensures the line is written atomically with respect to
 // readers scanning complete lines on POSIX filesystems with O_APPEND.
-func (s *Store) appendLineLocked(b *bufferEntry, netid int, safeTarget string, e Entry) error {
+func (s *Store) appendLineLocked(b *bufferEntry, netid int, safeTarget string, e Entry) (written bool, err error) {
 	if b.f == nil {
 		f, err := openJSONLFile(s.dir, netid, safeTarget)
 		if err != nil {
-			return err
+			return false, err
 		}
 		b.f = f
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
-		return fmt.Errorf("json encode: %w", err)
+		return false, fmt.Errorf("json encode: %w", err)
 	}
 	data = append(data, '\n')
 
 	// Write-side line-length cap: a marshalled line that exceeds maxJSONLLineBytes
 	// cannot be read back by tailJSONL/readJSONLFull (whose scanner buffers are
-	// sized to the same constant). Log and drop rather than writing an unreadable
-	// line. This should never fire for wire-conformant IRC messages; it is a
-	// defence-in-depth guard against programming errors or future event types
-	// whose params are unexpectedly large.
+	// sized to the same constant). Log and signal drop (written=false) so the
+	// caller skips pushRing — keeping ring and disk in sync. This should never
+	// fire for wire-conformant IRC messages; it is a defence-in-depth guard
+	// against programming errors or future event types whose params are large.
 	if len(data) > maxJSONLLineBytes {
 		log.Printf("backlog: appendLine netid=%d target=%q: marshalled line %d bytes > cap %d; dropping",
 			netid, safeTarget, len(data), maxJSONLLineBytes)
-		return nil
+		return false, nil
 	}
 
 	if _, err = b.f.Write(data); err != nil {
-		return err
+		return false, err
 	}
 
 	// Check size and rotate if over the cap. Errors here are non-fatal: the
@@ -568,7 +581,7 @@ func (s *Store) appendLineLocked(b *bufferEntry, netid int, safeTarget string, e
 			log.Printf("backlog: rotate netid=%d target=%q: %v", netid, safeTarget, rotErr)
 		}
 	}
-	return nil
+	return true, nil
 }
 
 // maybeRotateLocked checks whether b.f has grown past s.maxFileSize and, if so,
