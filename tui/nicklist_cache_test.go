@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/exec/lurk/client"
 )
 
 // TestSortedMembersCacheHit verifies that when sortedMembers is called twice on
@@ -87,6 +89,69 @@ func TestEnterNickFocusOneSortCall(t *testing.T) {
 	// model (with its cache key populated) through to the end.
 	if result.nicklistSortedFor == nil {
 		t.Error("enterNickFocus discarded the sortedMembers result — cache not propagated (called sortedMembers on a throwaway copy)")
+	}
+}
+
+// TestNicklistCacheClearedByMembershipEvent is the regression test for the
+// stale-nicklist bug: the sortedMembers cache was keyed only by buffer pointer,
+// which does not change when a member joins or leaves the currently-active
+// channel. A JOIN/PART/NICK event in the viewed channel would leave the cache
+// populated with the pre-event member list, so the new joiner would not appear
+// (and a parted member would linger) until the user switched away and back.
+//
+// The fix clears nicklistSortedFor = nil in the ircMsg and ircBatchMsg handlers
+// before routing events, forcing a fresh sort on the next renderNicklist call.
+func TestNicklistCacheClearedByMembershipEvent(t *testing.T) {
+	m := sizedModel(t)
+	_, i := m.ensureBuffer("#chan", BufferChannel)
+	m.switchTo(i)
+	m = layout(m)
+	net := m.activeNet()
+
+	// Prime the cache by calling sortedMembers on the active buffer.
+	m, _ = sortedMembers(m)
+	if m.nicklistSortedFor == nil {
+		t.Fatal("test setup: cache not populated after sortedMembers call")
+	}
+
+	// Deliver a JOIN event for the same channel through the ircMsg path.
+	// The buffer pointer does NOT change (it is the same #chan buffer), so the
+	// old cache invalidation logic (pointer comparison) would leave the cache
+	// stale. The fix clears nicklistSortedFor unconditionally on every ircMsg.
+	joinEv := evt(t, ":newuser!u@h JOIN #chan")
+	tm, _ := m.Update(ircMsg{net: net, ev: joinEv})
+	m = tm.(model)
+
+	if m.nicklistSortedFor != nil {
+		t.Error("ircMsg did not clear nicklistSortedFor — nicklist cache is stale after a membership change")
+	}
+}
+
+// TestNicklistCacheClearedByBatchMembershipEvent mirrors the above for the
+// ircBatchMsg path (the live event bridge), which carries JOIN/PART bursts from
+// a bouncer or a NAMES replay. The same stale-cache bug applied to batches:
+// a batch containing a JOIN would leave the sorted cache intact for the
+// entire Update pass, hiding the new member from renderNicklist.
+func TestNicklistCacheClearedByBatchMembershipEvent(t *testing.T) {
+	m := sizedModel(t)
+	_, i := m.ensureBuffer("#chan", BufferChannel)
+	m.switchTo(i)
+	m = layout(m)
+	net := m.activeNet()
+
+	// Prime the cache.
+	m, _ = sortedMembers(m)
+	if m.nicklistSortedFor == nil {
+		t.Fatal("test setup: cache not populated after sortedMembers call")
+	}
+
+	// Deliver a JOIN event as a batch (the normal live-bridge path).
+	evs := []client.Event{evt(t, ":newuser!u@h JOIN #chan")}
+	tm, _ := m.Update(ircBatchMsg{net: net, evs: evs})
+	m = tm.(model)
+
+	if m.nicklistSortedFor != nil {
+		t.Error("ircBatchMsg did not clear nicklistSortedFor — nicklist cache is stale after a batch membership change")
 	}
 }
 

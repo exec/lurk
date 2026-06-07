@@ -38,7 +38,7 @@ func Run(ctx context.Context, cli *client.Client, logDir string, connect Connect
 
 // Init starts the event subscription and the editor cursor blink. The single
 // in-flight waitForIRC Cmd is the heartbeat of the IRC->UI bridge; it is
-// re-issued after every ircMsg in Update.
+// re-issued after every ircMsg or ircBatchMsg in Update.
 func (m model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		textinput.Blink,
@@ -70,6 +70,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// network's stream to keep it alive. A highlight in an unfocused buffer
 		// also rings the terminal bell. (Single-event path: used by tests that
 		// inject synthetic events; the live bridge delivers ircBatchMsg.)
+		//
+		// Invalidate the sortedMembers cache so that a JOIN/PART/NICK/mode change
+		// in the currently-active channel is not served from a stale snapshot.
+		// The cache is keyed by buffer pointer, which does not change when members
+		// join or leave — without this the nicklist would stop updating live.
+		m.nicklistSortedFor = nil
 		m = routeEventOn(m, msg.net, msg.ev)
 		cmds := []tea.Cmd{waitForIRC(msg.net)}
 		if m.bell {
@@ -95,6 +101,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// instead of calling refresh() on every line — avoiding O(batch ×
 		// scrollback) work. The single refreshIfDirty() call below does at most
 		// one SetContent for the whole burst.
+		//
+		// Invalidate the sortedMembers cache for the same reason as ircMsg: a
+		// batch may carry JOIN/PART/NICK events that change the active channel's
+		// member list, and the buffer pointer does not change on those events.
+		m.nicklistSortedFor = nil
 		m.batchMode = true
 		for i := range msg.evs {
 			m = routeEventOn(m, msg.net, msg.evs[i])
