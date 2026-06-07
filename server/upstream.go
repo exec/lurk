@@ -473,10 +473,13 @@ func (m *Manager) Remove(netid int) {
 
 	_ = found.client.Close()
 
-	// Drain: wait for the supervisor goroutine to stop so no further OnAny
-	// call arrives for this netid. client.Done closes once the supervisor
-	// (or the single-session bridge) has fully unwound, at which point the
-	// OnAny handler can no longer fire.
+	// Drain: wait for the client to fully stop so no further OnAny call
+	// arrives for this netid. client.Done closes once the run-loop goroutine
+	// exits and either the reconnect supervisor (AutoReconnect=true, via
+	// supervise→finalize) or the single-session bridge (AutoReconnect=false,
+	// via finalizeWhenDone→finalize) has completed — both paths converge on
+	// finalize() which closes Done. After Done closes, the OnAny handler
+	// registered in buildClient can no longer fire.
 	select {
 	case <-found.client.Done():
 	case <-time.After(removeClientDrainTimeout):

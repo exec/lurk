@@ -820,11 +820,20 @@ func TestUpstreamRegistrationTimeout(t *testing.T) {
 		t.Fatalf("Manager.Start: %v", err)
 	}
 
-	// Let one retry cycle fire (backoff + registration timeout).
-	time.Sleep(mgr.retryBase + mgr.registrationTimeout + 50*time.Millisecond)
+	// Wait until the initial connect attempt has finished (the registration
+	// timeout on Start's context fires and the entry transitions to
+	// ConnDisconnected). At that point the scheduleRetry goroutine is live and
+	// has issued or is about to issue its first Connect(regCtx). Using a poll
+	// instead of a fixed sleep avoids a race on loaded machines where Close
+	// could overtake the retry goroutine before it enters Connect, causing the
+	// test to pass without ever exercising the registration-timeout path.
+	if !waitForUpstreamState(mgr, netidD, ConnDisconnected, 3*time.Second) {
+		st, _ := mgr.UpstreamState(netidD)
+		t.Fatalf("upstream did not reach ConnDisconnected; state=%v", st)
+	}
 
-	// Close must return well within 1 s. Without the fix it blocks forever
-	// because the retry goroutine is parked on <-c.registered.
+	// Close must return well within 2 s. Without the fix it blocks forever
+	// because the retry goroutine is parked on <-c.registered with no deadline.
 	closeDone := make(chan struct{})
 	go func() {
 		mgr.Close()
