@@ -116,6 +116,11 @@ func (c *Client) reconnectLoop() chan struct{} {
 			c.emitSynthetic(evtReconnecting, "reconnect failed — retrying…")
 			continue
 		}
+		// Reset backoff so the next drop (if any) starts fresh from the initial
+		// delay rather than the accumulated value. Without this, a flapping
+		// upstream (connect → 001 → drop, repeat) plateaus at reconnectMaxBackoff
+		// after a few cycles, making each subsequent reconnect wait the full max.
+		backoff = reconnectInitialBackoff
 		return sessionDone
 	}
 }

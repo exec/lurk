@@ -192,3 +192,100 @@ func TestQuitStopsReconnect(t *testing.T) {
 		t.Errorf("dial attempts = %d, want exactly 1 (no reconnect after Quit)", got)
 	}
 }
+
+// TestReconnectBackoffResetsOnSuccess verifies that reconnectLoop resets
+// backoff to reconnectInitialBackoff after each successful reconnect. Without
+// the reset, a flapping upstream (connect → 001 → drop, repeated) causes the
+// backoff to plateau at reconnectMaxBackoff, making each subsequent reconnect
+// wait the full maximum delay.
+//
+// The test injects a fast-clock by substituting the client's dial function with
+// one that:
+//   - counts dial wall-clock timestamps
+//   - connects and registers quickly on every call
+//   - drops the link immediately after registration (simulating a flap)
+//
+// After N flap cycles the delays between consecutive dials are measured.
+// With the fix each gap stays near 0 (no meaningful backoff between a
+// successful reconnect and the next cycle's initial drop). Without the fix the
+// gaps would grow to reconnectMaxBackoff (30 s) after a few cycles and the
+// test would time out or measure large delays.
+//
+// Implementation note: reconnectLoop sleeps for backoff before re-dialing —
+// we observe the time between dial calls to infer the effective backoff.
+func TestReconnectBackoffResetsOnSuccess(t *testing.T) {
+	const nick = "flapbot"
+	const cycles = 3 // number of flap cycles to observe
+
+	var mu sync.Mutex
+	var dialTimes []time.Time
+	var down atomic.Bool
+	testDone := make(chan struct{})
+	defer close(testDone)
+
+	// Each dial call: record the wall-clock time, register immediately, then
+	// drop the link so supervise re-enters reconnectLoop immediately.
+	c := New(Config{Nick: nick, User: "u", Realname: "r", Server: "x:1", Caps: []string{}, AutoReconnect: true})
+	c.dial = func(ctx context.Context) (transport, error) {
+		mu.Lock()
+		dialTimes = append(dialTimes, time.Now())
+		n := len(dialTimes)
+		mu.Unlock()
+
+		clientSide, serverSide := net.Pipe()
+		srv := newMockServer(t, serverSide)
+		srv.down = &down
+		go func() {
+			miniRegister(t, srv, nick)
+			if n < cycles+1 {
+				// Flap: drop immediately after registration.
+				srv.close()
+				return
+			}
+			// Final session: stay up until the test ends.
+			<-testDone
+		}()
+		return conn.NewConn(clientSide, conn.Options{}), nil
+	}
+
+	defer c.Close()
+	defer down.Store(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	// Wait for all cycles to complete (the final, stable dial has been placed).
+	if !waitFor(func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(dialTimes) >= cycles+1
+	}, 8*time.Second) {
+		mu.Lock()
+		n := len(dialTimes)
+		mu.Unlock()
+		t.Fatalf("only %d dial attempts within timeout; want %d", n, cycles+1)
+	}
+
+	mu.Lock()
+	times := make([]time.Time, len(dialTimes))
+	copy(times, dialTimes)
+	mu.Unlock()
+
+	// Measure the gap between consecutive dials after cycle 1. With backoff
+	// reset each gap should be <= reconnectInitialBackoff (1 s) + a generous
+	// slop for CI jitter. Without the fix the gaps grow toward 30 s.
+	//
+	// We skip the gap between dial[0] and dial[1] because that represents the
+	// drop + initial sleep; we want the gaps AFTER a successful reconnect.
+	const maxAllowedGap = 5 * time.Second // far below the 30 s plateau
+	for i := 2; i < len(times); i++ {
+		gap := times[i].Sub(times[i-1])
+		if gap > maxAllowedGap {
+			t.Errorf("gap between dial[%d] and dial[%d] = %v; want <= %v (backoff not reset after reconnect?)",
+				i-1, i, gap, maxAllowedGap)
+		}
+	}
+}
