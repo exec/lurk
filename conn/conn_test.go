@@ -461,6 +461,101 @@ func TestDialAndExchangeOverListener(t *testing.T) {
 	}
 }
 
+// TestTrySendDropsWhenFull verifies that TrySend returns (false, nil) — a
+// non-blocking drop — when the outbound queue is full, and returns (true, nil)
+// when there is space. This is the property that prevents head-of-line blocking
+// in fanout: a slow client's full queue results in a drop, not a goroutine park.
+func TestTrySendDropsWhenFull(t *testing.T) {
+	// stallConn blocks the writer goroutine's Write call indefinitely, so the
+	// outbound channel (capacity writeQueueDepth=64) fills up without being drained.
+	staller := newStallConn()
+	c := NewConn(staller, Options{})
+	t.Cleanup(func() { c.Close() })
+
+	// Give the writer goroutine a moment to pick up the first item from the
+	// channel and block in staller.Write, freeing exactly one slot.
+	time.Sleep(5 * time.Millisecond)
+
+	filled := 0
+	for i := 0; i < writeQueueDepth*2; i++ {
+		ok, err := c.TrySend("PING :x")
+		if err != nil {
+			// Conn closed — stop here.
+			break
+		}
+		if ok {
+			filled++
+		} else {
+			// Queue is full: TrySend returned (false, nil). That is the desired
+			// non-blocking drop behaviour.
+			if filled == 0 {
+				t.Error("TrySend returned false before filling any slots")
+			}
+			return // success
+		}
+	}
+	t.Errorf("TrySend never returned false after %d successful sends; queue never appeared full", filled)
+}
+
+// stallConn is a net.Conn whose Write blocks forever (simulating a stalled
+// TCP peer), used to keep the conn writer goroutine blocked on I/O so the
+// outbound channel fills up.
+type stallConn struct {
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func newStallConn() *stallConn { return &stallConn{done: make(chan struct{})} }
+
+func (s *stallConn) Read(_ []byte) (int, error) {
+	<-s.done
+	return 0, io.EOF
+}
+
+func (s *stallConn) Write(_ []byte) (int, error) {
+	<-s.done // blocks until Close is called
+	return 0, io.EOF
+}
+
+func (s *stallConn) Close() error {
+	s.closeOnce.Do(func() { close(s.done) })
+	return nil
+}
+
+func (s *stallConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (s *stallConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (s *stallConn) SetDeadline(_ time.Time) error      { return nil }
+func (s *stallConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (s *stallConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+// TestTryWriteMessageDropsWhenFull is the same guarantee tested at the
+// irc.Message layer: TryWriteMessage returns (false, nil) on a full queue.
+func TestTryWriteMessageDropsWhenFull(t *testing.T) {
+	staller := newStallConn()
+	c := NewConn(staller, Options{})
+	t.Cleanup(func() { c.Close() })
+
+	time.Sleep(5 * time.Millisecond) // let writer goroutine dequeue the first item
+
+	msg := &irc.Message{Command: "PRIVMSG", Params: []string{"#ch", "hello"}}
+	filled := 0
+	for i := 0; i < writeQueueDepth*2; i++ {
+		ok, err := c.TryWriteMessage(msg)
+		if err != nil {
+			break
+		}
+		if ok {
+			filled++
+		} else {
+			if filled == 0 {
+				t.Error("TryWriteMessage returned false before filling any slots")
+			}
+			return // success
+		}
+	}
+	t.Errorf("TryWriteMessage never returned false after %d successful sends", filled)
+}
+
 func TestLimiterSeamInvoked(t *testing.T) {
 	cliRaw, srvRaw := net.Pipe()
 	lim := &countLimiter{}

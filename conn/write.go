@@ -23,6 +23,47 @@ func (c *Conn) WriteMessage(m *irc.Message) error {
 	return c.Send(line)
 }
 
+// TryWriteMessage serializes m and attempts a non-blocking enqueue. It returns
+// (true, nil) on success, (false, nil) when the outbound queue is full (the
+// message is dropped — the caller decides how to handle the drop), and
+// (false, err) if the message cannot be serialized or the Conn is already
+// closed. Unlike WriteMessage/Send, TryWriteMessage never blocks waiting for
+// queue space; it is safe to call from a goroutine that must not stall.
+func (c *Conn) TryWriteMessage(m *irc.Message) (bool, error) {
+	line, err := m.Serialize()
+	if err != nil {
+		return false, fmt.Errorf("conn: serialize: %w", err)
+	}
+	return c.TrySend(line)
+}
+
+// TrySend attempts a non-blocking enqueue of an already-serialized line.
+// It returns (true, nil) when the line was accepted, (false, nil) when the
+// outbound queue is full, and (false, err) if the Conn is already closed or
+// the line contains forbidden bytes (CR/LF/NUL). The caller is responsible
+// for deciding what to do when the queue is full (log, drop, close the peer).
+func (c *Conn) TrySend(line string) (bool, error) {
+	line = strings.TrimRight(line, "\r\n")
+	if strings.ContainsAny(line, "\r\n\x00") {
+		return false, fmt.Errorf("conn: refusing to send line containing CR/LF/NUL: %q", line)
+	}
+
+	select {
+	case <-c.done:
+		return false, c.closedErr()
+	default:
+	}
+	select {
+	case c.out <- line:
+		return true, nil
+	case <-c.done:
+		return false, c.closedErr()
+	default:
+		// Queue is full; return false without blocking.
+		return false, nil
+	}
+}
+
 // Send enqueues a single already-serialized protocol line for the writer
 // goroutine. Any trailing CRLF the caller includes is stripped (the writer
 // appends its own); an interior CR/LF/NUL is rejected, since it could split the
