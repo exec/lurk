@@ -57,16 +57,37 @@ func bellCmd() tea.Cmd {
 // The design follows the idiomatic "channel + re-subscribing Cmd" subscription
 // (a pattern from Bubble Tea's realtime example): the model holds the channel,
 // not the *Program, so it stays pure and testable, and exactly one waitForIRC
-// Cmd is in flight at a time. After handling each ircMsg, Update MUST re-issue
-// waitForIRC or the subscription dies — see docs/ARCHITECTURE-TUI.md, "The
-// event bridge".
+// Cmd is in flight at a time. After handling each ircBatchMsg, Update MUST
+// re-issue waitForIRC or the subscription dies — see docs/ARCHITECTURE-TUI.md,
+// "The event bridge".
 
 // ircMsg wraps a single inbound client.Event with the network it arrived on, for
 // delivery into Update. It is a distinct type (not a bare client.Event) so the
 // Update type switch can match it unambiguously alongside Bubble Tea's own types.
+// It remains the unit of synthetic event injection in tests; the live bridge
+// delivers ircBatchMsg.
 type ircMsg struct {
 	net *network
 	ev  client.Event
+}
+
+// maxEventBatch bounds how many events a single waitForIRC pass drains. A burst
+// (a large /list reply, a CHATHISTORY replay, a busy channel) is delivered to
+// Update in batches of up to this many events — one render per batch instead of
+// one render per event — so the consumer keeps pace with the server and the
+// (lossy, drop-oldest) Events buffer does not overflow. The bound caps the work
+// a single Update cycle does so a huge flood can't stall the UI in one pass.
+const maxEventBatch = 1024
+
+// ircBatchMsg carries a run of events drained from a network's stream in one
+// pass. Batch delivery is the throughput fix for large servers: applying a burst
+// with a single render keeps the consumer ahead of the producer so events are
+// not dropped. closed is set when the stream ended mid-drain (the events that
+// were drained first are still applied, then the network is dropped).
+type ircBatchMsg struct {
+	net    *network
+	evs    []client.Event
+	closed bool
 }
 
 // ircClosedMsg is delivered once a network's event stream closes (its connection
@@ -88,7 +109,24 @@ func waitForIRC(net *network) tea.Cmd {
 		if !ok {
 			return ircClosedMsg{net: net}
 		}
-		return ircMsg{net: net, ev: ev}
+		// Block for the first event, then opportunistically drain everything
+		// else already buffered (without blocking) into one batch. This is what
+		// lets the UI keep up with a flood: instead of one render per event, the
+		// whole burst is applied in a single Update + render.
+		evs := make([]client.Event, 1, maxEventBatch)
+		evs[0] = ev
+		for len(evs) < maxEventBatch {
+			select {
+			case ev, ok := <-net.sub:
+				if !ok {
+					return ircBatchMsg{net: net, evs: evs, closed: true}
+				}
+				evs = append(evs, ev)
+			default:
+				return ircBatchMsg{net: net, evs: evs}
+			}
+		}
+		return ircBatchMsg{net: net, evs: evs}
 	}
 }
 

@@ -68,7 +68,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ircMsg:
 		// Apply the event to its network's buffers, then re-subscribe to that
 		// network's stream to keep it alive. A highlight in an unfocused buffer
-		// also rings the terminal bell.
+		// also rings the terminal bell. (Single-event path: used by tests that
+		// inject synthetic events; the live bridge delivers ircBatchMsg.)
 		m = routeEventOn(m, msg.net, msg.ev)
 		cmds := []tea.Cmd{waitForIRC(msg.net)}
 		if m.bell {
@@ -77,6 +78,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// If that event started/refreshed a typing indication, make sure an
 		// expiry tick is running so it clears on time.
+		var tcmd tea.Cmd
+		if m, tcmd = m.ensureTypingTick(time.Now()); tcmd != nil {
+			cmds = append(cmds, tcmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case ircBatchMsg:
+		// A burst of events drained from one network's stream in a single pass
+		// (e.g. a large /list reply). Apply the whole batch before re-rendering
+		// so the consumer stays ahead of the lossy Events buffer and nothing is
+		// dropped. Then re-subscribe once (the bridge's one-in-flight invariant).
+		for i := range msg.evs {
+			m = routeEventOn(m, msg.net, msg.evs[i])
+		}
+		if msg.closed {
+			// Stream ended mid-drain: the drained events are applied above; now
+			// drop the network (mirrors the ircClosedMsg path), quitting if last.
+			m = m.removeNetwork(msg.net)
+			if len(m.networks) == 0 {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		cmds := []tea.Cmd{waitForIRC(msg.net)}
+		if m.bell {
+			cmds = append(cmds, bellCmd())
+			m.bell = false
+		}
 		var tcmd tea.Cmd
 		if m, tcmd = m.ensureTypingTick(time.Now()); tcmd != nil {
 			cmds = append(cmds, tcmd)

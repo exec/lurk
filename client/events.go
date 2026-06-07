@@ -1,9 +1,13 @@
 package client
 
 // eventBufferSize is the capacity of the Events stream channel. It is large
-// enough to absorb a registration burst or a busy channel's traffic while a UI
-// consumer renders a frame, without letting an unbounded backlog accumulate.
-const eventBufferSize = 256
+// enough to absorb a big server burst — a registration flood, a busy channel, or
+// a large /list / WHO / CHATHISTORY reply — while a UI consumer renders a frame,
+// without letting an unbounded backlog accumulate. The TUI bridge drains this in
+// batches (see tui/events.go), so the buffer only needs to cover what arrives
+// during a single render; this headroom keeps a fast loopback bouncer feed from
+// overrunning it between batches.
+const eventBufferSize = 1024
 
 // Events returns a buffered, read-only stream of every protocol event the
 // client dispatches — the same Events that On/OnAny/Handle* callbacks observe,
