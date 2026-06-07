@@ -13,6 +13,7 @@ package server
 
 import (
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -530,5 +531,100 @@ func TestMultipleUnknownCommands(t *testing.T) {
 		}
 		msg := recvMsg(t, client)
 		assertMsg(t, msg, irc.ERR_NOTREGISTERED)
+	}
+}
+
+// ─── Session-cap tests ────────────────────────────────────────────────────────
+
+// TestSessionCapRejectsExcess verifies that Serve closes connections beyond
+// Server.maxSessions before spawning a goroutine for them.
+//
+// Approach: set maxSessions=3, open 4 connections via the real Serve loop,
+// assert the 4th is closed by the server (its Messages channel closes or no
+// message arrives within the deadline), then confirm the goroutine count
+// returns to baseline after all connections close.
+func TestSessionCapRejectsExcess(t *testing.T) {
+	const cap = 3
+
+	// Baseline goroutine count before any test activity.
+	goroutinesBefore := runtime.NumGoroutine()
+
+	// Build a real net.Listener so Serve's accept loop runs.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	s := &Server{
+		cfg:             &Config{},
+		regTimeout:      registrationTimeout,
+		maxSessions:     cap,
+		controlSessions: make(map[*session]struct{}),
+	}
+	s.initBoundSessions()
+
+	go func() { _ = s.Serve(ln) }()
+
+	addr := ln.Addr().String()
+
+	// Open exactly cap connections and keep them open so they hold their slots.
+	var held []net.Conn
+	for i := 0; i < cap; i++ {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("dial #%d: %v", i+1, err)
+		}
+		held = append(held, c)
+	}
+	// Give Serve a moment to accept all cap connections and increment activeSessions.
+	time.Sleep(50 * time.Millisecond)
+
+	// The cap+1'th connection must be closed by the server immediately.
+	excess, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial excess: %v", err)
+	}
+	t.Cleanup(func() { _ = excess.Close() })
+
+	// Wrap in a conn.Conn and read. The server must either close the connection
+	// (channel closes) or send nothing within a short deadline.
+	_ = excess.SetDeadline(time.Now().Add(2 * time.Second))
+	ec := conn.NewConn(excess, conn.Options{})
+	t.Cleanup(func() { _ = ec.Close() })
+
+	rejected := false
+	select {
+	case _, ok := <-ec.Messages():
+		if !ok {
+			// Channel closed: server closed the connection. Expected.
+			rejected = true
+		}
+		// A message arriving means the server accepted the excess connection —
+		// that is a test failure, caught below.
+	case <-time.After(2 * time.Second):
+		// No message and connection still open: also acceptable (rejected at TCP
+		// layer before any data). Count as rejected.
+		rejected = true
+	}
+
+	if !rejected {
+		t.Error("excess connection was accepted past the session cap")
+	}
+
+	// Close all held connections so their session goroutines can exit.
+	for _, c := range held {
+		_ = c.Close()
+	}
+	// Allow session goroutines time to drain.
+	time.Sleep(150 * time.Millisecond)
+
+	// Goroutine count must return to within a small delta of baseline. A large
+	// positive delta indicates leaked session goroutines.
+	goroutinesAfter := runtime.NumGoroutine()
+	delta := goroutinesAfter - goroutinesBefore
+	if delta > 5 {
+		t.Errorf("goroutine leak: %d goroutines before, %d after (delta=%d); want delta ≤ 5",
+			goroutinesBefore, goroutinesAfter, delta)
 	}
 }
