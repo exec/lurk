@@ -466,18 +466,24 @@ func TestDialAndExchangeOverListener(t *testing.T) {
 // when there is space. This is the property that prevents head-of-line blocking
 // in fanout: a slow client's full queue results in a drop, not a goroutine park.
 func TestTrySendDropsWhenFull(t *testing.T) {
-	// stallConn blocks the writer goroutine's Write call indefinitely, so the
-	// outbound channel (capacity writeQueueDepth=64) fills up without being drained.
+	// stallConn blocks the writer goroutine's Flush call indefinitely. With
+	// burst coalescing, writeBurst drains up to writeQueueDepth lines from
+	// c.out into the bufio.Writer (in memory, non-blocking), then blocks at
+	// bw.Flush(). Once it is blocked there, the channel is empty again and
+	// can accept a fresh writeQueueDepth items before the next TrySend must
+	// drop. We therefore try writeQueueDepth*3 sends: at some point the
+	// channel is full while writeBurst is mid-flush and TrySend must return
+	// false.
 	staller := newStallConn()
 	c := NewConn(staller, Options{})
 	t.Cleanup(func() { c.Close() })
 
-	// Give the writer goroutine a moment to pick up the first item from the
-	// channel and block in staller.Write, freeing exactly one slot.
-	time.Sleep(5 * time.Millisecond)
+	// Wait until writeBurst is blocked in stallConn.Write (Flush). At that
+	// point the channel is empty and ready to be filled.
+	time.Sleep(10 * time.Millisecond)
 
 	filled := 0
-	for i := 0; i < writeQueueDepth*2; i++ {
+	for i := 0; i < writeQueueDepth*3; i++ {
 		ok, err := c.TrySend("PING :x")
 		if err != nil {
 			// Conn closed — stop here.
@@ -597,4 +603,55 @@ func (l *countLimiter) calls() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.n
+}
+
+// BenchmarkWriteLoopBurst measures end-to-end throughput when writeQueueDepth
+// lines are queued all at once, exercising the burst-coalescing path in
+// writeBurst. A draining reader goroutine on the server side of net.Pipe reads
+// and discards bytes so the writer is never blocked by a full TCP buffer.
+//
+// The metric of interest is ns/op and allocs/op per batch: with coalescing, a
+// 64-line burst produces a single Flush (one kernel write) instead of 64.
+func BenchmarkWriteLoopBurst(b *testing.B) {
+	const batchSize = writeQueueDepth // one full burst
+
+	// line is a representative PRIVMSG with a timestamp tag (~80 bytes).
+	line := "@time=2026-06-07T00:00:00.000Z PRIVMSG #channel :hello world benchmark"
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		cliRaw, srvRaw := net.Pipe()
+		c := NewConn(cliRaw, Options{})
+
+		// Drain the server side so net.Pipe writes don't block the writer.
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			buf := make([]byte, 4096)
+			for {
+				if _, err := srvRaw.Read(buf); err != nil {
+					return
+				}
+			}
+		}()
+
+		// Pre-fill the outbound queue with a full burst.
+		for j := 0; j < batchSize; j++ {
+			if err := c.Send(line); err != nil {
+				b.Fatalf("Send: %v", err)
+			}
+		}
+		b.StartTimer()
+
+		// Wait for the writer to drain the burst by closing and waiting for
+		// the Conn to fully shut down (the drain goroutine exits with srvRaw).
+		c.Close()
+		srvRaw.Close()
+		<-done
+
+		b.StopTimer()
+	}
 }
