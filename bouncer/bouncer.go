@@ -102,10 +102,34 @@ func EncodeAttrs(pairs [][2]string) string {
 	return sb.String()
 }
 
+// MaxAttrsKeys is the maximum number of distinct keys ParseAttrs will store.
+// It bounds both server-side handling of hostile client ADDNETWORK/CHANGENETWORK
+// blobs and client-side handling of hostile bouncer NETWORK replies: a hostile
+// peer can send k1=v;k2=v;...;kN=v in one line and the map would otherwise grow
+// without limit. The soju.im/bouncer-networks spec defines ~9 known keys; 32 is
+// generous for future extensions while making large key floods inconsequential.
+// Exported so the external test package can assert the boundary.
+const MaxAttrsKeys = 32
+
+// MaxAttrValueLen is the maximum byte length of a single attribute value after
+// unescaping. Values exceeding this are silently truncated before storage. This
+// prevents a hostile peer from persisting or relaying multi-kilobyte values via
+// a single ADDNETWORK/CHANGENETWORK/NETWORK line and amplifying them on every
+// LISTNETWORKS reply or config rewrite. 512 bytes is far above any realistic
+// hostname, nick, realname, or display-name value.
+// Exported so the external test package can assert the boundary.
+const MaxAttrValueLen = 512
+
 // ParseAttrs parses a semicolon-delimited attribute string into a map of
 // unescaped key → value pairs. It is tolerant: empty fields, duplicate keys
 // (last wins), and keys without a value ("key" with no "=") are handled.
 // Returns an empty (non-nil) map for an empty input.
+//
+// Bounds: at most MaxAttrsKeys distinct keys are stored (extras are silently
+// dropped); values longer than MaxAttrValueLen bytes after unescaping are
+// silently truncated. These limits guard both sides of the BOUNCER command
+// surface — a hostile client flooding keys at ADDNETWORK/CHANGENETWORK, and a
+// hostile bouncer sending oversized values in NETWORK lines to a client.
 func ParseAttrs(s string) map[string]string {
 	m := make(map[string]string)
 	if s == "" {
@@ -119,7 +143,16 @@ func ParseAttrs(s string) map[string]string {
 		if k == "" {
 			continue
 		}
-		m[k] = UnescapeAttrValue(v)
+		// Duplicate keys: always apply the last-wins rule, so don't count an
+		// update to an existing key against the key-count ceiling.
+		if _, exists := m[k]; !exists && len(m) >= MaxAttrsKeys {
+			continue // cap reached; drop new keys silently
+		}
+		uv := UnescapeAttrValue(v)
+		if len(uv) > MaxAttrValueLen {
+			uv = uv[:MaxAttrValueLen]
+		}
+		m[k] = uv
 	}
 	return m
 }

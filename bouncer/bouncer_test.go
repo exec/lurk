@@ -137,6 +137,74 @@ func TestParseAttrsEdgeCases(t *testing.T) {
 	}
 }
 
+// TestParseAttrsKeyCountCap verifies that ParseAttrs silently drops keys beyond
+// maxAttrsKeys, preventing unbounded map growth from a hostile blob of the form
+// "k1=v;k2=v;...;kN=v" (server side: hostile ADDNETWORK/CHANGENETWORK; client
+// side: hostile BOUNCER NETWORK line).
+func TestParseAttrsKeyCountCap(t *testing.T) {
+	// Build a string with 2×maxAttrsKeys distinct keys, each with a small value.
+	var sb strings.Builder
+	total := bouncer.MaxAttrsKeys * 2
+	for i := 0; i < total; i++ {
+		if i > 0 {
+			sb.WriteByte(';')
+		}
+		sb.WriteString(strings.Repeat("k", i+1)) // distinct key: "k", "kk", ...
+		sb.WriteByte('=')
+		sb.WriteString("v")
+	}
+	m := bouncer.ParseAttrs(sb.String())
+	if len(m) > bouncer.MaxAttrsKeys {
+		t.Errorf("ParseAttrs stored %d keys; want at most %d (maxAttrsKeys)",
+			len(m), bouncer.MaxAttrsKeys)
+	}
+}
+
+// TestParseAttrsValueLengthCap verifies that ParseAttrs silently truncates
+// values longer than maxAttrValueLen, preventing a hostile peer from persisting
+// or relaying multi-kilobyte values via a single attr blob.
+func TestParseAttrsValueLengthCap(t *testing.T) {
+	longVal := strings.Repeat("x", bouncer.MaxAttrValueLen*4)
+	input := "name=" + longVal
+	m := bouncer.ParseAttrs(input)
+	got, ok := m["name"]
+	if !ok {
+		t.Fatal("ParseAttrs: key 'name' missing")
+	}
+	if len(got) > bouncer.MaxAttrValueLen {
+		t.Errorf("ParseAttrs stored value of length %d; want at most %d (maxAttrValueLen)",
+			len(got), bouncer.MaxAttrValueLen)
+	}
+}
+
+// TestParseAttrsKeyCountCapDuplicates verifies the last-wins duplicate rule is
+// respected even when the key-count cap is in effect: updating an already-stored
+// key must not be charged against the cap (otherwise the cap would spuriously
+// drop the update).
+func TestParseAttrsKeyCountCapDuplicates(t *testing.T) {
+	// Fill exactly maxAttrsKeys distinct keys, then repeat the first key with a
+	// new value. The repeated key must use the new value (last wins), and no
+	// extra key should appear.
+	var sb strings.Builder
+	firstKey := "aa"
+	sb.WriteString(firstKey + "=first")
+	for i := 1; i < bouncer.MaxAttrsKeys; i++ {
+		sb.WriteByte(';')
+		// Distinct keys: "ab", "ac", ...
+		sb.WriteString("a" + string(rune('b'+i)) + "=v")
+	}
+	// Now add the duplicate of the first key with a new value.
+	sb.WriteString(";" + firstKey + "=updated")
+
+	m := bouncer.ParseAttrs(sb.String())
+	if len(m) > bouncer.MaxAttrsKeys {
+		t.Errorf("map has %d keys after duplicate update; want at most %d", len(m), bouncer.MaxAttrsKeys)
+	}
+	if got := m[firstKey]; got != "updated" {
+		t.Errorf("duplicate key %q = %q after cap, want %q (last-wins)", firstKey, got, "updated")
+	}
+}
+
 // ─── Command parsing ──────────────────────────────────────────────────────────
 
 func TestParseCmdBIND(t *testing.T) {
