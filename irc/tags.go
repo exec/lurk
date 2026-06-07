@@ -82,8 +82,9 @@ func escapeTagValue(s string) string {
 }
 
 // maxTagCount is the maximum number of tag entries parseTags will store. The
-// IRCv3 tag budget (8189 bytes) can hold up to ~2729 distinct 3-byte keys, but
-// real servers never send more than a handful. Capping here prevents a hostile
+// IRCv3 tag budget (8189 bytes) can hold roughly 2,000 distinct short keys (a
+// 3-byte key plus its ';' separator is 4 bytes), but real servers never send
+// more than a handful. Capping here prevents a hostile
 // server from inflating per-message map size by filling the tag budget with
 // unique short keys. 64 is well above any legitimate tag set (the largest
 // defined IRCv3 tag sets top out around 10–15 entries).

@@ -392,8 +392,10 @@ func (c *Client) trackJoin(m *irc.Message) {
 			continue
 		}
 		if self {
-			// Our own JOIN: start (or confirm) tracking for the channel.
-			c.st.addChannel(ch)
+			// Our own JOIN: start (or confirm) tracking for the channel. A nil
+			// return (the channel cap was reached) is intentionally ignored —
+			// the JOIN is simply not tracked; nothing here dereferences it.
+			_ = c.st.addChannel(ch)
 			continue
 		}
 		// Someone else's JOIN. A conformant server only sends these for channels
