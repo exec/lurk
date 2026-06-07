@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-06-07
+
 ### Security
 - **Hardened lurkd against a hostile or flapping upstream IRC server** — the
   daemon's connection *out* to the real networks, defense-in-depth on top of the
@@ -326,7 +328,8 @@ Initial release.
 - Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
   `-version` flag.
 
-[Unreleased]: https://github.com/exec/lurk/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/exec/lurk/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/exec/lurk/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/exec/lurk/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/exec/lurk/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/exec/lurk/compare/v1.1.1...v1.2.0
