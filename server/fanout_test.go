@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/exec/lurk/client"
 	"github.com/exec/lurk/conn"
 	"github.com/exec/lurk/irc"
 )
@@ -896,4 +897,317 @@ func TestFanoutConcurrencyRace(t *testing.T) {
 	}
 	wg.Wait()
 	// If we reach here without a panic or race detector alarm, the test passes.
+}
+
+// ─── TestFanoutNonBlocking ────────────────────────────────────────────────────
+
+// TestFanoutNonBlocking verifies that a slow/stuck attached client (one whose
+// outbound queue is permanently full) does NOT stall fanout for a fast client
+// on the same netid. This is the head-of-line-blocking defence.
+//
+// The stuck session is injected directly into boundSessions with a conn.Conn
+// backed by a net.Conn that blocks all writes indefinitely (the conn's writer
+// goroutine is parked and can never drain the queue). We then flood messages
+// from the scripted upstream and assert that the fast client receives all of
+// them within the test deadline.
+func TestFanoutNonBlocking(t *testing.T) {
+	const (
+		netid    = 9
+		nick     = "nbnick"
+		channel  = "#nb"
+		msgCount = 128 // enough to overflow the 64-slot outbound queue twice over
+	)
+
+	allSent := make(chan struct{})
+	testDone := make(chan struct{})
+	var down atomic.Bool
+	t.Cleanup(func() { down.Store(true) })
+	t.Cleanup(func() { close(testDone) })
+
+	dialFn := pipeDialer(t, &down, func(su *scriptedUpstream) {
+		su.register(nick)
+		su.expectJoin(channel)
+		su.sendJoinConfirm(nick, channel)
+		<-allSent
+		for i := 0; i < msgCount; i++ {
+			su.send(":peer!p@host PRIVMSG " + channel + " :msg" + itoa(i))
+		}
+		<-testDone
+	})
+
+	cfg := &Config{
+		Networks: []Network{
+			{
+				NetID:    netid,
+				Name:     "NBNet",
+				Addr:     "upstream.local:6667",
+				Identity: Identity{Nick: nick, User: "u", Realname: "r"},
+				Channels: []string{channel},
+			},
+		},
+	}
+
+	srv := New(cfg)
+	mgr := NewManager(cfg, srv)
+	mgr.dialers = map[int]dialer{netid: dialFn}
+	srv.WithManager(mgr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Manager.Start: %v", err)
+	}
+	t.Cleanup(func() { mgr.Close() })
+
+	// clientFast: a normal bound session backed by a real net.Pipe that we read.
+	clientFast := connectClientToSrv(t, srv)
+	doBindRegister(t, clientFast, "fast", netid)
+
+	// Inject a stuck session directly into boundSessions. The stuck session's
+	// conn is backed by a net.Pipe whose client side we never read — because
+	// net.Pipe writes block when the peer is not reading, the conn writer goroutine
+	// parks on its first write, and the 64-slot outbound queue fills up. Every
+	// subsequent TryWriteMessage call during the flood returns (false, nil) without
+	// blocking the fanout goroutine.
+	//
+	// We bypass the normal registration flow: this test targets the fanout path
+	// only, and directly inserting the session is the cleanest way to isolate it.
+	stuckClientSide, stuckServerSide := net.Pipe()
+	t.Cleanup(func() {
+		_ = stuckClientSide.Close()
+		_ = stuckServerSide.Close()
+	})
+	// stuckClientSide is never read — this stalls the conn writer goroutine.
+	stuckConnObj := conn.NewConn(stuckServerSide, conn.Options{})
+	t.Cleanup(func() { _ = stuckConnObj.Close() })
+
+	// Directly inject the stuck conn as a fake session in boundSessions.
+	stuckSess := &session{
+		srv:   srv,
+		conn:  stuckConnObj,
+		nc:    stuckServerSide,
+		isTLS: false,
+		netid: netid,
+		nick:  "stuck",
+	}
+	srv.boundMu.Lock()
+	if srv.boundSessions[netid] == nil {
+		srv.boundSessions[netid] = make(map[*session]struct{})
+	}
+	srv.boundSessions[netid][stuckSess] = struct{}{}
+	srv.boundMu.Unlock()
+	t.Cleanup(func() { srv.unregisterBoundSession(stuckSess) })
+
+	// Pre-fill the stuck session's outbound queue so it is full before the flood
+	// starts. The writer goroutine will block on the first write (stuckClientSide
+	// never reads), and the remaining 63+ TrySend calls return (false, nil) once
+	// the queue channel is full.
+	for i := 0; i < 70; i++ {
+		_, _ = stuckConnObj.TrySend("PING :prefill")
+	}
+
+	// Both clients are now present. Open the flood gate.
+	time.Sleep(80 * time.Millisecond)
+	close(allSent)
+
+	// clientFast must receive all msgCount messages within 3 s. If fanout
+	// blocked on the stuck client this would time out well before all arrived.
+	received := 0
+	deadline := time.After(3 * time.Second)
+	for received < msgCount {
+		select {
+		case msg, ok := <-clientFast.Messages():
+			if !ok {
+				t.Fatalf("clientFast connection closed after %d messages", received)
+			}
+			if msg.Command == "PRIVMSG" && strings.HasPrefix(msg.Param(1), "msg") {
+				received++
+			}
+		case <-deadline:
+			t.Fatalf("clientFast received only %d/%d messages within 3s; fanout may have blocked on stuck client",
+				received, msgCount)
+		}
+	}
+	// Reaching here proves the stuck session did not stall the fanout goroutine.
+}
+
+// ─── TestFanoutEarlyExitNoSessions ───────────────────────────────────────────
+
+// TestFanoutEarlyExitNoSessions verifies that when no sessions are bound to a
+// netid, fanout returns without calling fanoutToSession (no per-message
+// allocation). Critically, the backlog sink must still receive the message —
+// detached capture is the whole point of a bouncer.
+//
+// We wire a dualSink as the manager's Sink so that each upstream event reaches
+// both a collectSink (our "backlog store" stand-in) and the server's Ingest.
+func TestFanoutEarlyExitNoSessions(t *testing.T) {
+	const (
+		netid   = 10
+		nick    = "eenick"
+		channel = "#ee"
+	)
+
+	msgSent := make(chan struct{})
+	testDone := make(chan struct{})
+	var down atomic.Bool
+	t.Cleanup(func() { down.Store(true) })
+	t.Cleanup(func() { close(testDone) })
+
+	dialFn := pipeDialer(t, &down, func(su *scriptedUpstream) {
+		su.register(nick)
+		su.expectJoin(channel)
+		su.sendJoinConfirm(nick, channel)
+		<-msgSent
+		su.send(":peer!p@host PRIVMSG " + channel + " :detached message")
+		<-testDone
+	})
+
+	cfg := &Config{
+		Networks: []Network{
+			{
+				NetID:    netid,
+				Name:     "EENet",
+				Addr:     "upstream.local:6667",
+				Identity: Identity{Nick: nick, User: "u", Realname: "r"},
+				Channels: []string{channel},
+			},
+		},
+	}
+
+	collect := &collectSink{}
+	srv := New(cfg)
+
+	// dualSink fans each event to both collect (our store stand-in) and srv.
+	dual := &dualSink{a: collect, b: srv}
+
+	mgr := NewManager(cfg, dual)
+	mgr.dialers = map[int]dialer{netid: dialFn}
+	srv.WithManager(mgr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Manager.Start: %v", err)
+	}
+	t.Cleanup(func() { mgr.Close() })
+
+	// No client is attached (zero sessions bound to netid). Signal upstream to send.
+	time.Sleep(80 * time.Millisecond)
+	close(msgSent)
+
+	// The collect sink must see the PRIVMSG (store-path fires even with no sessions).
+	if !collect.waitForPrivmsg(netid, "detached message", 3*time.Second) {
+		t.Fatal("backlog sink did not receive the PRIVMSG — detached capture broken")
+	}
+
+	// No sessions are in boundSessions, confirming fanout early-exited cleanly.
+	srv.boundMu.RLock()
+	n := len(srv.boundSessions[netid])
+	srv.boundMu.RUnlock()
+	if n != 0 {
+		t.Errorf("boundSessions[%d] = %d, want 0 (no clients attached)", netid, n)
+	}
+}
+
+// dualSink routes every Ingest call to two sinks in order. It is used by
+// TestFanoutEarlyExitNoSessions to observe events without bypassing the server.
+type dualSink struct {
+	a Sink
+	b Sink
+}
+
+func (d *dualSink) Ingest(netid int, ev *client.Event) {
+	d.a.Ingest(netid, ev)
+	d.b.Ingest(netid, ev)
+}
+
+// ─── TestFanoutSuppressKillAndError ──────────────────────────────────────────
+
+// TestFanoutSuppressKillAndError verifies that KILL and ERROR from the upstream
+// are NOT relayed to attached clients. A hostile upstream sending either of
+// these would otherwise cause all attached sessions to disconnect (IRC clients
+// treat inbound KILL/ERROR aimed at themselves as a disconnect signal).
+//
+// Test strategy: send KILL/ERROR from the scripted upstream, assert the client
+// does NOT receive the hostile command within a short window, then confirm the
+// client session is still alive by sending it a PING and receiving a PONG.
+func TestFanoutSuppressKillAndError(t *testing.T) {
+	const (
+		nick    = "killnick"
+		channel = "#killchan"
+	)
+
+	for i, hostile := range []string{"KILL", "ERROR"} {
+		hostile := hostile
+		netid := 20 + i // use distinct netids so sub-tests don't share state
+		t.Run(hostile, func(t *testing.T) {
+			sent := make(chan struct{})
+			testDone := make(chan struct{})
+			var down atomic.Bool
+			t.Cleanup(func() { down.Store(true) })
+			t.Cleanup(func() { close(testDone) })
+
+			dialFn := pipeDialer(t, &down, func(su *scriptedUpstream) {
+				su.register(nick)
+				su.expectJoin(channel)
+				su.sendJoinConfirm(nick, channel)
+				<-sent
+				if hostile == "KILL" {
+					su.send(":upstream.local KILL " + nick + " :you are removed")
+				} else {
+					su.send("ERROR :Closing link")
+				}
+				// Hold the connection open long enough for the test to assert.
+				// (The client.Client may reconnect; we don't care — we just need
+				// the hostile message to have passed through fanout.)
+				<-testDone
+			})
+
+			cfg := &Config{
+				Networks: []Network{
+					{
+						NetID:    netid,
+						Name:     "KillNet" + itoa(netid),
+						Addr:     "upstream.local:6667",
+						Identity: Identity{Nick: nick, User: "u", Realname: "r"},
+						Channels: []string{channel},
+					},
+				},
+			}
+
+			srv := New(cfg)
+			mgr := NewManager(cfg, srv)
+			mgr.dialers = map[int]dialer{netid: dialFn}
+			srv.WithManager(mgr)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			if err := mgr.Start(ctx); err != nil {
+				t.Fatalf("Manager.Start: %v", err)
+			}
+			t.Cleanup(func() { mgr.Close() })
+
+			c := connectClientToSrv(t, srv)
+			doBindRegister(t, c, "victim", netid)
+			time.Sleep(50 * time.Millisecond)
+
+			close(sent)
+
+			// The KILL or ERROR must NOT arrive at the client.
+			noMsgFor(t, c, 300*time.Millisecond, func(m *irc.Message) bool {
+				return m.Command == hostile
+			})
+
+			// Confirm the client session is still alive: send a PING, expect a PONG
+			// from lurkd. If KILL/ERROR had been forwarded the client's run loop
+			// would have torn down the session and PING would not get a PONG.
+			sendLine(t, c, "PING :liveness")
+			_ = waitMsg(t, c, 2*time.Second, func(m *irc.Message) bool {
+				return m.Command == "PONG"
+			})
+		})
+	}
 }

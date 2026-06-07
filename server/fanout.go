@@ -218,6 +218,33 @@ func (s *Server) fanout(netid int, ev *client.Event, storeMsgID string) {
 		return
 	}
 
+	// Suppress KILL and ERROR from the upstream→client relay path. These
+	// commands target lurkd's own server-to-server link, not the attached
+	// clients. A hostile upstream sending KILL <lurkd-nick> or ERROR would
+	// otherwise be forwarded verbatim; IRC clients treat an inbound KILL or
+	// ERROR aimed at themselves as a disconnect signal, dropping every attached
+	// session (DoS). The messages are already stored (or not) by the backlog
+	// path above; they must never reach attached clients.
+	if cmd == "KILL" || cmd == "ERROR" {
+		return
+	}
+
+	// Early-exit if no sessions are currently bound to this netid. This avoids
+	// O(message rate × tags+params) allocation under an upstream flood when no
+	// client is attached — the common detached-bouncer case. The backlog store
+	// has already been called by Ingest before fanout, so detached capture is
+	// unaffected by this guard.
+	s.boundMu.RLock()
+	sessions := make([]*session, 0, len(s.boundSessions[netid]))
+	for sess := range s.boundSessions[netid] {
+		sessions = append(sessions, sess)
+	}
+	s.boundMu.RUnlock()
+
+	if len(sessions) == 0 {
+		return
+	}
+
 	// Build the relayed message: original message with @time tag added.
 	ts := formatServerTime(ev.Time())
 
@@ -256,14 +283,6 @@ func (s *Server) fanout(netid int, ev *client.Event, storeMsgID string) {
 		Command: cmd,
 		Params:  params,
 	}
-
-	// Snapshot bound sessions under RLock, then release before I/O.
-	s.boundMu.RLock()
-	sessions := make([]*session, 0, len(s.boundSessions[netid]))
-	for sess := range s.boundSessions[netid] {
-		sessions = append(sessions, sess)
-	}
-	s.boundMu.RUnlock()
 
 	for _, sess := range sessions {
 		s.fanoutToSession(sess, base, ev)
@@ -321,10 +340,21 @@ func (s *Server) fanoutToSession(sess *session, base *irc.Message, ev *client.Ev
 		}
 	}
 
-	if err := sess.conn.WriteMessage(msg); err != nil {
-		// The session may have disconnected between snapshot and send; this is
-		// harmless. Log only at debug level; do not tear down anything.
+	// Use non-blocking TryWriteMessage so a slow or stuck attached client
+	// cannot stall the upstream OnAny goroutine (and thus block fanout for
+	// every other session on this netid). When the outbound queue is full the
+	// message is dropped for this session only; the session is not torn down
+	// (transient slowness is acceptable). If the session is persistently
+	// overloaded its TCP send buffer will eventually fill, the kernel will
+	// close the connection, and the session's run loop will exit naturally.
+	if ok, err := sess.conn.TryWriteMessage(msg); err != nil {
+		// Serialization failure or conn already closed — harmless.
 		log.Printf("server: fanout to session (netid=%d): %v", sess.netid, err)
+	} else if !ok {
+		// Queue full: drop this message for this session and log. The drop is
+		// expected under an upstream flood when a client is not reading fast
+		// enough; it prevents head-of-line blocking across all other sessions.
+		log.Printf("server: fanout drop (netid=%d): session queue full, message dropped", sess.netid)
 	}
 }
 
