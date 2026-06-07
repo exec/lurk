@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/exec/lurk/client"
+	"github.com/exec/lurk/irc"
 )
 
 // TestBatchRefreshOnce is the regression test for O(batch × scrollback) viewport
@@ -78,6 +79,50 @@ func TestBatchRefreshDirtyFlagCleared(t *testing.T) {
 	}
 	if m.batchMode {
 		t.Error("batchMode still true after ircBatchMsg handler returned")
+	}
+}
+
+// BenchmarkBatchRefresh measures the cost of applying a 200-event burst through
+// Update on a sized, active channel buffer. Before the fix each event called
+// b.refresh() → strings.Join(all scrollback) → vp.SetContent, so a burst of N
+// events with a scrollback of S lines cost O(N×S). After the fix a single
+// refreshIfDirty() call runs at the end of the batch (O(S) once), decoupling
+// burst size from refresh cost. Run with -benchmem to see allocation savings.
+func BenchmarkBatchRefresh(b *testing.B) {
+	// Build a sized model with an active channel buffer and a pre-loaded
+	// scrollback (200 lines) so the joined string is non-trivial.
+	m := sizedModelB(b)
+	_, i := m.ensureBuffer("#bench", BufferChannel)
+	m.switchTo(i)
+	m = layout(m)
+	net := m.activeNet()
+
+	// parseEvB parses a raw IRC line into a client.Event for use in benchmarks
+	// (evt takes *testing.T, not *testing.B).
+	parseEvB := func(line string) client.Event {
+		m, err := irc.Parse(line)
+		if err != nil {
+			b.Fatalf("parse %q: %v", line, err)
+		}
+		return client.Event{Message: m}
+	}
+
+	// Pre-fill the scrollback so the refresh has real content to Join.
+	for k := 0; k < 200; k++ {
+		m = appendLine(m, m.activeBuffer(), parseEvB(fmt.Sprintf(":pre!p@h PRIVMSG #bench :line %d", k)))
+	}
+
+	// Build a 200-event burst — the kind a bouncer chathistory replay delivers.
+	const batchSize = 200
+	evs := make([]client.Event, batchSize)
+	for k := range evs {
+		evs[k] = parseEvB(fmt.Sprintf(":alice!a@h PRIVMSG #bench :message %d", k))
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		tm, _ := m.Update(ircBatchMsg{net: net, evs: evs})
+		_ = tm
 	}
 }
 
