@@ -17,6 +17,8 @@ package server
 //  - Malformed BOUNCER subcommand → FAIL not panic
 //  - Double-BIND → FAIL ALREADY_BOUND
 //  - BIND after registration → FAIL
+//  - Pre-auth BOUNCER BIND oracle blocked: unauthenticated BIND returns NOT_AUTHED,
+//    not INVALID_NETID, for both valid and unknown netids (no netid-existence oracle)
 //  - Manager Add/Remove race safety (checked by -race)
 //  - Control-session registry: session joins on registration, leaves on disconnect
 //  - LISTNETWORKS password attr must not be present
@@ -329,6 +331,59 @@ func TestDoubleBind(t *testing.T) {
 	}
 }
 
+// TestBindPreAuthOracleBlocked verifies that when BouncerAuth is configured,
+// an unauthenticated client that sends BOUNCER BIND before or after a failed
+// SASL exchange cannot probe which netids exist. The netid lookup (findNetworkByID)
+// must not be reachable before authentication; both a valid and an unknown netid
+// must return the same NOT_AUTHED failure code so the attacker learns nothing.
+func TestBindPreAuthOracleBlocked(t *testing.T) {
+	cfg := makeTestCfg(t, "alice", "secret")
+	cfg.Networks = []Network{
+		{NetID: 42, Name: "ExistsNet", Addr: "irc.example.com:6697",
+			Identity: Identity{Nick: "n", User: "u", Realname: "r"}},
+	}
+
+	// isTLS=true so SASL PLAIN is available, but we intentionally fail auth.
+	c := pipeServerWith(t, cfg, true /* isTLS */)
+
+	sendLine(t, c, "CAP LS 302")
+	_ = recvMsg(t, c)
+
+	sendLine(t, c, "CAP REQ :sasl soju.im/bouncer-networks")
+	_ = recvMsg(t, c) // CAP ACK
+
+	sendLine(t, c, "AUTHENTICATE PLAIN")
+	_ = recvMsg(t, c) // AUTHENTICATE +
+
+	// Deliberately wrong password — SASL fails, saslAuthed stays false.
+	sendLine(t, c, "AUTHENTICATE "+plainPayload("", "alice", "wrongpassword"))
+	r904 := recvMsg(t, c)
+	assertMsg(t, r904, irc.ERR_SASLFAIL)
+
+	// Now attempt BOUNCER BIND for a VALID netid — must get NOT_AUTHED (not INVALID_NETID).
+	sendLine(t, c, "BOUNCER BIND 42")
+	fail := recvMsg(t, c)
+	if fail.Command != irc.FAIL {
+		t.Fatalf("expected FAIL for unauthenticated BIND, got %s", fail.Command)
+	}
+	if fail.Param(1) == "INVALID_NETID" {
+		t.Errorf("unauthenticated BIND of valid netid 42 returned INVALID_NETID — leaks netid existence oracle; want NOT_AUTHED")
+	}
+	if fail.Param(1) != "NOT_AUTHED" {
+		t.Errorf("unauthenticated BIND: FAIL code = %q, want NOT_AUTHED", fail.Param(1))
+	}
+
+	// Attempt BOUNCER BIND for an UNKNOWN netid — must also get NOT_AUTHED, not INVALID_NETID.
+	sendLine(t, c, "BOUNCER BIND 999")
+	fail2 := recvMsg(t, c)
+	if fail2.Command != irc.FAIL {
+		t.Fatalf("expected FAIL for unauthenticated BIND of unknown netid, got %s", fail2.Command)
+	}
+	if fail2.Param(1) != "NOT_AUTHED" {
+		t.Errorf("unauthenticated BIND of unknown netid: FAIL code = %q, want NOT_AUTHED", fail2.Param(1))
+	}
+}
+
 // TestBindAfterRegistration verifies that BOUNCER BIND sent after the welcome
 // burst returns FAIL INVALID_PARAMS.
 func TestBindAfterRegistration(t *testing.T) {
@@ -555,6 +610,44 @@ func TestADDNETWORK(t *testing.T) {
 	}
 	if notifyMsg.Param(1) != "1" {
 		t.Errorf("c2 notify netid = %q, want 1", notifyMsg.Param(1))
+	}
+}
+
+// ─── ADDNETWORK network-limit test ───────────────────────────────────────────
+
+// TestADDNETWORKLimit verifies that BOUNCER ADDNETWORK returns FAIL
+// NETWORK_LIMIT when cfg.Networks is already at maxNetworks, and that the
+// in-memory count does not exceed the cap.
+func TestADDNETWORKLimit(t *testing.T) {
+	// Pre-fill a config with exactly maxNetworks entries so the very first
+	// ADDNETWORK from the client should be rejected.
+	networks := make([]Network, maxNetworks)
+	for i := range networks {
+		networks[i] = Network{
+			NetID:    i + 1,
+			Name:     fmt.Sprintf("Net%d", i+1),
+			Addr:     "irc.example.com:6697",
+			Identity: Identity{Nick: "n", User: "u", Realname: "r"},
+		}
+	}
+	cfg := &Config{Networks: networks}
+
+	c := pipeServerWith(t, cfg, false)
+	doRegisterSimple(t, c, "limituser")
+
+	// Issue one more ADDNETWORK — must be rejected.
+	sendLine(t, c, "BOUNCER ADDNETWORK name=Overflow;host=irc.example.com;port=6697")
+	msg := recvMsg(t, c)
+	if msg.Command != irc.FAIL {
+		t.Fatalf("expected FAIL when at network limit, got %s", msg.Command)
+	}
+	if msg.Param(1) != "NETWORK_LIMIT" {
+		t.Errorf("FAIL code = %q, want NETWORK_LIMIT", msg.Param(1))
+	}
+
+	// In-memory count must still be exactly maxNetworks (not maxNetworks+1).
+	if got := len(cfg.Networks); got != maxNetworks {
+		t.Errorf("network count = %d after limit FAIL, want %d", got, maxNetworks)
 	}
 }
 

@@ -26,6 +26,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/exec/lurk/backlog"
@@ -42,11 +43,34 @@ const serverName = "lurkd.local"
 // RPL_MYINFO (004).
 const serverVersion = "lurkd-1"
 
+// maxSessions is the default cap on simultaneous accepted connections (both
+// pre-registration and fully-registered). lurkd is a single-user daemon; a
+// phone + laptop + a control client is a realistic maximum. The cap prevents a
+// hostile authenticated-but-idle client from exhausting goroutines and file
+// descriptors: each accepted connection costs ≥2 goroutines + 1 FD.
+//
+// Connections beyond the cap are closed immediately at the accept loop — before
+// any goroutine is spawned — so the cap is enforced even for half-open
+// (slow-loris) attempts.
+//
+// Tests override this via Server.maxSessions (a zero value means "use the
+// default").
+const defaultMaxSessions = 64
+
 // maxCapRequests caps how many distinct capability names a client may include
 // across all CAP REQ lines during registration. A conformant client sends at
 // most the set it received in CAP LS; this bound guards against a hostile client
 // flooding the registration loop with arbitrarily many names.
 const maxCapRequests = 256
+
+// maxNetworks is the maximum number of upstream networks lurkd will manage.
+// It bounds BOUNCER ADDNETWORK against a hostile (but authenticated) client
+// issuing unbounded ADDs, which would otherwise grow cfg.Networks without
+// limit (unbounded JSON config on disk), start one upstream goroutine + FD per
+// network, and make NextNetID's linear scan increasingly expensive (O(N²) over
+// N successive ADDs). A cap of 256 is far above any realistic single-user
+// configuration and keeps the worst-case config file well under ~200 KiB.
+const maxNetworks = 256
 
 // registrationTimeout is the maximum time a client has to complete the
 // registration handshake (CAP + NICK/USER + optional SASL + CAP END + welcome
@@ -123,6 +147,16 @@ type Server struct {
 	// New defaults it to registrationTimeout; tests set a short value to exercise
 	// the idle-client drop without waiting the full production timeout.
 	regTimeout time.Duration
+
+	// maxSessions is the concurrent-connection cap. Zero means use
+	// defaultMaxSessions. Tests set a small value to exercise the rejection
+	// path without opening many real connections.
+	maxSessions int
+
+	// activeSessions is the current count of accepted, not-yet-closed
+	// connections. It is incremented atomically at accept and decremented
+	// when serveConn returns. The accept loop checks it before spawning.
+	activeSessions atomic.Int64
 
 	// store is the durable backlog store used to serve CHATHISTORY queries.
 	// Set via WithStore. If nil, CHATHISTORY returns an empty batch.
@@ -290,17 +324,42 @@ func loadTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 	}, nil
 }
 
+// sessionLimit returns the effective concurrent-connection cap, honouring the
+// test override in s.maxSessions.
+func (s *Server) sessionLimit() int64 {
+	if s.maxSessions > 0 {
+		return int64(s.maxSessions)
+	}
+	return defaultMaxSessions
+}
+
 // Serve accepts connections from ln until it returns an error. Each accepted
 // connection is handed to serveConn in a new goroutine. Serve blocks until ln
 // is closed. It is intended for cmd/lurkd's main loop; tests drive serveConn
 // directly without a real socket.
+//
+// Connections beyond sessionLimit are closed immediately at the accept loop —
+// before any goroutine is spawned — guarding against goroutine and FD
+// exhaustion by a hostile client that opens many connections.
 func (s *Server) Serve(ln net.Listener) error {
 	for {
 		nc, err := ln.Accept()
 		if err != nil {
 			return fmt.Errorf("server: accept: %w", err)
 		}
+
+		// Enforce the concurrent-session cap before spawning a goroutine.
+		// We increment first and check: if the new count exceeds the limit,
+		// decrement and close the connection without allocating anything else.
+		if s.activeSessions.Add(1) > s.sessionLimit() {
+			s.activeSessions.Add(-1)
+			log.Printf("server: session limit (%d) reached; closing %s", s.sessionLimit(), nc.RemoteAddr())
+			_ = nc.Close()
+			continue
+		}
+
 		go func() {
+			defer s.activeSessions.Add(-1)
 			if err := s.serveConn(nc); err != nil {
 				log.Printf("server: conn %s: %v", nc.RemoteAddr(), err)
 			}

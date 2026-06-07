@@ -74,6 +74,17 @@ func (s *session) handleBouncerBIND(cmd bouncer.Cmd) error {
 			"BOUNCER BIND must be sent before registration completes")
 	}
 
+	// Auth gate: when bouncer authentication is configured, BIND must not run
+	// the netid lookup before the client has authenticated. Without this check
+	// an unauthenticated client could probe which netids exist (a pre-auth
+	// information-disclosure oracle) by observing whether the response is
+	// INVALID_NETID vs. NOT_AUTHED. The findNetworkByID call below must not
+	// be reachable by an unauthenticated session.
+	if s.srv.cfg.BouncerAuth.User != "" && !s.saslAuthed {
+		return s.sendFail("BOUNCER", "NOT_AUTHED",
+			"authentication required before BOUNCER BIND")
+	}
+
 	// Validate the netid exists in the current config (under cfgMu).
 	if _, ok := s.srv.findNetworkByID(cmd.NetID); !ok {
 		return s.sendFail("BOUNCER", "INVALID_NETID",
@@ -162,6 +173,10 @@ func (s *session) handleBouncerADDNETWORK(cmd bouncer.Cmd) error {
 	// COPY of the appended network, safe to use after the lock is released.
 	added, err := s.srv.addNetwork(attrsToNetwork(cmd.Attrs))
 	if err != nil {
+		if err == errNetworkLimitReached {
+			return s.sendFail("BOUNCER", "NETWORK_LIMIT",
+				fmt.Sprintf("ADDNETWORK: %v", err))
+		}
 		return s.sendFail("BOUNCER", "INTERNAL_ERROR",
 			fmt.Sprintf("ADDNETWORK: persist failed: %v", err))
 	}
@@ -336,14 +351,27 @@ func (s *Server) findNetworkByID(netid int) (Network, bool) {
 	return Network{}, false
 }
 
+// errNetworkLimitReached is returned by addNetwork when cfg.Networks is already
+// at maxNetworks. It is a sentinel so the handler can send a specific FAIL code
+// (NETWORK_LIMIT) rather than the generic INTERNAL_ERROR.
+var errNetworkLimitReached = fmt.Errorf("network limit reached (%d)", maxNetworks)
+
 // addNetwork allocates the next netid for nw, appends it to cfg.Networks, and
 // persists. On a Save failure the append is rolled back so disk and memory stay
 // consistent. It returns a COPY of the appended network (with its assigned
 // netid). The caller must start the upstream (mgr.Add) OUTSIDE the lock using
 // the returned copy.
+//
+// Returns errNetworkLimitReached (without modifying state) when the current
+// count is already at maxNetworks.
 func (s *Server) addNetwork(nw Network) (Network, error) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
+
+	// Enforce the per-daemon network ceiling before any allocation or I/O.
+	if len(s.cfg.Networks) >= maxNetworks {
+		return Network{}, errNetworkLimitReached
+	}
 
 	nw.NetID = s.cfg.NextNetID()
 	s.cfg.Networks = append(s.cfg.Networks, nw)
