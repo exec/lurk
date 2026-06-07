@@ -86,12 +86,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ircBatchMsg:
 		// A burst of events drained from one network's stream in a single pass
-		// (e.g. a large /list reply). Apply the whole batch before re-rendering
-		// so the consumer stays ahead of the lossy Events buffer and nothing is
-		// dropped. Then re-subscribe once (the bridge's one-in-flight invariant).
+		// (e.g. a large /list reply or a chathistory replay). Apply the whole
+		// batch before re-rendering so the consumer stays ahead of the lossy
+		// Events buffer and nothing is dropped. Then re-subscribe once (the
+		// bridge's one-in-flight invariant).
+		//
+		// batchMode tells appendLine/appendInfo to mark the active buffer dirty
+		// instead of calling refresh() on every line — avoiding O(batch ×
+		// scrollback) work. The single refreshIfDirty() call below does at most
+		// one SetContent for the whole burst.
+		m.batchMode = true
 		for i := range msg.evs {
 			m = routeEventOn(m, msg.net, msg.evs[i])
 		}
+		m.batchMode = false
+		m.activeBuffer().refreshIfDirty()
 		if msg.closed {
 			// Stream ended mid-drain: the drained events are applied above; now
 			// drop the network (mirrors the ircClosedMsg path), quitting if last.

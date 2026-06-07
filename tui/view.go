@@ -571,7 +571,14 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 		// drawing a spurious "new messages" divider directly above a message you
 		// just saw appear.
 		b.readMarker = len(b.lines)
-		b.refresh()
+		if m.batchMode {
+			// In batch mode the ircBatchMsg handler calls refreshIfDirty() once
+			// after the whole loop; mark dirty here and skip the per-line refresh
+			// so SetContent is not called O(batch) times on the same scrollback.
+			b.dirty = true
+		} else {
+			b.refresh()
+		}
 	case ev.BatchType() == "chathistory":
 		// Replayed backlog into a background buffer is rendered but is not "new
 		// activity": it must not inflate unread or raise a highlight (your own
@@ -600,7 +607,11 @@ func appendInfo(m model, b *Buffer, text string) model {
 	if b == m.activeBuffer() {
 		m.shiftSearchMatches(drop)
 		b.readMarker = len(b.lines) // a line added to the focused buffer is read on arrival
-		b.refresh()
+		if m.batchMode {
+			b.dirty = true
+		} else {
+			b.refresh()
+		}
 	} else {
 		b.Unread++
 	}

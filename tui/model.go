@@ -127,6 +127,24 @@ type model struct {
 	// request a bell without reaching for I/O.
 	bell bool
 
+	// batchMode is set by the ircBatchMsg handler for the duration of its event
+	// loop so that appendLine/appendInfo skip the per-line refresh() of the
+	// active viewport (which would re-join and SetContent the entire scrollback
+	// for every event). The handler calls refreshIfDirty() once after the loop.
+	batchMode bool
+
+	// membersCache is a one-per-Update-pass memoization of sortedMembers for
+	// the active channel. sortedMembers snapshots the client's member list and
+	// sorts it (O(N log N)); on a 10k-member channel that cost adds up when
+	// several call sites within one Update+View cycle each call it independently.
+	// The cache is populated on the first sortedMembers call in a pass and reused
+	// by all subsequent calls (renderNicklist, handleNickFocusKey, enterNickFocus,
+	// memberPrefixes). It is invalidated whenever the active buffer changes
+	// (membersCacheFor tracks which buffer the cached slice belongs to) so a
+	// buffer switch never surfaces stale nicks.
+	membersCache    []client.Member
+	membersCacheFor *Buffer // the buffer whose members are cached
+
 	// highlights are extra mention words (besides the nick), and ignored are the
 	// nicks whose messages are suppressed. Both are keyed by ASCII-folded form and
 	// are reference-type maps, so the slash-command handlers (which receive the

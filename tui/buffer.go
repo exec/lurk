@@ -92,6 +92,12 @@ type Buffer struct {
 	// a "new messages" divider can be drawn before everything that arrived since.
 	// It is adjusted when old lines are trimmed (addLine).
 	readMarker int
+
+	// dirty is set when a line is added to the active buffer during a batch
+	// (ircBatchMsg). appendLine skips the inline refresh() while the batch is
+	// being processed; the ircBatchMsg handler calls refreshIfDirty() once after
+	// the whole batch so SetContent runs at most once per Update cycle.
+	dirty bool
 }
 
 // newBuffer creates a channel or PM buffer for name. The server buffer is built
@@ -181,6 +187,18 @@ func (b *Buffer) refresh() {
 	b.vp.SetContent(b.wrapped())
 	if stick {
 		b.vp.GotoBottom()
+	}
+	b.dirty = false
+}
+
+// refreshIfDirty calls refresh only when new lines have arrived since the last
+// refresh, and is a no-op otherwise. It is used by the ircBatchMsg handler to
+// run a single SetContent for an entire burst of events rather than one per
+// event (the appendLine hot path sets dirty instead of calling refresh directly
+// during batch processing).
+func (b *Buffer) refreshIfDirty() {
+	if b.dirty {
+		b.refresh()
 	}
 }
 
