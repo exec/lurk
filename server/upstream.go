@@ -437,8 +437,24 @@ func (m *Manager) Add(ctx context.Context, nw *Network) error {
 	return nil
 }
 
+// removeClientDrainTimeout is the maximum time Remove waits for a removed
+// client's reconnect supervisor to stop after Close is called. The wait
+// ensures that no late OnAny event — fired from the supervisor's final session
+// attempt — reaches the Sink after the netid has been evicted, which would
+// pollute an unrelated network's backlog if the netid is immediately reused
+// (rapid DELNETWORK → ADDNETWORK). The value is generous enough to absorb a
+// clean supervisor wind-down (a few milliseconds in practice) while still
+// bounding the remove latency in the worst case.
+const removeClientDrainTimeout = 5 * time.Second
+
 // Remove stops and removes the upstream with the given netid. If no such
 // upstream is managed, Remove is a no-op. It is safe to call concurrently.
+//
+// Remove waits for the removed client's goroutines to fully stop (up to
+// removeClientDrainTimeout) before returning. This prevents a late OnAny
+// event from the dying client's reconnect supervisor reaching the Sink with
+// the evicted netid — which would corrupt another network's backlog if the
+// same netid is promptly reused via ADDNETWORK.
 func (m *Manager) Remove(netid int) {
 	m.mu.Lock()
 	var found *upstreamEntry
@@ -451,8 +467,20 @@ func (m *Manager) Remove(netid int) {
 	}
 	m.mu.Unlock()
 
-	if found != nil {
-		_ = found.client.Close()
+	if found == nil {
+		return
+	}
+
+	_ = found.client.Close()
+
+	// Drain: wait for the supervisor goroutine to stop so no further OnAny
+	// call arrives for this netid. client.Done closes once the supervisor
+	// (or the single-session bridge) has fully unwound, at which point the
+	// OnAny handler can no longer fire.
+	select {
+	case <-found.client.Done():
+	case <-time.After(removeClientDrainTimeout):
+		log.Printf("upstream: Remove: netid %d client did not stop within %s; proceeding", netid, removeClientDrainTimeout)
 	}
 }
 

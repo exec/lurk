@@ -838,3 +838,128 @@ func TestUpstreamRegistrationTimeout(t *testing.T) {
 		t.Error("Manager.Close did not return within 2 s — retry goroutine leaked (registration timeout not applied?)")
 	}
 }
+
+// ─── TestRemoveDrainsBeforeNetIDReuse ─────────────────────────────────────────
+
+// TestRemoveDrainsBeforeNetIDReuse verifies the stale-event guard in Remove:
+// after Remove(netid) returns, no further Sink.Ingest call may arrive for that
+// netid — even when the removed client was in the middle of reconnecting and
+// its OnAny handler could still fire from the dying supervisor goroutine.
+//
+// Without the drain wait, a rapid DELNETWORK → ADDNETWORK cycle could route a
+// stale event from the old client to the new network's backlog (same netid,
+// different upstream). With the fix, Remove waits for client.Done before
+// returning, guaranteeing the supervisor has fully unwound.
+func TestRemoveDrainsBeforeNetIDReuse(t *testing.T) {
+	const (
+		nick  = "drainick"
+		netid = 30
+	)
+
+	testDone := make(chan struct{})
+	var down atomic.Bool
+	t.Cleanup(func() {
+		down.Store(true)
+		close(testDone)
+	})
+
+	// dialFn: registers, then drops immediately to trigger the reconnect
+	// supervisor. The second dial (reconnect attempt) holds open until testDone
+	// so the supervisor is alive and could theoretically send events.
+	var dialCount int
+	var dialMu sync.Mutex
+	dialFn := func(_ context.Context) (net.Conn, error) {
+		dialMu.Lock()
+		dialCount++
+		n := dialCount
+		dialMu.Unlock()
+
+		clientSide, serverSide := net.Pipe()
+		su := newScriptedUpstream(t, serverSide)
+		su.down = &down
+		go func() {
+			defer su.close()
+			su.register(nick)
+			if n == 1 {
+				// First connection: drop immediately to trigger reconnect.
+				return
+			}
+			// Subsequent connections: hold open until test ends.
+			<-testDone
+		}()
+		return clientSide, nil
+	}
+
+	cfg := &Config{
+		Networks: []Network{
+			{NetID: netid, Name: "DrainNet", Addr: "drain.local:6667",
+				Identity: Identity{Nick: nick, User: "u", Realname: "r"}},
+		},
+	}
+	sink := &collectSink{}
+	mgr := NewManager(cfg, sink)
+	mgr.dialers = map[int]dialer{netid: dialFn}
+	t.Cleanup(func() { mgr.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("Manager.Start: %v", err)
+	}
+
+	// Wait for the first connection to register (001 in sink).
+	if ev := sink.waitForCommand(netid, "001", 3*time.Second); ev == nil {
+		t.Fatal("timed out waiting for initial 001 in Sink")
+	}
+
+	// Wait for the upstream to enter ConnReconnecting (supervisor is live and
+	// about to re-dial). This is the window where a late OnAny could fire.
+	if !waitForUpstreamState(mgr, netid, ConnReconnecting, 3*time.Second) {
+		st, _ := mgr.UpstreamState(netid)
+		t.Fatalf("upstream did not enter ConnReconnecting; state=%v", st)
+	}
+
+	// Call Remove while the supervisor is active. With the fix, Remove must
+	// not return until client.Done closes (supervisor fully unwound).
+	removeDone := make(chan struct{})
+	go func() {
+		mgr.Remove(netid)
+		close(removeDone)
+	}()
+
+	select {
+	case <-removeDone:
+		// Good: Remove returned (within removeClientDrainTimeout + margin).
+	case <-time.After(removeClientDrainTimeout + 2*time.Second):
+		t.Fatal("Remove did not return within drain timeout — goroutine leak?")
+	}
+
+	// Record how many events arrived for netid at the moment Remove returned.
+	sink.mu.Lock()
+	countAtRemove := 0
+	for _, se := range sink.events {
+		if se.netid == netid {
+			countAtRemove++
+		}
+	}
+	sink.mu.Unlock()
+
+	// Give any hypothetical late event a moment to arrive, then check the
+	// count has not grown (the supervisor is gone; no OnAny can fire now).
+	time.Sleep(50 * time.Millisecond)
+
+	sink.mu.Lock()
+	countAfter := 0
+	for _, se := range sink.events {
+		if se.netid == netid {
+			countAfter++
+		}
+	}
+	sink.mu.Unlock()
+
+	if countAfter != countAtRemove {
+		t.Errorf("Sink received %d more event(s) for netid %d after Remove returned; want 0 (stale-event race)",
+			countAfter-countAtRemove, netid)
+	}
+}
