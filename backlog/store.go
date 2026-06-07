@@ -96,6 +96,20 @@ const (
 	// excess target is silently dropped.
 	DefaultMaxTargetsPerNet = 500
 
+	// maxTimeSkewPast is the maximum distance a message's @time tag may lie
+	// in the past relative to the ingest wall clock before the timestamp is
+	// clamped. Seven days accommodates legitimate server-time on slow or
+	// backlogged IRC networks while bounding how far a hostile upstream can
+	// push a message's apparent age backward.
+	maxTimeSkewPast = 7 * 24 * time.Hour
+
+	// maxTimeSkewFuture is the maximum distance a message's @time tag may lie
+	// in the future relative to the ingest wall clock. One minute accommodates
+	// clock skew between lurkd and the upstream while preventing a hostile
+	// upstream from forging timestamps far in the future that would corrupt
+	// CHATHISTORY ordering (BEFORE/AFTER pivots, TARGETS windows).
+	maxTimeSkewFuture = time.Minute
+
 	// maxJSONLLineBytes is the maximum byte length of a single marshalled JSONL
 	// line (JSON object + '\n') that appendLineLocked will write to disk. It is
 	// also the scanner buffer size used by tailJSONL and readJSONLFull, so the
@@ -320,8 +334,14 @@ func (s *Store) Ingest(netid int, ev *client.Event) (msgid string, stored bool) 
 		sanitizedParams[i] = client.SanitizeForRelay(p)
 	}
 
+	// Clamp the upstream-supplied @time to the ingest window. ev.Time() prefers
+	// the @time tag, which a hostile upstream can forge. clampIngestTime
+	// substitutes the ingest wall clock whenever the tag is outside the
+	// [now-maxTimeSkewPast, now+maxTimeSkewFuture] window, preventing
+	// fabricated timestamps from corrupting CHATHISTORY ordering.
+	now := time.Now()
 	entry := Entry{
-		Time:    ev.Time(),
+		Time:    clampIngestTime(ev.Time(), now),
 		MsgID:   newMsgID(),
 		Target:  client.SanitizeForRelay(target),
 		Source:  client.SanitizeForRelay(ev.Source()),
@@ -468,10 +488,22 @@ func (s *Store) Rehydrate() error {
 			s.mu.Lock()
 			b, ok := s.buffers[key]
 			if !ok {
-				// Rehydrate restores existing on-disk data; we do not apply the
-				// MaxTargetsPerNet cap here because these targets were already
-				// persisted by a previous Ingest that went through the cap check.
-				// A hostile upstream cannot inject files directly.
+				// Enforce the per-netid target cap during rehydration. The original
+				// assumption — that files on disk were written by a previous Ingest
+				// that already cleared the cap — does not hold when the cap was
+				// lowered between runs, or when an attacker (or operator) manually
+				// placed JSONL files in the store directory. Without this guard,
+				// Rehydrate loads every file it finds and inflates tgtCnt[netid]
+				// beyond maxTgts, exhausting memory (one ring per target) and
+				// causing subsequent live Ingest calls to misfire the cap for
+				// legitimate new targets. Log and skip the excess so the daemon
+				// starts cleanly with a predictable footprint.
+				if s.tgtCnt[netid] >= s.maxTgts {
+					s.mu.Unlock()
+					log.Printf("backlog: rehydrate: netid=%d target cap (%d) exceeded; skipping %q",
+						netid, s.maxTgts, safeTarget)
+					continue
+				}
 				b = &bufferEntry{}
 				s.buffers[key] = b
 				s.tgtCnt[netid]++
@@ -694,6 +726,20 @@ func routeTarget(rawTarget, senderNick, ownNick string) string {
 		return senderNick
 	}
 	return rawTarget
+}
+
+// clampIngestTime returns the message timestamp to persist. If the upstream
+// supplied a @time tag (via ev.Time() returning a value other than recvTime),
+// it is trusted only when it falls within the window
+// [now-maxTimeSkewPast, now+maxTimeSkewFuture]. Outside that window the
+// ingest wall clock (now) is substituted, so a hostile upstream cannot forge
+// timestamps that corrupt CHATHISTORY ordering (BEFORE/AFTER pivots, TARGETS
+// windows) or the per-client cursor.
+func clampIngestTime(t, now time.Time) time.Time {
+	if t.Before(now.Add(-maxTimeSkewPast)) || t.After(now.Add(maxTimeSkewFuture)) {
+		return now
+	}
+	return t
 }
 
 // safeName mirrors chatlog.safeName: maps a target to a safe, lower-cased file

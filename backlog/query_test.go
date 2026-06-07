@@ -162,7 +162,9 @@ func TestBeforeRefNotFound(t *testing.T) {
 
 func TestBeforeTimestamp(t *testing.T) {
 	s := newTestStore(t)
-	base := time.Date(2024, 6, 1, 10, 0, 0, 0, time.UTC)
+	// Use a recent base so Ingest does not clamp the @time tags away from
+	// the supplied values (within the 7-day window).
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	seedEntries(t, s, 1, "#ts", 5, base)
 	// entries at t+0s, t+1s, t+2s, t+3s, t+4s
 
@@ -378,7 +380,9 @@ func TestBetweenLimit(t *testing.T) {
 
 func TestTargetsBasic(t *testing.T) {
 	s := newTestStore(t)
-	base := time.Date(2024, 6, 1, 10, 0, 0, 0, time.UTC)
+	// Use a recent base within the clamp window so Ingest preserves the
+	// supplied @time tags for ordering; toTime is set past the last entry.
+	base := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
 
 	// Ingest into two targets on netid 1.
 	ev1 := makeEventWithTime("PRIVMSG", "a!u@h", []string{"#alpha", "msg"}, base)
@@ -407,7 +411,10 @@ func TestTargetsBasic(t *testing.T) {
 
 func TestTargetsLimit(t *testing.T) {
 	s := newTestStore(t)
-	base := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	// Use a recent base within the clamp window; toTime must be after clamped
+	// ingest times. With base 30 min ago and toTime = base+1h, all 5 entries
+	// (clamped to near now) fall within [zero, base+1h=30min future].
+	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
 	for i := 0; i < 5; i++ {
 		target := fmt.Sprintf("#ch%d", i)
 		ev := makeEventWithTime("PRIVMSG", "n!u@h", []string{target, "m"},
@@ -424,7 +431,9 @@ func TestTargetsLimit(t *testing.T) {
 
 func TestTargetsTimeFilter(t *testing.T) {
 	s := newTestStore(t)
-	base := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	// Use a recent base so Ingest preserves the supplied @time tags; all three
+	// entries are spaced 10 minutes apart and well within the 7-day clamp window.
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	// Three targets with activity at t, t+10m, t+20m.
 	for i := 0; i < 3; i++ {
 		target := fmt.Sprintf("#t%d", i)

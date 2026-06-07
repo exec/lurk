@@ -469,7 +469,9 @@ func TestCHBetweenReversedTimestampBounds(t *testing.T) {
 // TestCHBetweenValidTimestampBounds verifies that BETWEEN with a valid
 // (fromRef strictly before toRef) timestamp window is not rejected.
 func TestCHBetweenValidTimestampBounds(t *testing.T) {
-	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Use a recent base within the clamp window so that entries get distinct
+	// 1-second-apart timestamps; stored[0].Time is strictly before stored[3].Time.
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	store, stored := makeTestStore(t, 1, "#bvalid",
 		[]string{"v0", "v1", "v2", "v3"}, base)
 
@@ -516,7 +518,9 @@ func TestCHBetweenMsgIDRefsUnaffected(t *testing.T) {
 
 // TestCHTargets verifies CHATHISTORY TARGETS returns target info in a BATCH.
 func TestCHTargets(t *testing.T) {
-	base := time.Date(2024, 6, 1, 10, 0, 0, 0, time.UTC)
+	// Use a recent base within the clamp window so ingested entries retain their
+	// supplied timestamps; from/to must bracket the clamped times.
+	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
 	dir := t.TempDir()
 	store, err := backlog.NewStore(dir)
 	if err != nil {
@@ -535,13 +539,13 @@ func TestCHTargets(t *testing.T) {
 		store.Ingest(1, &client.Event{Message: rawMsg})
 	}
 	ingestAt("#alpha", "hi", base)
-	ingestAt("#beta", "hey", base.Add(time.Hour))
+	ingestAt("#beta", "hey", base.Add(time.Minute))
 
 	c := pipeServerCHBound(t, store, 1)
 	doRegister(t, c)
 
 	from := fmt.Sprintf("timestamp=%s", base.Add(-time.Minute).UTC().Format(time.RFC3339))
-	to := fmt.Sprintf("timestamp=%s", base.Add(2*time.Hour).UTC().Format(time.RFC3339))
+	to := fmt.Sprintf("timestamp=%s", base.Add(time.Hour).UTC().Format(time.RFC3339))
 	sendLine(t, c, fmt.Sprintf("CHATHISTORY TARGETS %s %s 10", from, to))
 	batch := recvBatch(t, c)
 

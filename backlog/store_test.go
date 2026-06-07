@@ -202,7 +202,10 @@ func TestMsgIDUniqueNonEmpty(t *testing.T) {
 // directory rehydrates the ring from JSONL with msgids and server-time intact.
 func TestRestartRehydratesMsgIDAndTime(t *testing.T) {
 	dir := t.TempDir()
-	ts := time.Date(2024, 3, 15, 10, 0, 0, 0, time.UTC)
+	// Use a recent timestamp (within the clamp window) so Ingest does not
+	// substitute now for it; the test checks that the persisted time survives
+	// a restart round-trip unchanged.
+	ts := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 
 	s, err := NewStore(dir)
 	if err != nil {
@@ -437,6 +440,140 @@ func TestTargetCapDropsExcess(t *testing.T) {
 	}
 }
 
+// ─── @time clamping tests ────────────────────────────────────────────────────
+
+// TestClampIngestTime verifies the clampIngestTime helper directly.
+// A hostile upstream forging @time far in the future or past must have that
+// timestamp replaced with the ingest wall clock.
+func TestClampIngestTime(t *testing.T) {
+	now := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		t       time.Time
+		wantNow bool // true → expect now; false → expect t unchanged
+	}{
+		{"within window — 1 hour ago", now.Add(-time.Hour), false},
+		{"within window — now", now, false},
+		{"within window — 30 seconds future", now.Add(30 * time.Second), false},
+		{"within window — 6 days past", now.Add(-6 * 24 * time.Hour), false},
+		{"at past boundary (exactly 7d)", now.Add(-maxTimeSkewPast), false},
+		{"just past past boundary", now.Add(-maxTimeSkewPast - time.Second), true},
+		{"at future boundary (exactly 1min)", now.Add(maxTimeSkewFuture), false},
+		{"just past future boundary", now.Add(maxTimeSkewFuture + time.Second), true},
+		{"far future (year 2099)", time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), true},
+		{"epoch (year 1970)", time.Unix(0, 0).UTC(), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clampIngestTime(tt.t, now)
+			if tt.wantNow {
+				if !got.Equal(now) {
+					t.Errorf("clampIngestTime(%v, now) = %v, want now (%v)", tt.t, got, now)
+				}
+			} else {
+				if !got.Equal(tt.t) {
+					t.Errorf("clampIngestTime(%v, now) = %v, want unchanged (%v)", tt.t, got, tt.t)
+				}
+			}
+		})
+	}
+}
+
+// TestIngestClampsFarFutureTime verifies the full Ingest path: a PRIVMSG with
+// @time=2099-01-01T00:00:00Z is stored with a timestamp near ingest time,
+// not 2099. This prevents a hostile upstream from skewing CHATHISTORY ordering
+// and TARGETS windows.
+func TestIngestClampsFarFutureTime(t *testing.T) {
+	s := newTestStore(t)
+
+	farFuture := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	ev := makeEventWithTime("PRIVMSG", "evil!u@h", []string{"#lurk", "forged-future"}, farFuture)
+
+	before := time.Now()
+	_, stored := s.Ingest(1, ev)
+	after := time.Now()
+
+	if !stored {
+		t.Fatal("Ingest returned stored=false for a valid PRIVMSG")
+	}
+
+	entries := s.Latest(1, "#lurk", 1)
+	if len(entries) != 1 {
+		t.Fatalf("Latest returned %d entries, want 1", len(entries))
+	}
+	got := entries[0].Time
+
+	// The stored time must NOT be 2099.
+	if got.Year() >= 2099 {
+		t.Errorf("stored Time = %v, far-future timestamp was not clamped", got)
+	}
+	// The stored time must be near the ingest wall clock.
+	if got.Before(before.Add(-time.Second)) || got.After(after.Add(time.Second)) {
+		t.Errorf("stored Time = %v is not near ingest time [%v, %v]", got, before, after)
+	}
+}
+
+// TestIngestClampsPastTime verifies that @time far in the past (epoch) is
+// clamped to near ingest time, not year 1970.
+func TestIngestClampsPastTime(t *testing.T) {
+	s := newTestStore(t)
+
+	epoch := time.Unix(0, 0).UTC()
+	ev := makeEventWithTime("PRIVMSG", "evil!u@h", []string{"#lurk", "forged-past"}, epoch)
+
+	before := time.Now()
+	_, stored := s.Ingest(1, ev)
+	after := time.Now()
+
+	if !stored {
+		t.Fatal("Ingest returned stored=false for a valid PRIVMSG")
+	}
+
+	entries := s.Latest(1, "#lurk", 1)
+	if len(entries) != 1 {
+		t.Fatalf("Latest returned %d entries, want 1", len(entries))
+	}
+	got := entries[0].Time
+
+	// Must not be epoch.
+	if got.Year() < 2020 {
+		t.Errorf("stored Time = %v, past timestamp was not clamped", got)
+	}
+	// Must be near ingest time.
+	if got.Before(before.Add(-time.Second)) || got.After(after.Add(time.Second)) {
+		t.Errorf("stored Time = %v is not near ingest time [%v, %v]", got, before, after)
+	}
+}
+
+// TestIngestPreservesNormalTime verifies that a legitimate recent @time tag
+// (within the clamp window) is preserved as-is.
+func TestIngestPreservesNormalTime(t *testing.T) {
+	s := newTestStore(t)
+
+	// A timestamp 10 minutes in the past — well within the 7-day window.
+	ts := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Millisecond)
+	ev := makeEventWithTime("PRIVMSG", "alice!u@h", []string{"#lurk", "normal"}, ts)
+	_, stored := s.Ingest(1, ev)
+	if !stored {
+		t.Fatal("Ingest returned stored=false")
+	}
+
+	entries := s.Latest(1, "#lurk", 1)
+	if len(entries) != 1 {
+		t.Fatalf("Latest returned %d entries, want 1", len(entries))
+	}
+	// The stored time must match the supplied @time (within 1ms rounding).
+	got := entries[0].Time
+	diff := got.Sub(ts)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > time.Millisecond {
+		t.Errorf("normal @time was unexpectedly altered: stored=%v, supplied=%v", got, ts)
+	}
+}
+
 // ─── JSONL disk format tests ─────────────────────────────────────────────────
 
 // TestJSONLSchemaFields verifies that the JSONL file contains the expected
@@ -448,7 +585,9 @@ func TestJSONLSchemaFields(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	ts := time.Date(2024, 6, 1, 12, 30, 0, 0, time.UTC)
+	// Use a recent timestamp (within the clamp window) so Ingest does not
+	// substitute now for it; the test checks round-trip field fidelity.
+	ts := time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Millisecond)
 	ev := makeEventWithTime("PRIVMSG", "alice!a@example.com",
 		[]string{"#test", "hello world"}, ts)
 	s.Ingest(42, ev)
@@ -684,6 +823,127 @@ func TestRehydrateSkipsUnsafeFilenames(t *testing.T) {
 	s2.mu.Unlock()
 	if count != 1 {
 		t.Errorf("buffer count = %d after unsafe-file injection, want 1", count)
+	}
+}
+
+// TestRehydrateHonorsTargetCap verifies that Rehydrate enforces the
+// per-netid MaxTargetsPerNet cap when loading on-disk JSONL files. Previously,
+// Rehydrate skipped the cap check, so a store that was overpopulated under a
+// previous run — or one where an attacker placed extra JSONL files — could
+// load an unbounded number of targets, exhausting memory and skewing tgtCnt.
+//
+// The test pre-places more JSONL files than the cap allows for one netid and
+// asserts that Rehydrate loads at most maxTgts of them.
+func TestRehydrateHonorsTargetCap(t *testing.T) {
+	const capSize = 3
+	const totalFiles = 7 // more than capSize; some must be skipped
+
+	dir := t.TempDir()
+
+	// Create the netid subdirectory and pre-place totalFiles valid JSONL files.
+	// These simulate what would exist after a previous run with a higher cap,
+	// or files placed by an attacker with write access to the store directory.
+	netDir := filepath.Join(dir, "1")
+	if err := os.MkdirAll(netDir, 0o700); err != nil {
+		t.Fatalf("mkdir netdir: %v", err)
+	}
+	now := time.Now().UTC()
+	for i := 0; i < totalFiles; i++ {
+		target := fmt.Sprintf("#chan%d", i)
+		entry := fmt.Sprintf(
+			`{"time":%q,"msgid":"msgid%02d","target":%q,"source":"n!u@h","command":"PRIVMSG","params":[%q,"hello"]}`,
+			now.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano),
+			i, target, target,
+		)
+		path := filepath.Join(netDir, target+".jsonl")
+		if err := os.WriteFile(path, []byte(entry+"\n"), 0o600); err != nil {
+			t.Fatalf("write test JSONL %s: %v", path, err)
+		}
+	}
+
+	// Open a Store with maxTgts=capSize — Rehydrate must not load more than
+	// capSize targets even though there are totalFiles on disk.
+	s, err := NewStore(dir, WithMaxTargetsPerNet(capSize))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer s.Close()
+
+	// Count how many bufferEntries were loaded for netid 1.
+	s.mu.Lock()
+	loaded := 0
+	for k := range s.buffers {
+		if k.netid == 1 {
+			loaded++
+		}
+	}
+	tgtCntLoaded := s.tgtCnt[1]
+	s.mu.Unlock()
+
+	if loaded > capSize {
+		t.Errorf("Rehydrate loaded %d targets for netid 1, want at most %d (cap)", loaded, capSize)
+	}
+	if loaded == 0 {
+		t.Errorf("Rehydrate loaded 0 targets; want at least 1 (cap allows %d)", capSize)
+	}
+	// tgtCnt must match the number of bufferEntries actually loaded.
+	if tgtCntLoaded != loaded {
+		t.Errorf("tgtCnt[1]=%d does not match loaded buffer count %d", tgtCntLoaded, loaded)
+	}
+}
+
+// TestRehydrateCapPreservesLiveIngestCap verifies the corollary: after
+// Rehydrate fills exactly maxTgts entries for a netid, a subsequent live
+// Ingest for a new target on the same netid is correctly rejected by the cap
+// (tgtCnt[netid] was correctly set during Rehydrate, not inflated or zeroed).
+func TestRehydrateCapPreservesLiveIngestCap(t *testing.T) {
+	const capSize = 2
+
+	dir := t.TempDir()
+
+	// Pre-place exactly capSize JSONL files (filling the cap on rehydration).
+	netDir := filepath.Join(dir, "1")
+	if err := os.MkdirAll(netDir, 0o700); err != nil {
+		t.Fatalf("mkdir netdir: %v", err)
+	}
+	now := time.Now().UTC()
+	for i := 0; i < capSize; i++ {
+		target := fmt.Sprintf("#existing%d", i)
+		entry := fmt.Sprintf(
+			`{"time":%q,"msgid":"ex%02d","target":%q,"source":"n!u@h","command":"PRIVMSG","params":[%q,"m"]}`,
+			now.Format(time.RFC3339Nano), i, target, target,
+		)
+		path := filepath.Join(netDir, target+".jsonl")
+		if err := os.WriteFile(path, []byte(entry+"\n"), 0o600); err != nil {
+			t.Fatalf("write JSONL: %v", err)
+		}
+	}
+
+	s, err := NewStore(dir, WithMaxTargetsPerNet(capSize))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer s.Close()
+
+	// After rehydrating capSize entries, a new target must be rejected.
+	excess := makeEvent("PRIVMSG", "alice!u@h", []string{"#newchan", "should be dropped"})
+	_, stored := s.Ingest(1, excess)
+	if stored {
+		t.Errorf("Ingest accepted a new target after Rehydrate filled the cap; expected drop")
+	}
+
+	entries := s.Latest(1, "#newchan", 5)
+	if len(entries) != 0 {
+		t.Errorf("new-target entries = %d after cap full, want 0", len(entries))
+	}
+
+	// Existing rehydrated targets must still be readable.
+	for i := 0; i < capSize; i++ {
+		target := fmt.Sprintf("#existing%d", i)
+		got := s.Latest(1, target, 5)
+		if len(got) != 1 {
+			t.Errorf("existing target %q: got %d entries, want 1", target, len(got))
+		}
 	}
 }
 
