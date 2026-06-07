@@ -305,7 +305,7 @@ func renderNicklist(m model, w, h int) string {
 	}
 
 	t := defaultTheme
-	members := sortedMembers(m) // shared order so selection indices line up
+	_, members := sortedMembers(m) // shared order so selection indices line up
 
 	self := ""
 	if m.cli != nil {

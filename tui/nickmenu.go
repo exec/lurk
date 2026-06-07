@@ -53,8 +53,21 @@ type menuEntry struct {
 // nicklist renders them (ops/voiced first by prefix rank, then case-insensitive
 // by nick). renderNicklist and the selection/menu logic share this so the
 // selected index always matches the row on screen.
-func sortedMembers(m model) []client.Member {
-	members := m.activeBuffer().memberList(m.cli)
+//
+// The result is cached on the returned model keyed by the active buffer pointer:
+// subsequent calls within the same Update+View cycle (which operates on the same
+// model value) return the cached slice without re-sorting. This eliminates the
+// O(N log N) cost for a 10k-member channel on every keystroke in the nicklist —
+// both the key handler (handleNickFocusKey / enterNickFocus) and the renderer
+// (renderNicklist) sort the same list; with the cache the second call is free.
+func sortedMembers(m model) (model, []client.Member) {
+	active := m.activeBuffer()
+	if m.nicklistSortedFor == active {
+		// Cache hit: same buffer, return the already-sorted slice (may be nil
+		// for a non-channel or empty channel — that is the correct result).
+		return m, m.nicklistSorted
+	}
+	members := active.memberList(m.cli)
 	sort.Slice(members, func(i, j int) bool {
 		pi, pj := prefixRank(members[i].Prefixes), prefixRank(members[j].Prefixes)
 		if pi != pj {
@@ -62,13 +75,16 @@ func sortedMembers(m model) []client.Member {
 		}
 		return strings.ToLower(members[i].Nick) < strings.ToLower(members[j].Nick)
 	})
-	return members
+	m.nicklistSorted = members
+	m.nicklistSortedFor = active
+	return m, members
 }
 
 // memberPrefixes returns the membership prefix symbols held by nick in the
 // active channel, or "" if not found.
 func memberPrefixes(m model, nick string) string {
-	for _, mem := range sortedMembers(m) {
+	_, members := sortedMembers(m)
+	for _, mem := range members {
 		if equalFold(mem.Nick, nick) {
 			return mem.Prefixes
 		}
@@ -80,13 +96,15 @@ func memberPrefixes(m model, nick string) string {
 // into range. It is a no-op when there is nothing to select (a PM/server buffer
 // or an empty channel), so the editor keeps focus.
 func (m model) enterNickFocus() model {
-	if len(sortedMembers(m)) == 0 {
+	var members []client.Member
+	m, members = sortedMembers(m)
+	if len(members) == 0 {
 		return m
 	}
 	m.focus = focusNicks
 	// Blur the editor so its caret stops blinking while the nicklist has focus.
 	m.input.Blur()
-	if m.nickSel < 0 || m.nickSel >= len(sortedMembers(m)) {
+	if m.nickSel < 0 || m.nickSel >= len(members) {
 		m.nickSel = 0
 	}
 	return m
@@ -105,7 +123,8 @@ func (m model) refocusInput() model {
 // move the selection, Enter opens the context menu for the selected user, Esc
 // (or Ctrl-U again) returns focus to the editor.
 func (m model) handleNickFocusKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	members := sortedMembers(m)
+	var members []client.Member
+	m, members = sortedMembers(m)
 	if len(members) == 0 {
 		m = m.refocusInput()
 		return m, nil

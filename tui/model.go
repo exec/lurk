@@ -133,17 +133,19 @@ type model struct {
 	// for every event). The handler calls refreshIfDirty() once after the loop.
 	batchMode bool
 
-	// membersCache is a one-per-Update-pass memoization of sortedMembers for
-	// the active channel. sortedMembers snapshots the client's member list and
-	// sorts it (O(N log N)); on a 10k-member channel that cost adds up when
-	// several call sites within one Update+View cycle each call it independently.
-	// The cache is populated on the first sortedMembers call in a pass and reused
-	// by all subsequent calls (renderNicklist, handleNickFocusKey, enterNickFocus,
-	// memberPrefixes). It is invalidated whenever the active buffer changes
-	// (membersCacheFor tracks which buffer the cached slice belongs to) so a
-	// buffer switch never surfaces stale nicks.
-	membersCache    []client.Member
-	membersCacheFor *Buffer // the buffer whose members are cached
+	// nicklistSorted caches the result of the most recent sortedMembers call so
+	// the O(N log N) snapshot+sort is not repeated within the same Update+View
+	// cycle. On a 10k-member channel sortedMembers is called in both Update
+	// (handleNickFocusKey / enterNickFocus) and View (renderNicklist); caching
+	// on the model lets the View reuse what Update already computed.
+	//
+	// The cache is keyed by the active buffer pointer (nicklistSortedFor): a
+	// different buffer means a different member list, so the slice is recomputed.
+	// A non-nil nicklistSortedFor signals "cache is valid for this buffer";
+	// nicklistSorted may be nil when the active buffer is a non-channel or has no
+	// members — that nil is itself a valid cached result.
+	nicklistSorted    []client.Member
+	nicklistSortedFor *Buffer // buffer whose member list is in nicklistSorted
 
 	// highlights are extra mention words (besides the nick), and ignored are the
 	// nicks whose messages are suppressed. Both are keyed by ASCII-folded form and
