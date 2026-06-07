@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-06-06
+
 ### Security
 - **Hardened the lurkd↔client trust boundary** — defense-in-depth for the
   bouncer's two trust edges. (The primary recommendation remains to restrict
@@ -301,7 +303,8 @@ Initial release.
 - Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
   `-version` flag.
 
-[Unreleased]: https://github.com/exec/lurk/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/exec/lurk/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/exec/lurk/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/exec/lurk/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/exec/lurk/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/exec/lurk/compare/v1.1.0...v1.1.1
