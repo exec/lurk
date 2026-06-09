@@ -6,6 +6,70 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-06-09
+
+### Fixed
+- **Registration no longer stalls on a spec-conformant truncated `CAP NAK`.**
+  The capability spec only obliges a server to echo the first 100 characters of
+  a rejected REQ; lurk's default request is ~200 characters, and the per-cap
+  verdict accounting under-counted a truncated NAK, leaving registration waiting
+  forever. Verdicts are now accounted per REQ line (one ACK/NAK answers one
+  REQ). An unsolicited ACK/NAK can also no longer advance negotiation (e.g.
+  force a premature `CAP END` mid-LS or mid-SASL).
+- **Auto-reconnect can no longer wedge on a stalled handshake.** A peer that
+  accepted the re-dial but never completed registration (and never closed the
+  socket) permanently parked the reconnect supervisor. The registration phase of
+  a reconnect attempt is now bounded (60 s); on timeout the loop backs off and
+  keeps retrying.
+- **lurkd: CHATHISTORY now sees entries across a backlog file rotation.** With a
+  file-size cap set, boundary queries (BEFORE/AFTER/AROUND/BETWEEN) read only
+  the current JSONL file, silently losing everything in the rotated `.jsonl.1`
+  right after a rotation. Disk reads now merge the rotation file with the
+  current one (deduplicated by msgid), mirroring startup rehydration.
+- **Lowercase commands from a non-conformant server are handled.** Command
+  dispatch was case-sensitive, so e.g. `join`/`privmsg` bypassed state tracking
+  and handlers entirely; inbound commands are now normalized to upper case.
+- **The TUI no longer crashes on a standard reply (`FAIL`/`WARN`/`NOTE`) after
+  closing a secondary network's server buffer.** Server buffers can no longer be
+  closed at all (previously only the first network's was protected), and the
+  standard-reply path tolerates a missing buffer.
+- **Switching back to a buffer now shows the messages that arrived while it was
+  unfocused.** The viewport could re-show a stale snapshot (unread counter said
+  new messages, pane didn't) until a resize or the next message.
+- **Removing a network no longer leaves a blank message pane** when focus is
+  re-homed onto a buffer that had never been displayed.
+- **A scrollback search no longer survives its buffer**: closing the searched
+  buffer or losing its network now clears the search instead of letting Ctrl-R
+  scroll the wrong buffer to a bogus offset.
+- **Typing indicators and `/list` are network-scoped.** A typer in `#chan` on
+  one network no longer shows while viewing a same-named channel on another,
+  and the `/list` modal only accepts LIST replies from the network that
+  requested it (another network's rows route to its own server buffer).
+- **The launcher rejects a bouncer address without a network ID** instead of
+  silently dialing the IRC network directly while showing a "Bounce" badge.
+- `PREFIX=` (a server declaring *no* membership prefixes) is honored instead of
+  falling back to the `(ov)@+` defaults.
+- A rate-limited send burst longer than the write timeout no longer tears down
+  a healthy connection: limiter pacing no longer counts against the socket
+  write deadline.
+
+### Security
+- **`irc.Serialize` now rejects frame-shifting fields.** A space in the source,
+  a hostile tag key (space/`;`/`=`/CR/LF/NUL), or a NUL in a tag value could
+  serialize into a line that reparses as a *different* message — a forgery
+  primitive that bypassed the transport's CR/LF injection check. All are
+  rejected at the serialization layer now.
+- **lurkd: bounded the cost of hostile clients.** Concurrent SASL PBKDF2
+  verifications are serialized (an unauthenticated peer could previously burn
+  one core per connection by churning AUTHENTICATE); sessions now carry a 30 s
+  write deadline with a watchdog that tears down a client that stops reading
+  (previously a stuck CHATHISTORY replay parked the session goroutine forever);
+  and the per-client read cursor only advances for messages actually queued for
+  delivery, so a dropped message remains recoverable via CHATHISTORY.
+- Handler invocations are serialized again during reconnect: the supervisor's
+  synthetic `@reconnected` event could previously run user handlers
+  concurrently with the new session's run loop.
+
 ## [1.2.5] - 2026-06-07
 
 ### Fixed
