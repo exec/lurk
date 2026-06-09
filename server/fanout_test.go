@@ -1211,3 +1211,92 @@ func TestFanoutSuppressKillAndError(t *testing.T) {
 		})
 	}
 }
+
+// ─── TestFanoutCursorAdvanceOnlyOnDelivery ───────────────────────────────────
+
+// TestFanoutCursorAdvanceOnlyOnDelivery is the regression test for the
+// cursor-past-undelivered-message bug: fanoutToSession used to advance the
+// per-client read cursor unconditionally BEFORE the non-blocking
+// TryWriteMessage, so when a session's outbound queue was full the message was
+// dropped but the persisted read position had already moved past it — the
+// client would never see the message and never get it replayed. The cursor
+// must advance only after TryWriteMessage reports the message was queued.
+func TestFanoutCursorAdvanceOnlyOnDelivery(t *testing.T) {
+	const (
+		netid  = 31
+		target = "#cursordrop"
+	)
+
+	srv := New(&Config{})
+	cs, err := NewCursorStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatalf("NewCursorStore: %v", err)
+	}
+	t.Cleanup(cs.Close)
+	srv.WithCursorStore(cs)
+
+	// newSess builds a fake bound session over a net.Pipe whose client side is
+	// never read. Messages still enter the 64-slot outbound queue until it is
+	// deliberately filled, so the first fanout below is "delivered" (queued)
+	// while the second is dropped.
+	newSess := func() *session {
+		clientSide, serverSide := net.Pipe()
+		t.Cleanup(func() {
+			_ = clientSide.Close()
+			_ = serverSide.Close()
+		})
+		c := conn.NewConn(serverSide, conn.Options{})
+		t.Cleanup(func() { _ = c.Close() })
+		return &session{srv: srv, conn: c, nc: serverSide, netid: netid, nick: "c"}
+	}
+
+	mkMsgEv := func(msgid, text string) (*irc.Message, *client.Event) {
+		raw := &irc.Message{
+			Tags:    irc.Tags{"msgid": msgid, "time": "2024-05-01T00:00:00.000Z"},
+			Source:  "peer!p@host",
+			Command: "PRIVMSG",
+			Params:  []string{target, text},
+		}
+		return raw, &client.Event{Message: raw}
+	}
+
+	key := CursorKey{ClientID: defaultClientID, NetID: netid, Target: target}
+
+	// Case 1: deliverable session (queue has room) — the cursor must advance.
+	okSess := newSess()
+	msg1, ev1 := mkMsgEv("msgid-delivered", "hello")
+	srv.fanoutToSession(okSess, msg1, ev1)
+	got, ok := cs.Get(key)
+	if !ok || got.MsgID != "msgid-delivered" {
+		t.Fatalf("cursor after delivered message = (%+v, %v), want msgid-delivered", got, ok)
+	}
+
+	// Case 2: stuck session — prefill the outbound queue to capacity and park
+	// the writer goroutine. The prefill lines are deliberately long (~1 KiB)
+	// so the writer's burst coalescing fills its 4 KiB bufio buffer after a
+	// few lines and blocks mid-batch on the unread pipe; short lines would all
+	// fit in the buffer and the writer would drain the whole queue before
+	// parking on the final flush. After the writer is parked, top up any slots
+	// it freed; the next fanout is then guaranteed to be dropped.
+	stuck := newSess()
+	bigLine := "PING :" + strings.Repeat("x", 1024)
+	for i := 0; i < 70; i++ {
+		_, _ = stuck.conn.TrySend(bigLine)
+	}
+	time.Sleep(100 * time.Millisecond)
+	for i := 0; i < 70; i++ {
+		if ok, _ := stuck.conn.TrySend(bigLine); !ok {
+			break
+		}
+	}
+	if ok, _ := stuck.conn.TrySend(bigLine); ok {
+		t.Fatal("stuck session queue did not fill; cannot exercise the drop path")
+	}
+
+	msg2, ev2 := mkMsgEv("msgid-dropped", "lost")
+	srv.fanoutToSession(stuck, msg2, ev2)
+	got, ok = cs.Get(key)
+	if !ok || got.MsgID != "msgid-delivered" {
+		t.Fatalf("cursor after dropped message = (%+v, %v), want unchanged msgid-delivered (cursor moved past an undelivered message)", got, ok)
+	}
+}

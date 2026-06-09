@@ -291,7 +291,9 @@ func (s *Server) fanout(netid int, ev *client.Event, storeMsgID string) {
 
 // fanoutToSession delivers a single upstream event to one bound session,
 // attaching the session's pending @label if the echo matches, and advancing
-// the per-client cursor if the message is a PRIVMSG or NOTICE.
+// the per-client cursor if the message is a PRIVMSG or NOTICE that was
+// actually queued for delivery (a message dropped because the session's
+// outbound queue is full must not move the read position).
 func (s *Server) fanoutToSession(sess *session, base *irc.Message, ev *client.Event) {
 	msg := base
 
@@ -324,20 +326,6 @@ func (s *Server) fanoutToSession(sess *session, base *irc.Message, ev *client.Ev
 			}
 		}
 		sess.labelMu.Unlock()
-
-		// Advance the per-client cursor for this (clientID, netid, target).
-		// Only PRIVMSG/NOTICE messages have a meaningful read position.
-		if s.cursors != nil {
-			msgid := msg.Tags["msgid"]
-			if msgid != "" && msg.Param(0) != "" {
-				key := CursorKey{
-					ClientID: clientIDFromSession(sess),
-					NetID:    sess.netid,
-					Target:   msg.Param(0),
-				}
-				s.cursors.Advance(key, msgid, ev.Time())
-			}
-		}
 	}
 
 	// Use non-blocking TryWriteMessage so a slow or stuck attached client
@@ -347,6 +335,7 @@ func (s *Server) fanoutToSession(sess *session, base *irc.Message, ev *client.Ev
 	// (transient slowness is acceptable). If the session is persistently
 	// overloaded its TCP send buffer will eventually fill, the kernel will
 	// close the connection, and the session's run loop will exit naturally.
+	delivered := false
 	if ok, err := sess.conn.TryWriteMessage(msg); err != nil {
 		// Serialization failure or conn already closed — harmless.
 		log.Printf("server: fanout to session (netid=%d): %v", sess.netid, err)
@@ -355,6 +344,26 @@ func (s *Server) fanoutToSession(sess *session, base *irc.Message, ev *client.Ev
 		// expected under an upstream flood when a client is not reading fast
 		// enough; it prevents head-of-line blocking across all other sessions.
 		log.Printf("server: fanout drop (netid=%d): session queue full, message dropped", sess.netid)
+	} else {
+		delivered = true
+	}
+
+	// Advance the per-client cursor for this (clientID, netid, target) — but
+	// only after the message was actually queued for delivery. Advancing
+	// before (or regardless of) delivery would persist a read position past
+	// messages the client never received when its queue was full and the
+	// message dropped above. Only PRIVMSG/NOTICE messages have a meaningful
+	// read position.
+	if delivered && (msg.Command == "PRIVMSG" || msg.Command == "NOTICE") && s.cursors != nil {
+		msgid := msg.Tags["msgid"]
+		if msgid != "" && msg.Param(0) != "" {
+			key := CursorKey{
+				ClientID: clientIDFromSession(sess),
+				NetID:    sess.netid,
+				Target:   msg.Param(0),
+			}
+			s.cursors.Advance(key, msgid, ev.Time())
+		}
 	}
 }
 
