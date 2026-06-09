@@ -180,6 +180,12 @@ func tlsHandshake(ctx context.Context, raw net.Conn, addr string, opts Options) 
 			cfg.ServerName = host
 		}
 	}
+	// Pin a TLS 1.2 floor independent of the Go toolchain's default, so the
+	// minimum can never silently regress on an older build. Callers may raise
+	// it further via opts.TLSConfig.MinVersion.
+	if cfg.MinVersion == 0 {
+		cfg.MinVersion = tls.VersionTLS12
+	}
 	if opts.InsecureSkipVerify {
 		cfg.InsecureSkipVerify = true
 	}
