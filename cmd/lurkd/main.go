@@ -102,7 +102,11 @@ func main() {
 	}
 	var store *backlog.Store
 	if backlogDir != "" {
-		store, err = backlog.NewStore(backlogDir)
+		// Cap each per-(netid,target) JSONL file so backlog disk use stays
+		// bounded on a long-running daemon. One rotation is kept (.jsonl +
+		// .jsonl.1), so on-disk history per target is at most ~2× this value.
+		const backlogFileCap = 16 << 20 // 16 MiB
+		store, err = backlog.NewStore(backlogDir, backlog.WithMaxFileSize(backlogFileCap))
 		if err != nil {
 			log.Printf("backlog: open store at %s: %v (CHATHISTORY will be unavailable)", backlogDir, err)
 		} else {
@@ -222,14 +226,21 @@ func main() {
 	}
 }
 
-// runHashpw reads a password from stdin (one line), hashes it with PBKDF2 via
-// server.HashPassword, and prints the hash string to stdout. The password is
-// read without echoing when stdin is a terminal; otherwise it reads the first
-// line from stdin. This is the bootstrap mechanism: an admin runs
-// `lurkd -hashpw`, pastes the result into the config, and restarts.
+// runHashpw reads a password as a single line from stdin, hashes it with PBKDF2
+// via server.HashPassword, and prints the hash string to stdout. This is the
+// bootstrap mechanism: an admin runs `lurkd -hashpw`, pastes the result into the
+// config, and restarts.
 //
-// The password is not logged.
+// The password is not logged. Note that lurkd is stdlib-only and therefore does
+// not disable terminal echo; when stdin is a TTY the input is visible and may be
+// retained in scrollback. To avoid that, pipe the password in instead, e.g.
+// `printf %s "$pw" | lurkd -hashpw` (still readable from shell history) or feed
+// it from a file. We warn on the terminal case below.
 func runHashpw() {
+	if fi, statErr := os.Stdin.Stat(); statErr == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		fmt.Fprintln(os.Stderr, "warning: terminal echo is not disabled — the password will be visible and may remain in scrollback.")
+		fmt.Fprintln(os.Stderr, "         pipe the password in (e.g. from a file) to avoid this.")
+	}
 	fmt.Fprint(os.Stderr, "Password: ")
 	scanner := bufio.NewScanner(os.Stdin)
 	if !scanner.Scan() {
