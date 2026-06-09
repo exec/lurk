@@ -521,3 +521,117 @@ func TestCapAckFloodBounded(t *testing.T) {
 		t.Errorf("enabled grew past cap during CAP ACK: %d > %d", got, maxAvailableCaps)
 	}
 }
+
+// TestNakTruncatedVerdict verifies that registration completes when the server
+// NAKs a long REQ with a truncated cap list. The capability-negotiation spec
+// only obliges the server to echo "at least the first 100 characters of the
+// capability list in the REQ", so per-cap verdict accounting would under-count
+// here and stall registration forever waiting for verdicts that never come.
+func TestNakTruncatedVerdict(t *testing.T) {
+	wanted := []string{
+		"account-notify", "account-tag", "away-notify", "batch", "chghost",
+		"echo-message", "extended-join", "invite-notify", "labeled-response",
+		"message-tags", "multi-prefix", "server-time", "setname",
+		"userhost-in-names", "cap-notify",
+	}
+	reqList := strings.Join(wanted, " ")
+	if len(reqList) <= 100 {
+		t.Fatalf("test premise broken: REQ list is only %d chars, need >100", len(reqList))
+	}
+
+	n := NewNegotiator(wanted)
+	n.Start()
+	lines, err := feed(n, capMsg("*", "LS", reqList))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Premise: everything fits on a single REQ line, so one NAK answers it.
+	if len(lines) != 1 || lines[0] != "CAP REQ :"+reqList {
+		t.Fatalf("REQ lines = %#v, want a single line for all caps", lines)
+	}
+
+	// The server rejects the REQ, echoing only the first 100 characters
+	// (possibly cutting a cap name in half) as the spec permits.
+	lines, err = feed(n, capMsg("*", "NAK", reqList[:100]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(lines, []string{"CAP END"}) {
+		t.Fatalf("lines after truncated NAK = %#v, want [CAP END]", lines)
+	}
+	if n.State() != StateDone {
+		t.Fatalf("State = %v, want Done", n.State())
+	}
+	if got := n.Enabled(); len(got) != 0 {
+		t.Fatalf("Enabled after NAK = %#v, want none", got)
+	}
+}
+
+// TestUnsolicitedVerdictIgnored verifies that an ACK or NAK arriving with no
+// REQ outstanding cannot advance negotiation — neither cutting a multiline LS
+// short nor skipping the SASL wait with a premature CAP END.
+func TestUnsolicitedVerdictIgnored(t *testing.T) {
+	t.Run("mid-LS", func(t *testing.T) {
+		n := NewNegotiator([]string{"server-time"})
+		n.Start()
+		lines, err := feed(n,
+			capMsg("*", "LS", "*", "away-notify"), // multiline LS, more coming
+			capMsg("*", "NAK", "server-time"),     // unsolicited: nothing REQ'd yet
+			capMsg("*", "ACK", "away-notify"),     // unsolicited and unwanted
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(lines) != 0 {
+			t.Fatalf("unsolicited verdicts emitted %#v, want nothing", lines)
+		}
+		if n.State() != StateListing {
+			t.Fatalf("State = %v, want still Listing", n.State())
+		}
+		// Negotiation then proceeds normally once LS completes.
+		lines, err = feed(n,
+			capMsg("*", "LS", "server-time"),
+			capMsg("*", "ACK", "server-time"),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"CAP REQ :server-time", "CAP END"}
+		if !reflect.DeepEqual(lines, want) {
+			t.Fatalf("lines = %#v, want %#v", lines, want)
+		}
+	})
+
+	t.Run("during SASL wait", func(t *testing.T) {
+		n := NewNegotiator([]string{"sasl"})
+		n.Start()
+		lines, err := feed(n,
+			capMsg("*", "LS", "sasl=PLAIN"),
+			capMsg("*", "ACK", "sasl"),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n.State() != StateWaitingSASL {
+			t.Fatalf("State = %v, want WaitingSASL", n.State())
+		}
+		if !reflect.DeepEqual(lines, []string{"CAP REQ :sasl"}) {
+			t.Fatalf("lines = %#v, want [CAP REQ :sasl]", lines)
+		}
+		// A stray NAK while SASL is in flight must not emit CAP END.
+		lines, err = feed(n, capMsg("*", "NAK", "sasl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(lines) != 0 {
+			t.Fatalf("stray NAK during SASL wait emitted %#v, want nothing", lines)
+		}
+		if n.State() != StateWaitingSASL {
+			t.Fatalf("State = %v, want still WaitingSASL", n.State())
+		}
+		// SASL completion still finishes negotiation exactly once.
+		if got := n.SASLComplete(); !reflect.DeepEqual(got, []string{"CAP END"}) {
+			t.Fatalf("SASLComplete = %#v, want [CAP END]", got)
+		}
+	})
+}

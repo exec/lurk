@@ -122,9 +122,13 @@ type Negotiator struct {
 	// enabled is the set of caps the server has ACKed and not since removed.
 	enabled map[string]struct{}
 
-	// requested counts caps we have sent in a REQ and are still awaiting a
-	// verdict for. Negotiation during initial registration is complete once
-	// this reaches zero (and SASL, if any, is resolved).
+	// pendingReqs counts CAP REQ lines we have sent and are still awaiting a
+	// verdict (ACK or NAK) for. Accounting is per REQ line, not per cap: the
+	// spec answers each REQ with exactly one ACK or NAK, and a conformant
+	// server may truncate the NAK's cap list (it need only echo the first 100
+	// characters), so counting cap names would under-count and stall.
+	// Negotiation during initial registration is complete once this reaches
+	// zero (and SASL, if any, is resolved).
 	pendingReqs int
 
 	// collectingLS is true while a multiline CAP LS (the '*' continuation) is

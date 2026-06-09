@@ -141,7 +141,7 @@ func (n *Negotiator) beginRequests() []string {
 		return n.finish()
 	}
 	lines := n.buildReqLines(toReq)
-	n.pendingReqs += len(toReq)
+	n.pendingReqs += len(lines)
 	n.state = StateRequesting
 	return lines
 }
@@ -199,27 +199,22 @@ func (n *Negotiator) buildReqLines(caps []string) []string {
 }
 
 // onACK applies a server ACK. Per the spec REQ is atomic, so every cap named in
-// the ACK is enabled (or disabled, for "-name" entries) together. It decrements
-// the pending-request count and advances toward SASL or CAP END.
+// the ACK is enabled (or disabled, for "-name" entries) together. The ACK
+// resolves one outstanding REQ line and advances toward SASL or CAP END.
 //
 // We only enable caps the client actually wanted (and therefore REQ'd): a
 // conformant server only ACKs what we asked for, but a misbehaving or hostile
 // one could ACK arbitrary caps, which would otherwise flip on behaviour gated by
 // IsEnabled (e.g. Typing checking message-tags) without the client ever asking.
-// Un-requested caps are skipped for enabling, but still counted toward the
-// pending-request total so the verdict accounting stays correct and registration
-// does not stall.
 func (n *Negotiator) onACK(m *irc.Message) ([]string, error) {
 	caps, _ := capsAndMore(m)
-	count := 0
 	parseCapList(caps, func(name, _ string, _ bool) {
-		count++
 		if rest, neg := strings.CutPrefix(name, "-"); neg {
 			delete(n.enabled, rest)
 			return
 		}
 		if _, wanted := n.wantedSet[name]; !wanted {
-			// Not a cap we requested: do not enable it. (Still counted above.)
+			// Not a cap we requested: do not enable it.
 			return
 		}
 		n.enable(name)
@@ -227,29 +222,33 @@ func (n *Negotiator) onACK(m *irc.Message) ([]string, error) {
 			n.saslAcked = true
 		}
 	})
-	return n.afterVerdict(count), nil
+	return n.afterVerdict(), nil
 }
 
 // onNAK applies a server NAK. The REQ changed nothing, so no caps are enabled;
-// we only clear the pending count for the rejected request. If sasl was among
-// the rejected caps, it stays un-ACKed and NeedSASL remains false.
+// the NAK simply resolves one outstanding REQ line. If sasl was among the
+// rejected caps, it stays un-ACKed and NeedSASL remains false.
+//
+// The NAK's cap list is deliberately not consulted: the spec only obliges the
+// server to echo the first 100 characters of the rejected REQ, so the list may
+// be truncated and cannot be used for accounting.
 func (n *Negotiator) onNAK(m *irc.Message) ([]string, error) {
-	caps, _ := capsAndMore(m)
-	count := 0
-	parseCapList(caps, func(_, _ string, _ bool) { count++ })
-	return n.afterVerdict(count), nil
+	return n.afterVerdict(), nil
 }
 
-// afterVerdict decrements the pending REQ accounting by the number of caps in
-// the just-processed ACK/NAK and, when all initial requests are resolved,
-// either hands off to SASL or finishes negotiation. Verdicts that arrive after
-// registration (from CAP NEW-driven REQs) do not re-trigger CAP END.
-func (n *Negotiator) afterVerdict(capsInVerdict int) []string {
-	if capsInVerdict > n.pendingReqs {
-		n.pendingReqs = 0
-	} else {
-		n.pendingReqs -= capsInVerdict
+// afterVerdict resolves one outstanding REQ line (each ACK/NAK answers exactly
+// one REQ) and, when all initial requests are resolved, either hands off to
+// SASL or finishes negotiation. Verdicts that arrive after registration (from
+// CAP NEW-driven REQs) do not re-trigger CAP END; an unsolicited verdict with
+// nothing outstanding is ignored.
+func (n *Negotiator) afterVerdict() []string {
+	if n.pendingReqs == 0 {
+		// Unsolicited verdict with no REQ outstanding (a misbehaving or hostile
+		// server): there is nothing to resolve, and it must not advance
+		// negotiation (e.g. trigger a premature CAP END mid-LS or mid-SASL).
+		return nil
 	}
+	n.pendingReqs--
 	if n.registered || n.pendingReqs > 0 {
 		return nil
 	}
@@ -330,8 +329,9 @@ func (n *Negotiator) onNew(m *irc.Message) ([]string, error) {
 	if len(toReq) == 0 {
 		return nil, nil
 	}
-	n.pendingReqs += len(toReq)
-	return n.buildReqLines(toReq), nil
+	lines := n.buildReqLines(toReq)
+	n.pendingReqs += len(lines)
+	return lines, nil
 }
 
 // onDel removes caps the server has withdrawn post-registration (CAP DEL),
