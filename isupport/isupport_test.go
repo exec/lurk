@@ -101,6 +101,16 @@ func TestPrefixDefaults(t *testing.T) {
 	if mis.PrefixModes() != "ov" || mis.PrefixSymbols() != "@+" {
 		t.Errorf("mismatched prefix = (%q,%q), want (ov,@+)", mis.PrefixModes(), mis.PrefixSymbols())
 	}
+	// A present-but-empty PREFIX= is the server declaring no membership
+	// prefixes at all — not malformed input — so it must NOT fall back to the
+	// defaults.
+	none := Parse([]string{"PREFIX="})
+	if none.PrefixModes() != "" || none.PrefixSymbols() != "" {
+		t.Errorf("empty prefix = (%q,%q), want (\"\",\"\")", none.PrefixModes(), none.PrefixSymbols())
+	}
+	if _, ok := none.PrefixModeForSymbol('@'); ok {
+		t.Errorf("PrefixModeForSymbol('@') recognised under PREFIX=, want absent")
+	}
 }
 
 func TestChanTypesDefault(t *testing.T) {

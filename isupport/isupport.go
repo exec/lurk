@@ -200,9 +200,14 @@ func (s ISupport) PrefixSymbols() string {
 
 // prefix splits the PREFIX token "(modes)symbols" into its two aligned halves.
 // On absence or malformed input it returns the conventional defaults so callers
-// always get a usable, length-matched pair.
+// always get a usable, length-matched pair. A present-but-empty token
+// ("PREFIX=") is not malformed: it is the server declaring that it supports no
+// membership prefixes at all, so it yields empty halves rather than defaults.
 func (s ISupport) prefix() (modes, symbols string) {
 	v, ok := s.Get("PREFIX")
+	if ok && v == "" {
+		return "", ""
+	}
 	if !ok || len(v) < 2 || v[0] != '(' {
 		return "ov", "@+"
 	}
