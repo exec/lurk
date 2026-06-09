@@ -372,7 +372,7 @@ func parseConfig() (cfg client.Config, channel string, plain bool, configPath, l
 		nick       = flag.String("nick", env("LURK_NICK", "lurk"), "nickname (env LURK_NICK)")
 		user       = flag.String("user", env("LURK_USER", ""), "username/ident, defaults to nick (env LURK_USER)")
 		realname   = flag.String("realname", env("LURK_REALNAME", "lurk IRC client"), "realname (env LURK_REALNAME)")
-		pass       = flag.String("pass", env("LURK_PASS", ""), "server password (env LURK_PASS)")
+		pass       = flag.String("pass", env("LURK_PASS", ""), "server password (prefer env LURK_PASS — argv is visible in ps/shell history)")
 		useTLS     = flag.Bool("tls", envBool("LURK_TLS", false), "connect with TLS (env LURK_TLS)")
 		insecure   = flag.Bool("insecure", envBool("LURK_INSECURE", false), "skip TLS certificate verification (env LURK_INSECURE)")
 		insAuth    = flag.Bool("insecure-auth", envBool("LURK_INSECURE_AUTH", false), "allow sending credentials (PASS/SASL) over a plaintext connection (env LURK_INSECURE_AUTH)")
@@ -383,7 +383,7 @@ func parseConfig() (cfg client.Config, channel string, plain bool, configPath, l
 
 		saslMech    = flag.String("sasl", env("LURK_SASL", ""), "SASL mechanism: PLAIN or EXTERNAL (env LURK_SASL)")
 		saslUser    = flag.String("sasl-user", env("LURK_SASL_USER", ""), "SASL username (env LURK_SASL_USER)")
-		saslPass    = flag.String("sasl-pass", env("LURK_SASL_PASS", ""), "SASL password (env LURK_SASL_PASS)")
+		saslPass    = flag.String("sasl-pass", env("LURK_SASL_PASS", ""), "SASL password (prefer env LURK_SASL_PASS — argv is visible in ps/shell history)")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
