@@ -129,18 +129,11 @@ func (c *Conn) writeLoop() {
 // writeBurst writes first plus any lines already queued in c.out (up to
 // writeQueueDepth total) into the buffered writer, then flushes once. The
 // Limiter (if set) is consulted for each line before it is written, and the
-// WriteTimeout deadline (if set) is pushed out once before the batch.
+// WriteTimeout deadline (if set) is refreshed per line, after the Limiter
+// wait — so time spent paced by the Limiter never counts against the socket
+// deadline, and the deadline set for the batch's last line covers the final
+// Flush.
 func (c *Conn) writeBurst(first string) error {
-	// Set the write deadline once for the whole batch. A burst of pre-queued
-	// lines is essentially one logical write; the deadline bounds the total
-	// flush, not each individual WriteString call (which never touches the
-	// socket — only Flush does).
-	if c.opts.WriteTimeout > 0 {
-		if err := c.raw.SetWriteDeadline(time.Now().Add(c.opts.WriteTimeout)); err != nil {
-			return fmt.Errorf("conn: set write deadline: %w", err)
-		}
-	}
-
 	if err := c.writeToBuffer(first); err != nil {
 		return err
 	}
@@ -168,13 +161,22 @@ flush:
 	return nil
 }
 
-// writeToBuffer consults the Limiter (if set) and writes line + CRLF into the
-// buffered writer. It does NOT flush; the caller is responsible for flushing
-// once the batch is complete.
+// writeToBuffer consults the Limiter (if set), refreshes the write deadline
+// (if configured), and writes line + CRLF into the buffered writer. It does
+// NOT flush explicitly; the caller flushes once the batch is complete. The
+// deadline is set after the Limiter wait and before the write so that (a)
+// Limiter pacing never erodes it, and (b) an implicit flush — when the
+// bufio.Writer fills mid-batch and WriteString touches the socket — is still
+// covered by a fresh deadline.
 func (c *Conn) writeToBuffer(line string) error {
 	if c.opts.Limiter != nil {
 		if err := c.opts.Limiter.Wait(c.ctx, line); err != nil {
 			return fmt.Errorf("conn: rate limit: %w", err)
+		}
+	}
+	if c.opts.WriteTimeout > 0 {
+		if err := c.raw.SetWriteDeadline(time.Now().Add(c.opts.WriteTimeout)); err != nil {
+			return fmt.Errorf("conn: set write deadline: %w", err)
 		}
 	}
 	if _, err := c.bw.WriteString(line); err != nil {
@@ -212,23 +214,8 @@ func (c *Conn) drain() {
 // graceful-close drain path where each line is flushed individually so a
 // partial drain makes forward progress even if the grace window is tight.
 func (c *Conn) writeLine(line string) error {
-	if c.opts.Limiter != nil {
-		if err := c.opts.Limiter.Wait(c.ctx, line); err != nil {
-			return fmt.Errorf("conn: rate limit: %w", err)
-		}
-	}
-
-	if c.opts.WriteTimeout > 0 {
-		if err := c.raw.SetWriteDeadline(time.Now().Add(c.opts.WriteTimeout)); err != nil {
-			return fmt.Errorf("conn: set write deadline: %w", err)
-		}
-	}
-
-	if _, err := c.bw.WriteString(line); err != nil {
-		return fmt.Errorf("conn: write: %w", err)
-	}
-	if _, err := c.bw.WriteString("\r\n"); err != nil {
-		return fmt.Errorf("conn: write: %w", err)
+	if err := c.writeToBuffer(line); err != nil {
+		return err
 	}
 	if err := c.bw.Flush(); err != nil {
 		return fmt.Errorf("conn: flush: %w", err)

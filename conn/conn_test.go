@@ -655,3 +655,65 @@ func BenchmarkWriteLoopBurst(b *testing.B) {
 		b.StopTimer()
 	}
 }
+
+// sleepLimiter pauses a fixed duration per line, simulating real send pacing.
+type sleepLimiter struct{ d time.Duration }
+
+func (l *sleepLimiter) Wait(ctx context.Context, _ string) error {
+	select {
+	case <-time.After(l.d):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// TestLimiterPacingDoesNotErodeWriteDeadline verifies that time spent paced by
+// the Limiter does not count against WriteTimeout. The deadline used to be set
+// once at the start of a write burst, before the per-line Limiter waits — so a
+// coalesced batch whose total pacing exceeded WriteTimeout failed its final
+// Flush with a deadline error and tore down a healthy connection.
+func TestLimiterPacingDoesNotErodeWriteDeadline(t *testing.T) {
+	const (
+		nLines       = 5
+		pace         = 60 * time.Millisecond
+		writeTimeout = 150 * time.Millisecond // > pace, but << nLines*pace
+	)
+
+	cliRaw, srvRaw := net.Pipe()
+	c := NewConn(cliRaw, Options{WriteTimeout: writeTimeout, Limiter: &sleepLimiter{d: pace}})
+	t.Cleanup(func() { c.Close(); srvRaw.Close() })
+
+	rd := bufio.NewReader(srvRaw)
+	got := make(chan string, nLines)
+	go func() {
+		defer close(got)
+		for {
+			s, err := rd.ReadString('\n')
+			if err != nil {
+				return
+			}
+			got <- s
+		}
+	}()
+
+	// Queue the whole burst quickly: the Limiter pause on the first line gives
+	// the remaining Sends time to land in the outbound queue, so writeBurst
+	// coalesces them into one batch with nLines*pace total pacing.
+	for i := 0; i < nLines; i++ {
+		if err := c.Send("PRIVMSG #t :line"); err != nil {
+			t.Fatalf("Send(%d): %v", i, err)
+		}
+	}
+
+	for i := 0; i < nLines; i++ {
+		select {
+		case _, ok := <-got:
+			if !ok {
+				t.Fatalf("connection failed after %d of %d lines: %v", i, nLines, c.Err())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for line %d of %d (conn err: %v)", i, nLines, c.Err())
+		}
+	}
+}
