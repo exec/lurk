@@ -112,6 +112,18 @@ func TestSerializeRejectsMisframing(t *testing.T) {
 		{"tag-lead command", &Message{Command: "@x"}},
 		{"punctuation command", &Message{Command: "-bad"}},
 		{"non-final colon param", &Message{Command: "CMD", Params: []string{":x", "y"}}},
+		// A space in the source would promote the remainder to the command
+		// position: ":a PRIVMSG #c :x JOIN" reparses as a PRIVMSG from "a".
+		{"source with space", &Message{Source: "a PRIVMSG #c :x", Command: "JOIN", Params: []string{"#y"}}},
+		// A space, ';', or '=' in a tag key would end or split the tag
+		// segment, shifting the frame of everything after it.
+		{"tag key with space", &Message{Tags: Tags{"a b": ""}, Command: "CMD"}},
+		{"tag key with semicolon", &Message{Tags: Tags{"a;b": ""}, Command: "CMD"}},
+		{"tag key with equals", &Message{Tags: Tags{"a=b": "v"}, Command: "CMD"}},
+		{"empty tag key", &Message{Tags: Tags{"": "v"}, Command: "CMD"}},
+		// NUL has no tag-value escape sequence; emitted raw it would be an
+		// illegal wire byte.
+		{"NUL in tag value", &Message{Tags: Tags{"k": "a\x00b"}, Command: "CMD"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

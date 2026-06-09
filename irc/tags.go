@@ -1,6 +1,9 @@
 package irc
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Tag escaping is defined by the IRCv3 message-tags specification. Only tag
 // values are escaped on the wire; keys are not. The mapping is:
@@ -133,10 +136,23 @@ func parseTags(segment string) Tags {
 // '@'). Keys are emitted as stored; values are escaped. A value-less tag (empty
 // string) is emitted as a bare key with no '='. Iteration order follows Go map
 // ordering, which is unspecified — tag order is not semantically significant.
-func serializeTags(t Tags) string {
+//
+// Keys are validated rather than escaped (the spec defines no key escaping): a
+// key containing a byte that would end the tag segment or split the entry —
+// space, ';', '=', CR, LF, or NUL — would frame-shift the whole line, so it is
+// rejected. Keys produced by parseTags always pass (none of these bytes can
+// survive parsing into a key). NUL in a value is rejected too: it has no
+// escape sequence, and emitted raw it would be an illegal wire byte.
+func serializeTags(t Tags) (string, error) {
 	var b strings.Builder
 	first := true
 	for k, v := range t {
+		if k == "" || strings.ContainsAny(k, " ;=\r\n\x00") {
+			return "", fmt.Errorf("irc: tag key %q is empty or contains an illegal byte", k)
+		}
+		if strings.ContainsRune(v, '\x00') {
+			return "", fmt.Errorf("irc: value of tag %q: %w", k, ErrIllegalByte)
+		}
 		if !first {
 			b.WriteByte(';')
 		}
@@ -147,5 +163,5 @@ func serializeTags(t Tags) string {
 			b.WriteString(escapeTagValue(v))
 		}
 	}
-	return b.String()
+	return b.String(), nil
 }

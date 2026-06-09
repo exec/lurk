@@ -23,8 +23,11 @@ var (
 // The final parameter is emitted as a trailing (':'-prefixed) param when it is
 // empty, contains a space, or begins with ':'. Tag values are escaped per the
 // message-tags spec. CR, LF, and NUL are rejected in every non-tag field
-// because they would terminate or split the line; in tag values they are
-// escaped instead.
+// because they would terminate or split the line; in tag values CR and LF are
+// escaped instead and NUL (which has no escape) is rejected. A space in the
+// source, or a tag key containing a byte that would end or split the tag
+// segment (space, ';', '=', CR, LF, NUL), is rejected too: each would shift
+// the frame so the line reparses as a different message.
 func (m *Message) Serialize() (string, error) {
 	if m.Command == "" {
 		return "", ErrNoCommand
@@ -33,14 +36,24 @@ func (m *Message) Serialize() (string, error) {
 	var b strings.Builder
 
 	if len(m.Tags) > 0 {
+		seg, err := serializeTags(m.Tags)
+		if err != nil {
+			return "", err
+		}
 		b.WriteByte('@')
-		b.WriteString(serializeTags(m.Tags))
+		b.WriteString(seg)
 		b.WriteByte(' ')
 	}
 
 	if m.Source != "" {
 		if err := checkField("source", m.Source); err != nil {
 			return "", err
+		}
+		// A space would end the source token early and promote the remainder
+		// to the command position — a frame shift, like the command checks
+		// below — so reject it rather than emit a self-corrupting line.
+		if strings.ContainsRune(m.Source, ' ') {
+			return "", fmt.Errorf("irc: source %q contains a space", m.Source)
 		}
 		b.WriteByte(':')
 		b.WriteString(m.Source)
