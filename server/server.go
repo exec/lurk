@@ -21,6 +21,7 @@ package server
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -81,6 +82,16 @@ const maxNetworks = 256
 // of idle or slow-connecting hostile clients. The deadline is set on the raw
 // net.Conn before registration and cleared once the welcome burst is sent.
 const registrationTimeout = 30 * time.Second
+
+// clientWriteTimeout bounds each flush of a session's outbound queue. Without
+// it a registered session has no write deadline at all: a synchronous send
+// (CHATHISTORY replay, state burst) to a client that stops reading parks the
+// session goroutine indefinitely once the outbound queue and the TCP send
+// window fill. With it, a stuck flush fails after this interval and the
+// write-failure watchdog (see newSessionConn) tears the conn down so the
+// session goroutine exits. 30s is generous for any live client while still
+// bounding the goroutine lifetime against a stalled or hostile peer.
+const clientWriteTimeout = 30 * time.Second
 
 // maxSASLPayloadB64 is the maximum byte length of a single AUTHENTICATE payload
 // line (base64 encoded). The IRCv3 SASL specification uses 400 bytes as the
@@ -150,6 +161,12 @@ type Server struct {
 	// New defaults it to registrationTimeout; tests set a short value to exercise
 	// the idle-client drop without waiting the full production timeout.
 	regTimeout time.Duration
+
+	// writeTimeout bounds each flush of a session's outbound queue (see
+	// clientWriteTimeout). New defaults it to clientWriteTimeout; tests set a
+	// short value to exercise the stuck-client drop without waiting the full
+	// production timeout.
+	writeTimeout time.Duration
 
 	// maxSessions is the concurrent-connection cap. Zero means use
 	// defaultMaxSessions. Tests set a small value to exercise the rejection
@@ -238,6 +255,7 @@ func New(cfg *Config) *Server {
 	s := &Server{
 		cfg:             cfg,
 		regTimeout:      registrationTimeout,
+		writeTimeout:    clientWriteTimeout,
 		controlSessions: make(map[*session]struct{}),
 	}
 	s.initBoundSessions()
@@ -345,11 +363,30 @@ func (s *Server) sessionLimit() int64 {
 // before any goroutine is spawned — guarding against goroutine and FD
 // exhaustion by a hostile client that opens many connections.
 func (s *Server) Serve(ln net.Listener) error {
+	// backoff grows on consecutive transient Accept errors (e.g. EMFILE under
+	// FD pressure) and resets on a successful accept, so a temporary condition
+	// no longer tears down the whole listener.
+	const maxAcceptBackoff = time.Second
+	var backoff time.Duration
 	for {
 		nc, err := ln.Accept()
 		if err != nil {
-			return fmt.Errorf("server: accept: %w", err)
+			// A closed listener is the normal shutdown signal — stop cleanly.
+			if errors.Is(err, net.ErrClosed) {
+				return fmt.Errorf("server: accept: %w", err)
+			}
+			// Treat any other error as transient: log, back off, and retry
+			// rather than killing the accept loop.
+			if backoff == 0 {
+				backoff = 5 * time.Millisecond
+			} else if backoff < maxAcceptBackoff {
+				backoff *= 2
+			}
+			log.Printf("server: accept error (retrying in %v): %v", backoff, err)
+			time.Sleep(backoff)
+			continue
 		}
+		backoff = 0
 
 		// Enforce the concurrent-session cap before spawning a goroutine.
 		// We increment first and check: if the new count exceeds the limit,
@@ -405,8 +442,9 @@ func (s *Server) serveConnInternalNetid(nc net.Conn, isTLS bool, netid int) erro
 		log.Printf("server: set registration deadline: %v", err)
 	}
 
-	c := conn.NewConn(nc, conn.Options{})
+	c, stopWatchdog := s.newSessionConn(nc)
 	defer c.Close()
+	defer stopWatchdog()
 
 	sess := &session{
 		srv:   s,
@@ -416,6 +454,70 @@ func (s *Server) serveConnInternalNetid(nc net.Conn, isTLS bool, netid int) erro
 		netid: netid,
 	}
 	return sess.run()
+}
+
+// sessionWriteTimeout returns the per-flush write deadline for client-session
+// conns: s.writeTimeout when set, clientWriteTimeout otherwise. It exists so
+// a zero-valued Server (constructed without New, as some tests do) still gets
+// the production write deadline rather than none.
+func (s *Server) sessionWriteTimeout() time.Duration {
+	if s.writeTimeout > 0 {
+		return s.writeTimeout
+	}
+	return clientWriteTimeout
+}
+
+// newSessionConn wraps nc in a framed conn.Conn configured with the session
+// write deadline, plus a watchdog that turns a write failure into a full conn
+// teardown. Registered sessions otherwise have no write deadline at all: a
+// synchronous send (CHATHISTORY replay, state burst) to a client that stops
+// reading would park the session goroutine forever once the outbound queue
+// and the transport fill. The conn-level WriteTimeout bounds each flush of
+// the outbound queue; when a flush misses the deadline (or fails for any
+// other reason) the watchdog closes the conn, which closes the transport and
+// unblocks the session goroutine wherever it is parked — in ReadMessage or in
+// a send blocked on the full queue — so the session exits instead of leaking.
+//
+// The returned stop function must be deferred by the caller so the watchdog
+// goroutine is released when the session ends normally.
+func (s *Server) newSessionConn(nc net.Conn) (*conn.Conn, func()) {
+	fc := &writeFailConn{Conn: nc, failed: make(chan struct{})}
+	c := conn.NewConn(fc, conn.Options{WriteTimeout: s.sessionWriteTimeout()})
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-fc.failed:
+			// The client has stopped reading (deadline miss) or the transport
+			// broke. Close is safe to call from here: the conn's writer
+			// goroutine has already returned from its failed write, so Close
+			// does not wait on a goroutine that is blocked behind us.
+			_ = c.Close()
+		case <-stop:
+		}
+	}()
+	return c, func() { close(stop) }
+}
+
+// writeFailConn wraps a net.Conn and signals the first Write error by closing
+// the failed channel. All Writes on a session conn happen on the conn.Conn
+// writer goroutine; pairing this signal with the watchdog in newSessionConn
+// propagates a write-deadline failure into a full session teardown (the conn
+// package records the failure internally but does not close the transport,
+// so without the watchdog the session's reader would stay parked).
+type writeFailConn struct {
+	net.Conn
+	once   sync.Once
+	failed chan struct{}
+}
+
+// Write implements net.Conn. The first failing write closes the failed
+// channel; the error is returned unchanged.
+func (w *writeFailConn) Write(p []byte) (n int, err error) {
+	n, err = w.Conn.Write(p)
+	if err != nil {
+		w.once.Do(func() { close(w.failed) })
+	}
+	return n, err
 }
 
 // serveConnInternal is the internal implementation shared by serveConn and
@@ -436,8 +538,9 @@ func (s *Server) serveConnInternal(nc net.Conn, isTLS bool) error {
 		log.Printf("server: set registration deadline: %v", err)
 	}
 
-	c := conn.NewConn(nc, conn.Options{})
+	c, stopWatchdog := s.newSessionConn(nc)
 	defer c.Close()
+	defer stopWatchdog()
 
 	sess := &session{
 		srv:   s,
@@ -870,7 +973,11 @@ func (s *session) handleAuthenticatePayload(payload string) error {
 	// (A username check that short-circuits before the KDF would be a timing
 	// oracle distinguishing valid vs. invalid usernames.)
 	// Do NOT log passwd or the raw payload.
-	ok, err := VerifyPassword(s.srv.cfg.BouncerAuth.PasswordHash, passwd)
+	//
+	// The gated variant serializes the expensive KDF across all sessions so an
+	// unauthenticated peer cannot burn one core per connection by churning
+	// AUTHENTICATE attempts (see kdfGate in auth.go).
+	ok, err := verifyPasswordGated(s.srv.cfg.BouncerAuth.PasswordHash, passwd)
 	if err != nil {
 		// Malformed stored hash or unsupported algorithm. Log the structural error
 		// (no password bytes) so the admin can diagnose misconfiguration.

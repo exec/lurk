@@ -12,6 +12,7 @@ package server
 //   - pipeServer(t)             — create a pipe and start the server in a goroutine
 
 import (
+	"bufio"
 	"net"
 	"runtime"
 	"strings"
@@ -626,5 +627,62 @@ func TestSessionCapRejectsExcess(t *testing.T) {
 	if delta > 5 {
 		t.Errorf("goroutine leak: %d goroutines before, %d after (delta=%d); want delta ≤ 5",
 			goroutinesBefore, goroutinesAfter, delta)
+	}
+}
+
+// ─── session write-deadline tests ─────────────────────────────────────────────
+
+// TestSessionWriteTimeoutUnsticksStuckClient is the regression test for the
+// missing post-registration write deadline: registered sessions used to have
+// no write timeout at all, so a synchronous send to a client that stopped
+// reading parked the session goroutine indefinitely once the outbound queue
+// and the transport filled. With WriteTimeout set on the session conn, a
+// stuck flush must fail the conn and the session goroutine must exit.
+//
+// The client end is driven with raw reads/writes (no conn.Conn) so that
+// "stops reading" is literal: net.Pipe writes block until the peer reads, so
+// the server's very next flush after the client goes quiet is stuck.
+func TestSessionWriteTimeoutUnsticksStuckClient(t *testing.T) {
+	srv := New(&Config{})
+	srv.writeTimeout = 100 * time.Millisecond // test seam; production default is clientWriteTimeout
+
+	cRaw, sRaw := net.Pipe()
+	t.Cleanup(func() {
+		_ = cRaw.Close()
+		_ = sRaw.Close()
+	})
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.serveConnInternal(sRaw, false) }()
+
+	// Register (legacy flow, no CAP) and drain the welcome burst, which ends
+	// with 422 ERR_NOMOTD. The registration deadline covers this phase; the
+	// bug under test is the unbounded write AFTER registration.
+	if _, err := cRaw.Write([]byte("NICK stuckwt\r\nUSER stuckwt 0 * :T\r\n")); err != nil {
+		t.Fatalf("write registration: %v", err)
+	}
+	br := bufio.NewReader(cRaw)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read welcome burst: %v", err)
+		}
+		if strings.Contains(line, " "+irc.ERR_NOMOTD+" ") {
+			break
+		}
+	}
+
+	// Trigger one more server write (PING → PONG), then stop reading
+	// entirely. The PONG flush blocks on the unread pipe; the write deadline
+	// must fail the conn and unstick the session goroutine.
+	if _, err := cRaw.Write([]byte("PING :tok\r\n")); err != nil {
+		t.Fatalf("write PING: %v", err)
+	}
+
+	select {
+	case <-errCh:
+		// Session goroutine exited — the write deadline unstuck it.
+	case <-time.After(5 * time.Second):
+		t.Fatal("session goroutine still parked 5s after the client stopped reading; no write deadline on the session conn")
 	}
 }
