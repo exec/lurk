@@ -9,7 +9,10 @@ package server
 //   - Authcid parser: table-driven covering all hostile-input cases
 
 import (
+	"crypto/pbkdf2"
+	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -785,4 +788,63 @@ func TestSASLInvalidBase64Payload(t *testing.T) {
 	sendLine(t, client, "AUTHENTICATE not-valid-base64!!!")
 	r904 := recvMsg(t, client)
 	assertMsg(t, r904, irc.ERR_SASLFAIL)
+}
+
+// ─── KDF concurrency gate tests ──────────────────────────────────────────────
+
+// lowIterHash builds a valid pbkdf2-sha256 hash string with a tiny iteration
+// count so gate tests do not pay the production 600k-iteration KDF cost.
+// VerifyPassword honours the iteration count stored in the hash.
+func lowIterHash(t *testing.T, pw string) string {
+	t.Helper()
+	salt := []byte("0123456789abcdef")
+	dk, err := pbkdf2.Key(sha256.New, pw, salt, 10, 32)
+	if err != nil {
+		t.Fatalf("pbkdf2.Key: %v", err)
+	}
+	return fmt.Sprintf("%s:10:%s:%s", pbkdf2Prefix,
+		base64.StdEncoding.EncodeToString(salt),
+		base64.StdEncoding.EncodeToString(dk))
+}
+
+// TestVerifyPasswordGateSerializes is the regression test for the SASL KDF
+// DoS bound: PBKDF2 verification costs ~hundreds of milliseconds of CPU per
+// attempt, and the server used to run one KDF per concurrent AUTHENTICATE
+// with no bound, letting an unauthenticated peer burn a core per connection.
+// verifyPasswordGated (the server's auth path) must not start a KDF while the
+// kdfGate token is held, and must proceed once it is released.
+func TestVerifyPasswordGateSerializes(t *testing.T) {
+	hash := lowIterHash(t, "hunter2")
+
+	// Occupy the gate, simulating a verification already in flight.
+	kdfGate <- struct{}{}
+
+	type result struct {
+		ok  bool
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ok, err := verifyPasswordGated(hash, "hunter2")
+		done <- result{ok, err}
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("verifyPasswordGated completed while the gate was held; KDFs can run concurrently")
+	case <-time.After(100 * time.Millisecond):
+		// Blocked behind the gate, as required.
+	}
+
+	// Release the token; the queued verification must now run to completion
+	// and still produce the correct constant-time verification result.
+	<-kdfGate
+	select {
+	case r := <-done:
+		if r.err != nil || !r.ok {
+			t.Fatalf("verifyPasswordGated after release = (%v, %v), want (true, nil)", r.ok, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("verifyPasswordGated did not complete after the gate was released")
+	}
 }

@@ -30,6 +30,26 @@ import (
 // string produced by HashPassword. VerifyPassword rejects any other prefix.
 const pbkdf2Prefix = "pbkdf2-sha256"
 
+// kdfGate bounds concurrent PBKDF2 computations in the server's SASL
+// verification path to one at a time. Each verification costs a full
+// 600k-iteration PBKDF2 derivation (~hundreds of milliseconds of CPU);
+// without a bound, an unauthenticated peer could open connections up to the
+// session cap and churn AUTHENTICATE attempts to burn a core per connection.
+// Serializing the KDF caps that at one core regardless of connection count.
+// Authentication is rare on a single-user bouncer, so queueing here is
+// harmless; the constant-time properties of VerifyPassword are unaffected
+// (every attempt still runs the full KDF — no username fast-path).
+var kdfGate = make(chan struct{}, 1)
+
+// verifyPasswordGated is VerifyPassword behind kdfGate. The server's SASL
+// path uses this instead of calling VerifyPassword directly so concurrent
+// hostile AUTHENTICATE bursts cannot multiply KDF CPU cost (see kdfGate).
+func verifyPasswordGated(hash, pw string) (bool, error) {
+	kdfGate <- struct{}{}
+	defer func() { <-kdfGate }()
+	return VerifyPassword(hash, pw)
+}
+
 // pbkdf2Iters is the iteration count for new hashes. 600 000 is the OWASP
 // recommended minimum for PBKDF2-HMAC-SHA256 as of 2023.
 const pbkdf2Iters = 600_000
