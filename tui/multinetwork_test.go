@@ -108,6 +108,103 @@ func TestClosedNetworkDoesNotQuitWhenOthersRemain(t *testing.T) {
 	}
 }
 
+// TestSecondaryServerBufferCannotBeClosed verifies closeBuffer refuses every
+// network's server buffer, not just index 0. A second network's server buffer
+// sits at index > 0; closing it would leave the network connected with no
+// buffer for serverBuffer(net) to return, and the next routed standard reply
+// would dereference nil.
+func TestSecondaryServerBufferCannotBeClosed(t *testing.T) {
+	m, _, netB := twoNetModel(t)
+	i := m.bufferIndexIn(netB, "oftc")
+	if i <= 0 {
+		t.Fatalf("netB server buffer index = %d, want > 0", i)
+	}
+	before := len(m.buffers)
+	m.closeBuffer(i)
+	if len(m.buffers) != before {
+		t.Errorf("closeBuffer removed a server buffer (buffers %d -> %d)", before, len(m.buffers))
+	}
+	if m.serverBuffer(netB) == nil {
+		t.Error("serverBuffer(netB) = nil after attempted close; routed replies would panic")
+	}
+}
+
+// TestStandardReplyNilTargetDropped is the defense-in-depth half of the same
+// fix: even if a network somehow ends up with no buffers while still
+// connected, a routed FAIL/WARN/NOTE must be dropped, not dereference a nil
+// target buffer.
+func TestStandardReplyNilTargetDropped(t *testing.T) {
+	m, _, netB := twoNetModel(t)
+	// Simulate the broken state directly: netB stays in m.networks (hasNetwork
+	// passes) but owns no buffers (serverBuffer/targetBuffer return nil).
+	kept := m.buffers[:0:0]
+	for _, b := range m.buffers {
+		if b.net != netB {
+			kept = append(kept, b)
+		}
+	}
+	m.buffers = kept
+	m.active = 0
+	// Must not panic; the reply is dropped.
+	m = routeEventOn(m, netB, evt(t, ":srv FAIL JOIN ACCOUNT_REQUIRED #x :nope"))
+	if got := bufText(m.buffers[0]); strings.Contains(got, "ACCOUNT_REQUIRED") {
+		t.Errorf("netB's reply leaked into net0's server buffer:\n%s", got)
+	}
+}
+
+// TestClosedNetworkLaysOutRehomedBuffer verifies the ircClosedMsg path runs
+// layout after removeNetwork: focus can be re-homed (by index clamping) onto a
+// buffer that has never been displayed (vpReady false), which rendered as a
+// blank message pane until a resize or buffer switch.
+func TestClosedNetworkLaysOutRehomedBuffer(t *testing.T) {
+	m, net0, netB := twoNetModel(t)
+	// A net0 channel with content that has never been focused (vp not sized).
+	b, _ := m.ensureBufferIn(net0, "#go", BufferChannel)
+	m = appendLine(m, b, evt(t, ":a!a@h PRIVMSG #go :hello there"))
+	// Focus netB's server buffer (the last buffer), then let netB die.
+	m.switchTo(m.bufferIndexIn(netB, "oftc"))
+	m = layout(m)
+
+	tm, _ := m.Update(ircClosedMsg{net: netB})
+	m = tm.(model)
+
+	nb := m.activeBuffer()
+	if nb.Title != "#go" {
+		t.Fatalf("re-homed focus on %q, want #go", nb.Title)
+	}
+	if !nb.vpReady {
+		t.Fatal("removeNetwork left the re-homed buffer unsized: blank pane until resize")
+	}
+	if got := stripANSI(nb.vp.View()); !strings.Contains(got, "hello there") {
+		t.Errorf("re-homed viewport missing its content:\n%s", got)
+	}
+}
+
+// TestBatchClosedLaysOutRehomedBuffer covers the same re-home for the
+// ircBatchMsg{closed: true} path (stream ended mid-drain).
+func TestBatchClosedLaysOutRehomedBuffer(t *testing.T) {
+	m, net0, netB := twoNetModel(t)
+	b, _ := m.ensureBufferIn(net0, "#go", BufferChannel)
+	m = appendLine(m, b, evt(t, ":a!a@h PRIVMSG #go :hello there"))
+	m.switchTo(m.bufferIndexIn(netB, "oftc"))
+	m = layout(m)
+
+	tm, _ := m.Update(ircBatchMsg{
+		net:    netB,
+		evs:    []client.Event{evt(t, ":srv NOTICE me :bye")},
+		closed: true,
+	})
+	m = tm.(model)
+
+	nb := m.activeBuffer()
+	if nb.Title != "#go" {
+		t.Fatalf("re-homed focus on %q, want #go", nb.Title)
+	}
+	if !nb.vpReady {
+		t.Fatal("batch-closed removeNetwork left the re-homed buffer unsized")
+	}
+}
+
 // TestConnectUnavailable verifies /connect reports gracefully without a connect
 // callback.
 func TestConnectUnavailable(t *testing.T) {

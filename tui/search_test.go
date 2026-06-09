@@ -90,3 +90,51 @@ func TestSearchClearedOnBufferSwitch(t *testing.T) {
 		t.Errorf("search not cleared on buffer switch: %q", m.searchTerm)
 	}
 }
+
+// TestSearchClearedOnCloseBuffer verifies /close on the searched buffer drops
+// the search: the matches are absolute indices into the dead buffer's lines,
+// and a Ctrl-R afterwards would scroll the newly focused buffer to a bogus
+// offset (closeBuffer changes focus without going through switchTo).
+func TestSearchClearedOnCloseBuffer(t *testing.T) {
+	m := searchModel(t)
+	runSearch(&m, "needle")
+	m.closeBuffer(m.active)
+	if m.searchTerm != "" || len(m.searchMatches) != 0 {
+		t.Errorf("search survived closing its buffer: term=%q matches=%v", m.searchTerm, m.searchMatches)
+	}
+}
+
+// TestSearchKeptWhenClosingOtherBuffer verifies closing a buffer that is NOT
+// the searched one leaves the search intact — the matches still index the
+// still-focused buffer's lines.
+func TestSearchKeptWhenClosingOtherBuffer(t *testing.T) {
+	m := searchModel(t)
+	m.ensureBuffer("#other", BufferChannel)
+	runSearch(&m, "needle")
+	m.closeBuffer(m.bufferIndex("#other"))
+	if m.searchTerm != "needle" || len(m.searchMatches) != 2 {
+		t.Errorf("search dropped by closing an unrelated buffer: term=%q matches=%v", m.searchTerm, m.searchMatches)
+	}
+}
+
+// TestSearchClearedOnRemoveNetwork verifies that a network removal which
+// re-homes focus off the searched buffer also drops the search (removeNetwork
+// changes the active buffer without going through switchTo).
+func TestSearchClearedOnRemoveNetwork(t *testing.T) {
+	m, _, netB := twoNetModel(t)
+	_, i := m.ensureBufferIn(netB, "#go", BufferChannel)
+	m.switchTo(i)
+	m = layout(m)
+	for _, body := range []string{"needle one", "filler", "needle two"} {
+		m = appendLine(m, m.activeBuffer(), evt(t, ":a!a@h PRIVMSG #go :"+body))
+	}
+	runSearch(&m, "needle")
+	if len(m.searchMatches) != 2 {
+		t.Fatalf("setup: matches = %d, want 2", len(m.searchMatches))
+	}
+
+	m = m.removeNetwork(netB)
+	if m.searchTerm != "" || len(m.searchMatches) != 0 {
+		t.Errorf("search survived its network's removal: term=%q matches=%v", m.searchTerm, m.searchMatches)
+	}
+}

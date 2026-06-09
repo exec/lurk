@@ -53,15 +53,21 @@ func TestStandardReplyRoutedToActiveBuffer(t *testing.T) {
 	}
 }
 
+// tkey builds the typing-state key for target on m's active network, the key
+// routeTagmsg/renderStatus use for single-network models.
+func tkey(m model, target string) typingKey {
+	return typingKey{net: m.activeNet(), target: target}
+}
+
 func TestTypingNoteAndExpiry(t *testing.T) {
 	m := newTestModel()
-	m = m.noteTyping("#chan", "alice")
-	if got := m.typingNicks("#chan"); len(got) != 1 || got[0] != "alice" {
+	m = m.noteTyping(tkey(m, "#chan"), "alice")
+	if got := m.typingNicks(tkey(m, "#chan")); len(got) != 1 || got[0] != "alice" {
 		t.Fatalf("typingNicks = %v, want [alice]", got)
 	}
 	// Expire it by backdating the entry.
-	m.typing["#chan"][0].expiry = time.Now().Add(-time.Second)
-	if got := m.typingNicks("#chan"); len(got) != 0 {
+	m.typing[tkey(m, "#chan")][0].expiry = time.Now().Add(-time.Second)
+	if got := m.typingNicks(tkey(m, "#chan")); len(got) != 0 {
 		t.Errorf("expired typingNicks = %v, want empty", got)
 	}
 }
@@ -69,12 +75,12 @@ func TestTypingNoteAndExpiry(t *testing.T) {
 func TestRouteTagmsgTracksTyping(t *testing.T) {
 	m := newTestModel()
 	m = routeEvent(m, evt(t, "@+typing=active :alice!a@h TAGMSG #chan"))
-	if got := m.typingNicks("#chan"); len(got) != 1 {
+	if got := m.typingNicks(tkey(m, "#chan")); len(got) != 1 {
 		t.Fatalf("after active: typingNicks = %v, want [alice]", got)
 	}
 	// "done" clears it.
 	m = routeEvent(m, evt(t, "@+typing=done :alice!a@h TAGMSG #chan"))
-	if got := m.typingNicks("#chan"); len(got) != 0 {
+	if got := m.typingNicks(tkey(m, "#chan")); len(got) != 0 {
 		t.Errorf("after done: typingNicks = %v, want empty", got)
 	}
 }
@@ -85,12 +91,12 @@ func TestOwnTypingNotShown(t *testing.T) {
 	cli := client.New(client.Config{Nick: "me"})
 	m := newModel(cli, nil)
 	m = routeEvent(m, evt(t, "@+typing=active :me!u@h TAGMSG #chan"))
-	if got := m.typingNicks("#chan"); len(got) != 0 {
+	if got := m.typingNicks(tkey(m, "#chan")); len(got) != 0 {
 		t.Errorf("own typing shown: typingNicks = %v, want empty", got)
 	}
 	// A different user's typing still registers (case-insensitively distinct).
 	m = routeEvent(m, evt(t, "@+typing=active :alice!a@h TAGMSG #chan"))
-	if got := m.typingNicks("#chan"); len(got) != 1 || got[0] != "alice" {
+	if got := m.typingNicks(tkey(m, "#chan")); len(got) != 1 || got[0] != "alice" {
 		t.Errorf("other user typing = %v, want [alice]", got)
 	}
 }
@@ -98,12 +104,12 @@ func TestOwnTypingNotShown(t *testing.T) {
 func TestTypingClearedByMessage(t *testing.T) {
 	m := newTestModel()
 	m = routeEvent(m, evt(t, "@+typing=active :alice!a@h TAGMSG #chan"))
-	if len(m.typingNicks("#chan")) != 1 {
+	if len(m.typingNicks(tkey(m, "#chan"))) != 1 {
 		t.Fatal("expected alice typing")
 	}
 	// A message from alice ends her typing indication.
 	m = routeEvent(m, evt(t, ":alice!a@h PRIVMSG #chan :hello"))
-	if got := m.typingNicks("#chan"); len(got) != 0 {
+	if got := m.typingNicks(tkey(m, "#chan")); len(got) != 0 {
 		t.Errorf("typing not cleared by message: %v", got)
 	}
 }

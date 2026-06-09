@@ -120,6 +120,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.quitting = true
 				return m, tea.Quit
 			}
+			// Focus may have been re-homed onto a buffer that has never been
+			// displayed (vpReady false); layout sizes and fills its viewport so
+			// the message pane is not blank until the next resize or switch.
+			m = layout(m)
 			return m, nil
 		}
 		cmds := []tea.Cmd{waitForIRC(msg.net)}
@@ -159,12 +163,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ircClosedMsg:
 		// One network's connection ended for good: drop it. Quit only when no
-		// networks remain.
+		// networks remain. layout() sizes/refreshes the re-homed focus buffer,
+		// which may never have been displayed (vpReady false) — without it the
+		// message pane stays blank until a resize or buffer switch.
 		m = m.removeNetwork(msg.net)
 		if len(m.networks) == 0 {
 			m.quitting = true
 			return m, tea.Quit
 		}
+		m = layout(m)
 		return m, nil
 
 	default:

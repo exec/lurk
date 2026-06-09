@@ -162,8 +162,10 @@ func (f *netForm) focus(dir int) {
 
 // toNetwork validates the form and converts it to a config.Network. Name and
 // Address are required; passwords keep their exact value (not trimmed). When a
-// Bounce addr is set, Bounce NetID must be empty (stays 0, meaning "not bound")
-// or a valid positive integer — a non-numeric value is a validation error.
+// Bounce addr is set, Bounce NetID is required and must be a positive integer:
+// the connection path (cmd/lurk networkToConfig) only routes through the
+// bouncer when both are set, so saving an addr without an id would silently
+// dial the network directly while looking bouncer-configured.
 func (f *netForm) toNetwork() (config.Network, error) {
 	val := func(i int) string { return strings.TrimSpace(f.fields[i].input.Value()) }
 
@@ -190,13 +192,13 @@ func (f *netForm) toNetwork() (config.Network, error) {
 		}
 	}
 	if baddr := val(fBounceAddr); baddr != "" {
-		var netID int
-		if raw := val(fBounceNetID); raw != "" {
-			var err error
-			netID, err = strconv.Atoi(raw)
-			if err != nil {
-				return config.Network{}, fmt.Errorf("Bounce NetID %q is not a number", raw)
-			}
+		raw := val(fBounceNetID)
+		if raw == "" {
+			return config.Network{}, errors.New("Bounce NetID is required when a Bounce addr is set")
+		}
+		netID, err := strconv.Atoi(raw)
+		if err != nil || netID <= 0 {
+			return config.Network{}, fmt.Errorf("Bounce NetID %q is not a positive number", raw)
 		}
 		n.Bounce = config.BounceConfig{
 			Addr:     baddr,

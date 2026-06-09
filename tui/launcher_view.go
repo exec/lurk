@@ -60,7 +60,10 @@ func renderNetworkRows(m launcherModel, t theme) string {
 		if n.SASL.Mechanism != "" {
 			flags = append(flags, "SASL")
 		}
-		if n.Bounce.Addr != "" {
+		// Match networkToConfig's routing condition (cmd/lurk): the connection
+		// only goes through the bouncer when both Addr and NetID are set, so the
+		// badge must not claim "Bounce" for a config that dials direct.
+		if n.Bounce.Addr != "" && n.Bounce.NetID > 0 {
 			flags = append(flags, "Bounce")
 		}
 		if len(flags) > 0 {

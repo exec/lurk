@@ -332,21 +332,43 @@ func TestLauncherBounceNetIDNonNumericError(t *testing.T) {
 	}
 }
 
-// TestLauncherBounceNetIDEmptyIsZero: leaving Bounce NetID blank (not required)
-// is valid and results in a zero NetID in the saved BounceConfig.
-func TestLauncherBounceNetIDEmptyIsZero(t *testing.T) {
+// TestLauncherBounceNetIDRequiredWithAddr: a Bounce addr without a NetID is a
+// validation error rather than a silently-direct connection. The connect path
+// (cmd/lurk networkToConfig) only routes through the bouncer when NetID > 0 &&
+// Addr != "", so saving an addr with a zero NetID used to produce a network
+// that wore the "Bounce" badge but dialed the IRC network directly.
+func TestLauncherBounceNetIDRequiredWithAddr(t *testing.T) {
 	f := newNetForm(config.Network{Name: "x", Addr: "y:1"}, config.Identity{})
 	f.fields[fBounceAddr].input.SetValue("localhost:7778")
 	// fBounceNetID left blank intentionally.
 
-	got, err := f.toNetwork()
-	if err != nil {
-		t.Fatalf("toNetwork: unexpected error for empty NetID: %v", err)
+	if _, err := f.toNetwork(); err == nil {
+		t.Fatal("toNetwork: expected error for Bounce addr without NetID, got nil")
 	}
-	if got.Bounce.NetID != 0 {
-		t.Errorf("Bounce.NetID = %d, want 0 for empty field", got.Bounce.NetID)
+
+	// A non-positive NetID is rejected for the same reason: networkToConfig
+	// treats NetID <= 0 as "not bouncer-bound".
+	f.fields[fBounceNetID].input.SetValue("0")
+	if _, err := f.toNetwork(); err == nil {
+		t.Fatal("toNetwork: expected error for Bounce NetID 0, got nil")
 	}
-	if got.Bounce.Addr != "localhost:7778" {
-		t.Errorf("Bounce.Addr = %q, want localhost:7778", got.Bounce.Addr)
+}
+
+// TestLauncherBounceBadgeRequiresNetID: the network list's "Bounce" badge keys
+// on the same condition the connect path uses (Addr set AND NetID > 0), so a
+// legacy config with an addr but no id does not claim a bouncer route it will
+// not take.
+func TestLauncherBounceBadgeRequiresNetID(t *testing.T) {
+	store := &config.File{Networks: []config.Network{
+		{
+			Name:   "Halfway", // must not itself contain "Bounce"
+			Addr:   "irc.libera.chat:6697",
+			Bounce: config.BounceConfig{Addr: "localhost:7778"}, // NetID unset
+		},
+	}}
+	m := newLauncher(t, store)
+	rendered := renderNetworkRows(m, defaultTheme)
+	if containsPlain(rendered, "Bounce") {
+		t.Errorf("network list shows Bounce badge for a config that dials direct (NetID 0):\n%s", rendered)
 	}
 }

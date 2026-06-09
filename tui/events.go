@@ -194,8 +194,13 @@ func routeEventOn(m model, net *network, ev client.Event) model {
 		return routeTagmsg(m, net, ev)
 	case irc.FAIL, irc.WARN, irc.NOTE:
 		// Standard replies render where the user is looking (when on this network),
-		// else the network's server buffer.
+		// else the network's server buffer. A nil target (no placeable buffer for
+		// this network) drops the reply rather than panicking — defense in depth
+		// alongside closeBuffer's refusal to close server buffers.
 		b := m.targetBuffer(net)
+		if b == nil {
+			return m
+		}
 		b.addLine(defaultTheme.formatStandardReply(ev))
 		b.refresh()
 		return m
@@ -261,7 +266,7 @@ func routeText(m model, net *network, ev client.Event) model {
 	}
 
 	// A message from a user ends any "typing…" indication they had in this buffer.
-	m = m.clearTyping(typingBufferKey(target, ev.Nick(), self), ev.Nick())
+	m = m.clearTyping(typingKey{net: net, target: typingBufferTarget(target, ev.Nick(), self)}, ev.Nick())
 
 	// appendLine is the single place that records unread/highlight for non-active
 	// buffers (and skips replayed chathistory backlog), so there is no separate
@@ -304,7 +309,7 @@ func routeTagmsg(m model, net *network, ev client.Event) model {
 	if equalFold(ev.Nick(), self) {
 		return m
 	}
-	key := typingBufferKey(ev.Param(0), ev.Nick(), self)
+	key := typingKey{net: net, target: typingBufferTarget(ev.Param(0), ev.Nick(), self)}
 	if state == "active" {
 		return m.noteTyping(key, ev.Nick())
 	}
@@ -312,10 +317,11 @@ func routeTagmsg(m model, net *network, ev client.Event) model {
 	return m.clearTyping(key, ev.Nick())
 }
 
-// typingBufferKey returns the ASCII-folded key of the buffer a typing/message
-// event belongs to: the channel target for channel traffic, or the sender's
-// nick for a message addressed to us (a PM, whose buffer is the peer).
-func typingBufferKey(target, sender, self string) string {
+// typingBufferTarget returns the ASCII-folded target of the buffer a
+// typing/message event belongs to: the channel target for channel traffic, or
+// the sender's nick for a message addressed to us (a PM, whose buffer is the
+// peer). Callers pair it with the owning network in a typingKey.
+func typingBufferTarget(target, sender, self string) string {
 	if isChannel(target) || !equalFold(target, self) {
 		return asciiLower(target)
 	}

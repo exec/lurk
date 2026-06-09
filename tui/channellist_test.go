@@ -132,6 +132,47 @@ func TestChannelListOverlayRenders(t *testing.T) {
 	}
 }
 
+// TestChannelListScopedToRequestingNetwork verifies the /list modal only
+// accepts LIST replies from the network it was opened for: a second network's
+// (or a hostile server's unsolicited) RPL_LIST rows must not populate a
+// directory whose Enter joins via the requesting network's client, and its
+// RPL_LISTEND must not finalize the modal early.
+func TestChannelListScopedToRequestingNetwork(t *testing.T) {
+	m, net0, netB := twoNetModel(t)
+
+	m = openChannelList(m) // active buffer is net0's server buffer
+	if m.chanListNet != net0 {
+		t.Fatalf("chanListNet = %v, want net0", m.chanListNet)
+	}
+
+	// netB volunteers rows + an end marker while net0's request is in flight.
+	netBServer := m.serverBuffer(netB)
+	before := len(netBServer.lines)
+	m = routeEventOn(m, netB, evt(t, ":srv 322 me #evil 666 :join me"))
+	m = routeEventOn(m, netB, evt(t, ":srv 323 me :End of /LIST"))
+	if len(m.chanListAccum) != 0 {
+		t.Errorf("foreign RPL_LIST rows accumulated into the modal: %v", m.chanListAccum)
+	}
+	if !m.chanListLoading {
+		t.Error("foreign RPL_LISTEND finalized the modal")
+	}
+	// The foreign replies fall back to their own network's buffer, not the void.
+	if len(netBServer.lines) <= before {
+		t.Error("netB's LIST replies were dropped instead of rendered in its buffer")
+	}
+
+	// net0's own replies still drive the modal to completion.
+	m = routeEventOn(m, net0, evt(t, ":srv 322 me #go 120 :Gophers"))
+	m = routeEventOn(m, net0, evt(t, ":srv 323 me :End of /LIST"))
+	if m.chanListLoading {
+		t.Error("still loading after the requesting network's RPL_LISTEND")
+	}
+	items := m.chanList.Items()
+	if len(items) != 1 || items[0].(channelItem).name != "#go" {
+		t.Errorf("modal items = %v, want just #go", items)
+	}
+}
+
 // pressList feeds one key to the open modal via handleChannelListKey.
 func pressList(t *testing.T, m model, msg tea.KeyPressMsg) model {
 	t.Helper()

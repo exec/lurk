@@ -104,6 +104,13 @@ func layout(m model) model {
 		if stick {
 			b.vp.GotoBottom()
 		}
+	} else if b.dirty {
+		// Same pane size, but lines arrived while this buffer was unfocused
+		// (appendLine/appendInfo only mark dirty then). Without this refresh a
+		// switch between two same-sized buffers would re-show the previous
+		// SetContent snapshot: the unread counter says new messages, but the
+		// pane wouldn't show them until a resize or the next active-line append.
+		b.refresh()
 	}
 	return m
 }
@@ -459,7 +466,9 @@ func renderStatus(m model) string {
 			scrollNote = fmt.Sprintf("↓ %d more (End)", below)
 		}
 	}
-	typing := typingNote(m.typingNicks(asciiLower(b.Title)))
+	// The typing lookup is scoped to the active buffer's own network so a typer
+	// in a same-named channel on another network does not bleed into this one.
+	typing := typingNote(m.typingNicks(typingKey{net: b.net, target: asciiLower(b.Title)}))
 	// network and the buffer title are server-controlled; sanitize before they
 	// reach the status bar so an ESC-laden NETWORK token or channel name cannot
 	// inject terminal control sequences.
@@ -582,9 +591,15 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 	case ev.BatchType() == "chathistory":
 		// Replayed backlog into a background buffer is rendered but is not "new
 		// activity": it must not inflate unread or raise a highlight (your own
-		// nick may appear in your history).
+		// nick may appear in your history). It still invalidates the viewport
+		// snapshot (dirty) so the lines show on the next switch-back.
+		b.dirty = true
 	default:
 		b.Unread++
+		// The viewport's SetContent snapshot is now stale; layout() refreshes a
+		// dirty buffer when it becomes active again, so a switch-back shows
+		// these lines even when the pane size has not changed.
+		b.dirty = true
 		if highlight {
 			b.Highlight = true
 			// Ring the bell for a mention in a buffer the user isn't watching.
@@ -614,6 +629,7 @@ func appendInfo(m model, b *Buffer, text string) model {
 		}
 	} else {
 		b.Unread++
+		b.dirty = true // stale viewport snapshot; refreshed on switch-back (layout)
 	}
 	return m
 }
@@ -635,6 +651,8 @@ func echoSelf(m model, target, text string) model {
 		m.shiftSearchMatches(drop)
 		b.readMarker = len(b.lines) // your own echoed line is read on arrival
 		b.refresh()
+	} else {
+		b.dirty = true // e.g. /msg to a background buffer; refreshed on switch-back
 	}
 	return m
 }

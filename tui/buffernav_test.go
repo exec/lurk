@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -64,5 +65,43 @@ func TestJumpToActive(t *testing.T) {
 	m.jumpToActive()
 	if m.active != 1 {
 		t.Errorf("jumpToActive with no activity moved to %d, want 1 (no-op)", m.active)
+	}
+}
+
+// TestSwitchBackShowsLinesReceivedWhileAway is the regression for the stale
+// viewport on buffer switch: a message that arrives while a buffer is
+// unfocused only bumps Unread, and switching back between two SAME-sized
+// buffers used to re-show the old SetContent snapshot — the unread counter
+// said new messages, the pane didn't show them until a resize or the next
+// active-line append. appendLine now marks the buffer dirty and layout()
+// refreshes a dirty buffer when it becomes active.
+func TestSwitchBackShowsLinesReceivedWhileAway(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height, m.ready = 80, 24, true
+	_, ia := m.ensureBuffer("#a", BufferChannel)
+	_, ib := m.ensureBuffer("#b", BufferChannel)
+	m.switchTo(ia)
+	m = layout(m)
+	m = appendLine(m, m.buffer("#a"), evt(t, ":x!x@h PRIVMSG #a :first"))
+
+	// Switch to #b (same kind, hence the same pane size), then a message lands
+	// in the now-unfocused #a.
+	m.switchTo(ib)
+	m = layout(m)
+	m = appendLine(m, m.buffer("#a"), evt(t, ":x!x@h PRIVMSG #a :while-away"))
+	if !m.buffer("#a").dirty {
+		t.Fatal("append to an unfocused buffer did not mark it dirty")
+	}
+
+	// Switch back: layout must refresh the dirty buffer even though its pane
+	// size is unchanged.
+	m.switchTo(ia)
+	m = layout(m)
+	a := m.buffer("#a")
+	if a.dirty {
+		t.Error("layout left the newly active buffer dirty (no refresh)")
+	}
+	if got := stripANSI(a.vp.View()); !strings.Contains(got, "while-away") {
+		t.Errorf("switch-back viewport is stale; missing the message received while away:\n%s", got)
 	}
 }

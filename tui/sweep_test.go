@@ -250,7 +250,7 @@ func TestStatusBarSanitizesNetworkAndTyping(t *testing.T) {
 	_, i := m.ensureBufferIn(m.networks[0], "#go", BufferChannel)
 	m.switchTo(i)
 	m = layout(m)
-	m = m.noteTyping(asciiLower("#go"), "ev\x1bil")
+	m = m.noteTyping(typingKey{net: m.networks[0], target: asciiLower("#go")}, "ev\x1bil")
 
 	// The renderer's own SGR uses ESC, so we cannot assert "no ESC at all";
 	// instead assert the injected payload sequences are gone.

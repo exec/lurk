@@ -67,6 +67,9 @@ func openChannelList(m model) model {
 	m.chanListAccum = nil
 	m.chanListLoading = true
 	m.chanListOpen = true
+	// The /list was sent on the active network (command.go); remember it so
+	// routeListReply only accepts LIST replies from that network.
+	m.chanListNet = m.activeNet()
 	return m
 }
 
@@ -75,6 +78,7 @@ func closeChannelList(m model) model {
 	m.chanListOpen = false
 	m.chanListLoading = false
 	m.chanListAccum = nil
+	m.chanListNet = nil
 	return m
 }
 
@@ -114,10 +118,13 @@ func (m model) handleChannelListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // routeListReply collects the LIST reply numerics into the modal. When the modal
-// is not driving the request (e.g. a raw LIST), it falls back to rendering the
-// reply in the active buffer so the data is not lost.
+// is not driving the request (e.g. a raw LIST), or the reply arrived on a
+// network other than the one the modal's /list was sent on, it falls back to
+// rendering the reply in that network's own buffer so the data is not lost —
+// and so a second network (or a hostile server volunteering unsolicited LIST
+// replies) cannot inject rows into a directory the user will join from.
 func routeListReply(m model, net *network, ev client.Event) model {
-	if !m.chanListLoading {
+	if !m.chanListLoading || net != m.chanListNet {
 		return appendLine(m, m.targetBuffer(net), ev)
 	}
 	switch ev.Command() {

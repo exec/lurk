@@ -105,11 +105,13 @@ type model struct {
 	menuStatus bool
 
 	// typing tracks remote typing notifications (the +typing client tag),
-	// keyed by the ASCII-folded buffer the typer is composing in (a channel name
-	// or, for a PM, the peer's nick). Entries expire after typingTTL or when the
-	// typer sends a message / a "done" notification. The status bar shows the
-	// active buffer's typers.
-	typing map[string][]typingEntry
+	// keyed by the owning network plus the ASCII-folded buffer the typer is
+	// composing in (a channel name or, for a PM, the peer's nick). Scoping the
+	// key by network keeps a typer in #chan on one network from showing while
+	// the user views a same-named #chan on another. Entries expire after
+	// typingTTL or when the typer sends a message / a "done" notification. The
+	// status bar shows the active buffer's typers.
+	typing map[typingKey][]typingEntry
 
 	// lastTypingSent is when we last emitted our own "active" +typing tag, used
 	// to throttle outbound typing notifications (see maybeSendTyping).
@@ -173,11 +175,15 @@ type model struct {
 	// scrollable list drawn as a centered overlay (channellist.go). chanListOpen
 	// gates the overlay and its key capture; chanListLoading is true between the
 	// LIST request and RPL_LISTEND, while chanListAccum gathers the RPL_LIST rows
-	// before they populate the list on completion.
+	// before they populate the list on completion. chanListNet records which
+	// network the /list was sent on, so only that network's LIST replies feed
+	// the modal — another network's (or a hostile server's unsolicited) replies
+	// must not populate a directory whose Enter joins via the requesting client.
 	chanList        list.Model
 	chanListOpen    bool
 	chanListLoading bool
 	chanListAccum   []list.Item
+	chanListNet     *network
 }
 
 // typingEntry is one remote user composing in a buffer, with the moment its
@@ -185,6 +191,17 @@ type model struct {
 type typingEntry struct {
 	nick   string
 	expiry time.Time
+}
+
+// typingKey identifies the buffer a typing indication belongs to: the owning
+// network plus the ASCII-folded target (channel name, or the PM peer's nick).
+// Two networks can host a channel of the same name, so the target string alone
+// is ambiguous; the network pointer disambiguates exactly like Buffer.net does
+// for buffers. net may be nil in low-level tests that exercise the expiry
+// bookkeeping without a network.
+type typingKey struct {
+	net    *network
+	target string
 }
 
 // typingTTL is how long a "X is typing…" indication lingers without a refresh.
@@ -205,7 +222,7 @@ func newModel(cli *client.Client, sub <-chan client.Event) model {
 		keys:       defaultKeymap(),
 		help:       help.New(),
 		input:      newInput(),
-		typing:     make(map[string][]typingEntry),
+		typing:     make(map[typingKey][]typingEntry),
 		highlights: make(map[string]bool),
 		ignored:    make(map[string]bool),
 	}
@@ -228,9 +245,9 @@ func (m *model) isIgnored(nick string) bool {
 // noteTyping records that nick is composing in the buffer keyed by key,
 // (re)setting its expiry to typingTTL from now. Returns the mutated model so it
 // composes in the value-semantics Update flow.
-func (m model) noteTyping(key, nick string) model {
+func (m model) noteTyping(key typingKey, nick string) model {
 	if m.typing == nil {
-		m.typing = make(map[string][]typingEntry)
+		m.typing = make(map[typingKey][]typingEntry)
 	}
 	entries := m.typing[key]
 	now := time.Now()
@@ -247,7 +264,7 @@ func (m model) noteTyping(key, nick string) model {
 
 // clearTyping drops nick's typing indication from the buffer keyed by key (on a
 // "done"/"paused" notice or once they send a message).
-func (m model) clearTyping(key, nick string) model {
+func (m model) clearTyping(key typingKey, nick string) model {
 	entries := m.typing[key]
 	out := entries[:0]
 	for _, e := range entries {
@@ -266,7 +283,7 @@ func (m model) clearTyping(key, nick string) model {
 // typingNicks returns the still-current typers in the buffer keyed by key,
 // dropping any whose indication has expired. Expired entries are not pruned from
 // the map here (render is read-only); they are overwritten on the next notice.
-func (m model) typingNicks(key string) []string {
+func (m model) typingNicks(key typingKey) []string {
 	now := time.Now()
 	var nicks []string
 	for _, e := range m.typing[key] {
@@ -528,17 +545,21 @@ func (m *model) jumpToActive() {
 	}
 }
 
-// closeBuffer closes the buffer at index i and focuses a neighbour. The server
-// buffer (index 0) cannot be closed and the call is ignored for it, so a
-// /close on the status window is harmless. Closing the active buffer moves
-// focus to the previous buffer (or the server buffer).
+// closeBuffer closes the buffer at index i and focuses a neighbour. Server
+// buffers cannot be closed and the call is ignored for them, so a /close on a
+// status window is harmless — EVERY network's server buffer is permanent, not
+// just index 0: closing a secondary network's server buffer would leave the
+// network connected with no buffer for serverBuffer(net) to find, and the
+// event router would then dereference nil on the next routed reply. Closing
+// the active buffer moves focus to the previous buffer (or the server buffer).
 //
 // closeBuffer does NOT send a PART; the command layer (tui-input) is
 // responsible for any protocol side effects before calling this.
 func (m *model) closeBuffer(i int) {
-	if i <= 0 || i >= len(m.buffers) {
-		return // index 0 (server) is permanent; out-of-range ignored
+	if i < 0 || i >= len(m.buffers) || m.buffers[i].Kind == BufferServer {
+		return // server buffers are permanent; out-of-range ignored
 	}
+	closingActive := m.active == i
 	m.buffers = append(m.buffers[:i], m.buffers[i+1:]...)
 	switch {
 	case m.active > i:
@@ -550,6 +571,12 @@ func (m *model) closeBuffer(i int) {
 	}
 	if b := m.activeBuffer(); b.net != nil {
 		m.cli = b.net.cli
+	}
+	// A scrollback search holds absolute line indices into the buffer it ran
+	// in; when that buffer just went away the matches are meaningless (and
+	// Ctrl-R would scroll the newly focused buffer to a bogus offset).
+	if closingActive {
+		m.clearSearch()
 	}
 }
 
@@ -568,6 +595,7 @@ func (m *model) addNetwork(name string, cli *client.Client) *network {
 // good), re-homing focus onto a surviving buffer. The caller quits when no
 // networks remain.
 func (m model) removeNetwork(net *network) model {
+	oldActive := m.activeBuffer()
 	kept := make([]*Buffer, 0, len(m.buffers))
 	for _, b := range m.buffers {
 		if b.net != net {
@@ -586,6 +614,7 @@ func (m model) removeNetwork(net *network) model {
 
 	if len(m.buffers) == 0 {
 		m.active = 0
+		m.clearSearch()
 		return m
 	}
 	if m.active >= len(m.buffers) {
@@ -593,6 +622,12 @@ func (m model) removeNetwork(net *network) model {
 	}
 	if b := m.buffers[m.active]; b.net != nil {
 		m.cli = b.net.cli
+	}
+	// When focus was re-homed off a dead buffer, any scrollback search scoped
+	// to it is meaningless now: its match indices point into the removed
+	// buffer's lines, and Ctrl-R would scroll the survivor to a bogus offset.
+	if m.buffers[m.active] != oldActive {
+		m.clearSearch()
 	}
 	// The re-homed buffer is now the focused one, so clear its activity markers —
 	// otherwise the survivor we're looking at keeps stale unread/highlight pips.
