@@ -243,6 +243,18 @@ func NewStore(dir string, opts ...Option) (*Store, error) {
 	for _, o := range opts {
 		o(s)
 	}
+	// Clamp options to safe values: a non-positive ring size would divide by
+	// zero in pushRing, and a non-positive target cap would reject every
+	// target. A negative file-size cap is treated as "no rotation".
+	if s.ringSize < 1 {
+		s.ringSize = DefaultRingSize
+	}
+	if s.maxTgts < 1 {
+		s.maxTgts = DefaultMaxTargetsPerNet
+	}
+	if s.maxFileSize < 0 {
+		s.maxFileSize = 0
+	}
 	if err := s.Rehydrate(); err != nil {
 		return nil, err
 	}

@@ -583,3 +583,132 @@ func BenchmarkTargetsRing(b *testing.B) {
 		}
 	}
 }
+
+// ─── rotation-aware boundary query tests ─────────────────────────────────────
+
+// TestBoundaryQueriesSeeRotatedEntries is the regression test for the
+// CHATHISTORY silent-history-loss bug: with WithMaxFileSize set, Ingest
+// rotates <target>.jsonl to <target>.jsonl.1 and opens a fresh current file,
+// but the boundary queries (Before/After/Around/Between) used to read ONLY the
+// current file. Right after a rotation a client doing CHATHISTORY LATEST
+// (served from the in-memory ring) would get msgids, then BEFORE msgid=X would
+// fail to find the pivot in the nearly-empty current file and return an empty
+// batch — silently losing everything in the rotated file. The disk-read path
+// now merges the rotation file with the current file (deduped by MsgID), so
+// all four boundary queries must see entries that live only in .jsonl.1.
+func TestBoundaryQueriesSeeRotatedEntries(t *testing.T) {
+	dir := t.TempDir()
+
+	// Small cap to force rotation after a handful of entries.
+	s, err := NewStore(dir, WithMaxFileSize(600))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer s.Close()
+
+	const (
+		netid  = 1
+		target = "#rotquery"
+	)
+	base := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	curPath := jsonlPath(dir, netid, safeName(target))
+	rotPath := curPath + ".1"
+
+	// Ingest until BOTH the rotation file and the current file hold entries.
+	// The exact line size (and hence the rotation point) depends on the JSON
+	// encoding, so we probe the files instead of hard-coding a count. The
+	// bound is generous; with a 600-byte cap a rotation occurs every few
+	// messages.
+	var rot, cur []Entry
+	for i := 0; i < 200; i++ {
+		ts := base.Add(time.Duration(i) * time.Second)
+		ev := makeEventWithTime("PRIVMSG", "nick!u@h",
+			[]string{target, fmt.Sprintf("rotation-query-msg-%d", i)}, ts)
+		if _, stored := s.Ingest(netid, ev); !stored {
+			t.Fatalf("Ingest %d: not stored", i)
+		}
+		rot, _ = readJSONLFull(rotPath)
+		cur, _ = readJSONLFull(curPath)
+		if len(rot) > 0 && len(cur) > 0 {
+			break
+		}
+	}
+	if len(rot) == 0 || len(cur) == 0 {
+		t.Fatalf("never reached a state with entries in both files (rot=%d cur=%d)", len(rot), len(cur))
+	}
+
+	firstRot, lastRot := rot[0], rot[len(rot)-1]
+	firstCur, lastCur := cur[0], cur[len(cur)-1]
+	if !lastRot.Time.Before(firstCur.Time) {
+		t.Fatalf("rotation file is not strictly older than current file (lastRot=%v firstCur=%v)",
+			lastRot.Time, firstCur.Time)
+	}
+	total := len(rot) + len(cur)
+
+	// BEFORE with the pivot in the current file must return the rotated
+	// entries too (this is the exact LATEST→BEFORE flow from the bug report).
+	before := s.Before(netid, target, Ref{IsMsgID: true, MsgID: lastCur.MsgID}, total)
+	if len(before) != total-1 {
+		t.Fatalf("Before(lastCur): got %d entries, want %d (rotated entries missing?)", len(before), total-1)
+	}
+	if before[0].MsgID != firstRot.MsgID {
+		t.Errorf("Before(lastCur): first entry msgid = %q, want first rotated msgid %q",
+			before[0].MsgID, firstRot.MsgID)
+	}
+
+	// BEFORE with the pivot itself in the rotated file: previously the pivot
+	// was simply not found (empty batch).
+	beforeRot := s.Before(netid, target, Ref{IsMsgID: true, MsgID: lastRot.MsgID}, total)
+	if len(beforeRot) != len(rot)-1 {
+		t.Errorf("Before(lastRot): got %d entries, want %d", len(beforeRot), len(rot)-1)
+	}
+
+	// AFTER with the pivot in the rotated file must cross the rotation
+	// boundary into the current file.
+	after := s.After(netid, target, Ref{IsMsgID: true, MsgID: firstRot.MsgID}, total)
+	if len(after) != total-1 {
+		t.Fatalf("After(firstRot): got %d entries, want %d", len(after), total-1)
+	}
+	if after[len(after)-1].MsgID != lastCur.MsgID {
+		t.Errorf("After(firstRot): last entry msgid = %q, want newest msgid %q",
+			after[len(after)-1].MsgID, lastCur.MsgID)
+	}
+
+	// AROUND with the pivot in the rotated file must resolve and include it.
+	around := s.Around(netid, target, Ref{IsMsgID: true, MsgID: lastRot.MsgID}, 4)
+	if len(around) == 0 {
+		t.Fatal("Around(lastRot): empty result for a pivot in the rotated file")
+	}
+	foundPivot := false
+	for _, e := range around {
+		if e.MsgID == lastRot.MsgID {
+			foundPivot = true
+		}
+	}
+	if !foundPivot {
+		t.Errorf("Around(lastRot): pivot msgid %q not in result", lastRot.MsgID)
+	}
+
+	// BETWEEN spanning the rotation boundary (inclusive start, exclusive end).
+	between := s.Between(netid, target,
+		Ref{IsMsgID: true, MsgID: firstRot.MsgID},
+		Ref{IsMsgID: true, MsgID: lastCur.MsgID}, total)
+	if len(between) != total-1 {
+		t.Fatalf("Between(firstRot, lastCur): got %d entries, want %d", len(between), total-1)
+	}
+	if between[0].MsgID != firstRot.MsgID {
+		t.Errorf("Between: first entry msgid = %q, want %q", between[0].MsgID, firstRot.MsgID)
+	}
+
+	// Every merged result must be in chronological order with no duplicates.
+	seen := make(map[string]bool, len(before))
+	for i, e := range before {
+		if seen[e.MsgID] {
+			t.Errorf("Before: duplicate msgid %q", e.MsgID)
+		}
+		seen[e.MsgID] = true
+		if i > 0 && e.Time.Before(before[i-1].Time) {
+			t.Errorf("Before: out of order at index %d", i)
+		}
+	}
+}

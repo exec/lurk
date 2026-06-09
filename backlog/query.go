@@ -16,12 +16,22 @@
 // # JSONL scan policy
 //
 // All boundary queries (Before/After/Around/Between) scan the on-disk JSONL
-// file rather than the in-memory ring. The ring is only a fast path for Latest
+// data rather than the in-memory ring. The ring is only a fast path for Latest
 // (newest-N without a reference) and Targets (newest-entry time per target).
 // JSONL files are bounded by DefaultRingSize entries per target (drop-oldest
 // during Ingest), so a full scan is O(ring-cap) lines — small by design. A
-// per-call hard cap (maxScanLines) guards against pathologically large files
-// that could accumulate before the ring cap takes full effect on an older store.
+// per-call hard cap (maxScanLines, applied per file) guards against
+// pathologically large files that could accumulate before the ring cap takes
+// full effect on an older store.
+//
+// When size-based rotation is enabled (WithMaxFileSize), older entries live in
+// <target>.jsonl.1 while the current <target>.jsonl may be nearly empty right
+// after a rotation. Every disk read therefore merges the rotation file (older
+// entries) with the current file (newer entries), deduplicating by MsgID —
+// mirroring the merge Rehydrate performs at startup. Without this, a boundary
+// query issued just after a rotation (e.g. CHATHISTORY BEFORE with a msgid
+// served from the in-memory ring) would silently miss everything in the
+// rotated file.
 //
 // Targets reads the ring's newest entry via ringNewest under b.mu — O(1) per
 // target, no disk I/O — and falls back to a JSONL scan only for targets whose
@@ -298,9 +308,10 @@ func (s *Store) Targets(netid int, fromTime, toTime time.Time, limit int) []Targ
 		if latest.IsZero() {
 			// Slow path: ring is empty (target was rehydrated but had no valid
 			// JSONL entries, or the ring was trimmed to zero). Fall back to a
-			// full JSONL scan to find the latest time.
+			// full JSONL scan (rotation file + current file) to find the
+			// latest time.
 			path := jsonlPath(s.dir, p.k.netid, p.k.target)
-			entries, err := readJSONLFull(path)
+			entries, err := readJSONLWithRotation(path)
 			if err != nil || len(entries) == 0 {
 				continue
 			}
@@ -331,21 +342,51 @@ func (s *Store) Targets(netid int, fromTime, toTime time.Time, limit int) []Targ
 
 // ─── internal query helpers ──────────────────────────────────────────────────
 
-// readJSONL reads the on-disk JSONL file for (netid, target) and returns all
-// valid entries in chronological order. Returns nil if the file does not exist
-// or has no valid entries. Scans at most maxScanLines lines.
+// readJSONL reads the on-disk JSONL data for (netid, target) — the rotation
+// file <target>.jsonl.1 first (older entries), if present, followed by the
+// current <target>.jsonl — and returns all valid entries in chronological
+// order, deduplicated by MsgID. Returns nil if neither file exists or has no
+// valid entries. Scans at most maxScanLines lines per file.
 func (s *Store) readJSONL(netid int, target string) []Entry {
 	safe := safeName(target)
 	path := jsonlPath(s.dir, netid, safe)
-	entries, err := readJSONLFull(path)
+	entries, err := readJSONLWithRotation(path)
 	if err != nil {
 		// Not found is silently nil; other I/O errors are logged but not fatal.
 		if !os.IsNotExist(err) {
 			log.Printf("backlog: readJSONL netid=%d target=%q: %v", netid, target, err)
 		}
-		return nil
+		// entries may still hold rotated entries even when the current file
+		// failed to read; serve what we have.
 	}
 	return entries
+}
+
+// readJSONLWithRotation reads the rotation file at path+".1" (older entries),
+// if any, followed by the current file at path (newer entries), and returns
+// the merged set deduplicated by MsgID — mirroring the merge Rehydrate
+// performs at startup. This is the single disk-read path for all boundary
+// queries, so entries that were rotated out of the current file remain
+// queryable.
+//
+// If the current file cannot be read, any entries recovered from the rotation
+// file are still returned alongside the error; os.IsNotExist on the current
+// file with a present rotation file (possible in the brief window between the
+// rename and the reopen during rotation) is not treated as an error.
+func readJSONLWithRotation(path string) ([]Entry, error) {
+	var entries []Entry
+	if rotEntries, err := readJSONLFull(path + ".1"); err == nil && len(rotEntries) > 0 {
+		entries = append(entries, rotEntries...)
+	}
+	curEntries, err := readJSONLFull(path)
+	if err != nil {
+		if os.IsNotExist(err) && len(entries) > 0 {
+			return dedupEntries(entries), nil
+		}
+		return dedupEntries(entries), err
+	}
+	entries = append(entries, curEntries...)
+	return dedupEntries(entries), nil
 }
 
 // readJSONLFull reads up to maxScanLines lines from path, returning all valid
