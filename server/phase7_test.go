@@ -836,15 +836,19 @@ func TestBurstChannelCap(t *testing.T) {
 	}
 	t.Cleanup(func() { mgr.Close() })
 
-	// Wait until the upstream client has tracked at least maxBurstChannels
-	// channels. Poll cc.Channels() until it reaches the expected count.
+	// Wait until the upstream client has tracked ALL totalChans channels, not
+	// just the cap's worth. The session is registered for live fan-out before
+	// ERR_NOMOTD is sent, so any upstream JOINs still arriving when the test
+	// client attaches would fan out to the bound session ahead of ERR_NOMOTD
+	// and inflate the observed JOIN count past the burst cap — a flake under
+	// full-suite load when the feed had only partially landed at attach time.
 	upCC, ok := mgr.Client(netid)
 	if !ok {
 		t.Fatal("no upstream client for netid")
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(upCC.Channels()) >= maxBurstChannels {
+		if len(upCC.Channels()) >= totalChans {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
