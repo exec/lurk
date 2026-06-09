@@ -27,6 +27,15 @@ const (
 	reconnectDialTimeout    = 30 * time.Second
 )
 
+// reconnectRegisterTimeout bounds the registration phase (CAP/SASL/001) of a
+// reconnect attempt. A peer that accepts the dial but then never completes the
+// handshake — and never closes the socket — would otherwise wedge the
+// supervisor forever: the client sets no read deadline and sends no keepalive
+// PINGs, so nothing else unblocks startSession. With the bound, the attempt
+// fails, the loop backs off, and reconnection keeps being retried. It is a
+// variable only so tests can shorten it.
+var reconnectRegisterTimeout = 60 * time.Second
+
 // supervise owns a reconnectable client's lifecycle. It blocks until the current
 // session ends, then either shuts down (on Close/Quit) or re-dials and keeps
 // going. sessionDone is the channel the active connection's run goroutine closes
@@ -105,8 +114,15 @@ func (c *Client) reconnectLoop() chan struct{} {
 			continue
 		}
 
+		// Bound the registration phase like the dial: the initial Connect honors
+		// the caller's context here, but on reconnect there is no caller context,
+		// and an unbounded wait on a stalled handshake would end reconnection
+		// attempts for good.
+		regCtx, cancelReg := context.WithTimeout(context.Background(), reconnectRegisterTimeout)
 		sessionDone := make(chan struct{})
-		if err := c.startSession(tr, sessionDone, context.Background()); err != nil {
+		err = c.startSession(tr, sessionDone, regCtx)
+		cancelReg()
+		if err != nil {
 			_ = tr.Close()
 			<-sessionDone // let the run goroutine exit before another attempt
 			if errors.Is(err, errStopped) {

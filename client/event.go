@@ -1,6 +1,7 @@
 package client
 
 import (
+	"sync"
 	"time"
 
 	"github.com/exec/lurk/irc"
@@ -149,11 +150,18 @@ func (e Event) WithChannels(channels []string) Event {
 // deliberately simple: a single *Event argument and no return.
 type Handler func(*Event)
 
-// dispatcher holds the registered handlers and fans out events. It is owned by
-// the Client and accessed only from the client's run goroutine, so it needs no
-// locking for dispatch; registration happens before Run (or is the caller's
-// responsibility to serialize).
+// dispatcher holds the registered handlers and fans out events. Registration
+// happens before Connect (or it is the caller's responsibility to serialize
+// against dispatch). Dispatch is almost always driven by the connection's run
+// goroutine, but the auto-reconnect supervisor also emits its synthetic
+// @reconnecting/@reconnected events while a fresh session's run goroutine may
+// already be live — dispatchMu serializes the two so handler invocations never
+// overlap, preserving the documented "handlers are never called concurrently"
+// contract.
 type dispatcher struct {
+	// dispatchMu serializes dispatch calls across the run goroutine and the
+	// reconnect supervisor. It does not guard registration (see above).
+	dispatchMu sync.Mutex
 	// byCommand maps an upper-cased command/numeric to its handlers.
 	byCommand map[string][]Handler
 	// any holds handlers invoked for every message regardless of command.
@@ -177,8 +185,12 @@ func (d *dispatcher) onAny(h Handler) {
 }
 
 // dispatch invokes the handlers registered for ev's command, then the
-// catch-all handlers.
+// catch-all handlers. Invocations are serialized by dispatchMu so a handler
+// never runs concurrently with another, even when the reconnect supervisor
+// emits a synthetic event while the new session's run goroutine is live.
 func (d *dispatcher) dispatch(ev *Event) {
+	d.dispatchMu.Lock()
+	defer d.dispatchMu.Unlock()
 	for _, h := range d.byCommand[ev.Message.Command] {
 		h(ev)
 	}

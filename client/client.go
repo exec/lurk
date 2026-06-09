@@ -35,7 +35,10 @@ type transport interface {
 //
 // Lifecycle: build with New, then Connect (which dials and runs registration),
 // then Run (which drives the event loop until the connection ends). Handlers
-// registered with On / Handle* are invoked from the Run goroutine.
+// registered with On / Handle* are invoked from the Run goroutine — except the
+// synthetic @reconnecting/@reconnected events, which the auto-reconnect
+// supervisor emits from its own goroutine. Handler invocations are serialized
+// either way: no two handlers ever run concurrently.
 type Client struct {
 	cfg  Config
 	disp *dispatcher

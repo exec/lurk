@@ -50,6 +50,13 @@ func (c *Client) connError() error {
 // may emit responses and advance registration), then state tracking, then user
 // dispatch.
 func (c *Client) handle(m *irc.Message) {
+	// Normalize the command first: IRC commands are case-insensitive on the
+	// wire and irc.Parse preserves the peer's spelling, so a lowercase "join"
+	// from a non-conformant server must still hit the protocol and state
+	// switches below and the dispatcher's upper-cased keys. Numerics pass
+	// through unchanged.
+	m.Command = strings.ToUpper(m.Command)
+
 	// Always answer PING immediately, even mid-registration.
 	if strings.EqualFold(m.Command, irc.PING) {
 		_ = c.write(irc.PONG, m.Params...)
