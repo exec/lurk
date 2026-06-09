@@ -43,8 +43,12 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install nfpm
+        # Pinned (not @latest) so the release toolchain is reproducible and a
+        # compromised future upstream tag can't silently enter the build. The
+        # version is checksum-verified by the Go module proxy on install. Bump
+        # this deliberately.
         run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.31.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Build packages (binaries, deb, rpm, zip)
         # The .msi is built on the macOS runner instead: Ubuntu's packaged wixl
