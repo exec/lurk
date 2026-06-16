@@ -1,0 +1,43 @@
+name: live
+
+# End-to-end smoke test against a REAL Ergo upstream with lurkd in the middle.
+# scripts/live-test.sh builds Ergo + lurkd, wires them together on loopback, and
+# runs the opt-in live tests (single client, two clients, and the lurkd
+# fan-out). GitHub-hosted runners have outbound internet, so the script can fetch
+# and build Ergo; everything it talks to is on 127.0.0.1.
+#
+# Deliberately NOT a pull-request gate and NOT a required check: it runs nightly
+# and on demand, and on pushes to main for post-merge signal. A red run here is
+# informational, not blocking.
+#
+# Ergo is built from its default branch (latest), NOT a pinned version, on
+# purpose: this job is a fragility canary. If a new Ergo release breaks it, the
+# most likely cause is something brittle on our side (an over-strict parse, an
+# assumption about server behaviour) that we want to learn about early — not a
+# reason to freeze against an old server. Contrast release.yml, which pins its
+# build tools for reproducibility.
+
+on:
+  schedule:
+    # 06:00 UTC daily.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run live suite (builds latest Ergo + lurkd)
+        # No ERGO_BIN / ERGO_REF overrides → the script clones and builds Ergo's
+        # default branch fresh, so we always test against the newest upstream.
+        run: bash scripts/live-test.sh

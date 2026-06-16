@@ -1,0 +1,40 @@
+name: ci
+
+# Build, vet, format, and race-test the whole module on every PR and on pushes
+# to main. This is the hermetic gate — no network services, no external servers —
+# and is intended to be a required status check. The live end-to-end suite (real
+# Ergo + lurkd) lives in live.yml and is deliberately kept off this path so a
+# transient upstream hiccup can never block a merge.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        # The same package set CLAUDE.md mandates; fail (and print offenders) if
+        # any file is not gofmt-clean.
+        run: |
+          unformatted="$(gofmt -l irc conn cap sasl isupport client tui cmd config chatlog server bouncer backlog)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test -race
+        run: go test -race ./...
