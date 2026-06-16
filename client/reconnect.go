@@ -92,10 +92,16 @@ func (c *Client) supervise(sessionDone chan struct{}) {
 func (c *Client) reconnectLoop() chan struct{} {
 	backoff := reconnectInitialBackoff
 	for {
+		// Use an explicit Timer (stopped on the stop branch) rather than
+		// time.After so a stop arriving during the backoff does not leave the
+		// unfired timer alive for up to reconnectMaxBackoff before it can be
+		// garbage-collected.
+		timer := time.NewTimer(backoff)
 		select {
 		case <-c.stop:
+			timer.Stop()
 			return nil
-		case <-time.After(backoff):
+		case <-timer.C:
 		}
 		// time.After and c.stop can both be ready at once and select picks at
 		// random, so re-check: a stop that arrived during the backoff must not

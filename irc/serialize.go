@@ -34,6 +34,14 @@ func (m *Message) Serialize() (string, error) {
 	}
 
 	var b strings.Builder
+	// Pre-size the builder so it does not reallocate as source, command, and
+	// params are appended. Tags (rare on outbound) and value escaping may still
+	// grow it, but the common case fits in this single allocation.
+	est := len(m.Source) + len(m.Command) + 4
+	for _, p := range m.Params {
+		est += len(p) + 2
+	}
+	b.Grow(est)
 
 	if len(m.Tags) > 0 {
 		seg, err := serializeTags(m.Tags)

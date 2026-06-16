@@ -558,13 +558,29 @@ func addPrefix(prefixes string, symbol byte, order string) string {
 	if strings.IndexByte(prefixes, symbol) >= 0 {
 		return prefixes
 	}
-	set := prefixes + string(symbol)
-	// Re-sort set by each symbol's index in order.
-	bs := []byte(set)
-	sort.SliceStable(bs, func(i, j int) bool {
-		return strings.IndexByte(order, bs[i]) < strings.IndexByte(order, bs[j])
-	})
-	return string(bs)
+	// Insert symbol at its ranked position by a single scan, rather than
+	// appending and re-sorting the whole set. prefixes is tiny (one symbol per
+	// privilege the user holds, at most the server's PREFIX width), and this
+	// runs once per added prefix mode — a mass +o on a large channel calls it
+	// per member. The scan avoids the []byte/string round-trip and the
+	// sort.SliceStable less-func closure the previous implementation allocated
+	// on every call. The comparison ('>' on the rank, with IndexByte's -1 for an
+	// unknown symbol) reproduces the prior stable-sort ordering exactly: an
+	// unknown symbol (rank -1) sorts ahead of every ranked one.
+	rank := strings.IndexByte(order, symbol)
+	insert := len(prefixes)
+	for i := 0; i < len(prefixes); i++ {
+		if strings.IndexByte(order, prefixes[i]) > rank {
+			insert = i
+			break
+		}
+	}
+	var b strings.Builder
+	b.Grow(len(prefixes) + 1)
+	b.WriteString(prefixes[:insert])
+	b.WriteByte(symbol)
+	b.WriteString(prefixes[insert:])
+	return b.String()
 }
 
 // isChannel reports whether target names a channel (its first byte is one of
@@ -638,7 +654,15 @@ func (s *state) renameEverywhere(oldKey, newKey, newNick string) {
 // member, sorted. It is meant to be read just before removeEverywhere /
 // renameEverywhere so a QUIT/NICK notice can be fanned out to the right buffers.
 func (s *state) channelsWith(nick string) []string {
-	key := s.foldKey(nick)
+	return s.channelsWithKey(s.foldKey(nick))
+}
+
+// channelsWithKey is channelsWith for a caller that has already folded the
+// subject's nick. The QUIT/NICK hot path folds the key once and reuses it for
+// both the affected-channel capture and the subsequent removeEverywhere /
+// renameEverywhere, rather than folding the same nick two or three times per
+// message (which matters on a netsplit's thousands of QUITs).
+func (s *state) channelsWithKey(key string) []string {
 	var out []string
 	for _, cs := range s.channels {
 		if _, ok := cs.members[key]; ok {

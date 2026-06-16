@@ -102,7 +102,14 @@ const maxTagCount = 64
 // The segment is scanned without strings.Split to avoid the intermediate
 // []string allocation that Split would produce for a large segment.
 func parseTags(segment string) Tags {
-	tags := make(Tags)
+	// Size the map once from the number of ';'-delimited entries (capped at
+	// maxTagCount) so it does not rehash as tags are inserted. Nearly every
+	// modern inbound line carries at least @time, so this runs per message.
+	n := strings.Count(segment, ";") + 1
+	if n > maxTagCount {
+		n = maxTagCount
+	}
+	tags := make(Tags, n)
 	for segment != "" {
 		if len(tags) >= maxTagCount {
 			break
@@ -145,6 +152,11 @@ func parseTags(segment string) Tags {
 // escape sequence, and emitted raw it would be an illegal wire byte.
 func serializeTags(t Tags) (string, error) {
 	var b strings.Builder
+	est := 0
+	for k, v := range t {
+		est += len(k) + len(v) + 2
+	}
+	b.Grow(est)
 	first := true
 	for k, v := range t {
 		if k == "" || strings.ContainsAny(k, " ;=\r\n\x00") {

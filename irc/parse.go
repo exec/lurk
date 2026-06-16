@@ -117,18 +117,28 @@ func Parse(line string) (*Message, error) {
 	// consumes the remainder of the line (and may contain spaces). At most
 	// maxParamCount parameters are stored; any further tokens are silently
 	// dropped (they cannot affect command dispatch for any standard message).
-	for len(m.Params) < maxParamCount {
+	//
+	// The slice is preallocated to cover the overwhelming majority of messages
+	// (a PRIVMSG has 2, most numerics a handful) in a single allocation rather
+	// than growing from nil on every inbound line. It is left as a local until
+	// the loop ends so that a paramless message keeps a nil Params (matching the
+	// zero value) rather than an empty non-nil slice.
+	params := make([]string, 0, 4)
+	for len(params) < maxParamCount {
 		line = strings.TrimLeft(line, " ")
 		if line == "" {
 			break
 		}
 		if line[0] == ':' {
-			m.Params = append(m.Params, line[1:])
+			params = append(params, line[1:])
 			break
 		}
 		tok, rest, _ := cutSpace(line)
-		m.Params = append(m.Params, tok)
+		params = append(params, tok)
 		line = rest
+	}
+	if len(params) > 0 {
+		m.Params = params
 	}
 
 	return m, nil
