@@ -712,3 +712,114 @@ func TestBoundaryQueriesSeeRotatedEntries(t *testing.T) {
 		}
 	}
 }
+
+// ─── ring/disk equivalence for boundary queries ───────────────────────────────
+
+// entriesEqual compares two []Entry by value, using Time.Equal for timestamps
+// (reflect.DeepEqual on time.Time is brittle across a JSON round-trip).
+func entriesEqual(a, b []Entry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		if x.MsgID != y.MsgID || x.Command != y.Command || x.Source != y.Source ||
+			x.Target != y.Target || !x.Time.Equal(y.Time) || len(x.Params) != len(y.Params) {
+			return false
+		}
+		for j := range x.Params {
+			if x.Params[j] != y.Params[j] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// TestEntriesForQueryRingMatchesDisk is the correctness backstop for the
+// ring-served boundary-query fast path: while a target's ring has not filled,
+// entriesForQuery must return exactly what the on-disk merge would, so every
+// boundary query yields an identical result either way. Once the ring fills,
+// it must fall back to disk (which then holds more than the ring).
+func TestEntriesForQueryRingMatchesDisk(t *testing.T) {
+	const ringSize = 16
+	s := newTestStore(t, WithRingSize(ringSize))
+	netid, target := 7, "#equiv"
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Not-full ring: it holds the complete history, so the ring path and the
+	// disk path must be byte-for-byte equivalent.
+	n := ringSize - 5
+	seedEntries(t, s, netid, target, n, base)
+
+	ring := s.entriesForQuery(netid, target)
+	disk := s.readJSONL(netid, target)
+	if len(ring) != n {
+		t.Fatalf("ring path returned %d entries, want %d (expected the ring fast path)", len(ring), n)
+	}
+	if !entriesEqual(ring, disk) {
+		t.Fatalf("ring path != disk path for a non-full ring:\n ring=%+v\n disk=%+v", ring, disk)
+	}
+
+	// Every boundary query must agree with the same query run against the disk
+	// slice directly, for a pivot in the middle of the data.
+	pivot := Ref{IsMsgID: true, MsgID: ring[n/2].MsgID}
+	for _, tc := range []struct {
+		name string
+		got  []Entry
+		want []Entry
+	}{
+		{"Before", s.Before(netid, target, pivot, 4), boundary(disk, pivot, "before", 4)},
+		{"After", s.After(netid, target, pivot, 4), boundary(disk, pivot, "after", 4)},
+	} {
+		if !entriesEqual(tc.got, tc.want) {
+			t.Errorf("%s: ring-served result diverged from disk slice:\n got=%+v\n want=%+v", tc.name, tc.got, tc.want)
+		}
+	}
+
+	// Fill beyond capacity: the ring is now full and disk holds more than the
+	// ring, so entriesForQuery must fall back to the full disk set. Ingest
+	// directly (seedEntries' Latest-based sanity check cannot hold once the
+	// ring is smaller than the number ingested).
+	for i := 0; i < ringSize+10; i++ {
+		ts := base.Add(time.Hour).Add(time.Duration(i) * time.Second)
+		s.Ingest(netid, makeEventWithTime("PRIVMSG", "nick!u@h", []string{target, fmt.Sprintf("more%d", i)}, ts))
+	}
+	full := s.entriesForQuery(netid, target)
+	if len(full) <= ringSize {
+		t.Fatalf("after overflow, entriesForQuery returned %d entries; expected disk fallback with >%d", len(full), ringSize)
+	}
+}
+
+// boundary runs the same pivot/slice math the Store query methods use, against
+// an explicit slice, so a test can compute the expected result independently of
+// which source (ring or disk) the Store chose.
+func boundary(entries []Entry, ref Ref, mode string, limit int) []Entry {
+	p := findPivot(entries, ref)
+	if p < 0 {
+		return nil
+	}
+	switch mode {
+	case "before":
+		start := p - limit
+		if start < 0 {
+			start = 0
+		}
+		out := make([]Entry, p-start)
+		copy(out, entries[start:p])
+		return out
+	case "after":
+		start := p + 1
+		if start >= len(entries) {
+			return nil
+		}
+		end := start + limit
+		if end > len(entries) {
+			end = len(entries)
+		}
+		out := make([]Entry, end-start)
+		copy(out, entries[start:end])
+		return out
+	}
+	return nil
+}

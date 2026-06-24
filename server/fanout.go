@@ -262,7 +262,7 @@ func (s *Server) fanout(netid int, ev *client.Event, storeMsgID string) {
 	// with the store-assigned id so live delivery and CHATHISTORY replay are
 	// consistent. If not stored (filtered/cap-exceeded), preserve the upstream's
 	// @msgid as-is (if present) for best-effort delivery.
-	tags := make(irc.Tags)
+	tags := make(irc.Tags, len(ev.Message.Tags)+2)
 	for k, v := range ev.Message.Tags {
 		// Never forward the @label tag from the upstream echo — we manage it
 		// ourselves via the pendingLabel FIFO.
@@ -284,8 +284,20 @@ func (s *Server) fanout(netid int, ev *client.Event, storeMsgID string) {
 		Params:  params,
 	}
 
+	// Serialize the relayed line exactly once. The identical line is delivered
+	// to every bound session that does not need a per-session @label attached
+	// (the overwhelmingly common case). Serializing inside each session's
+	// TryWriteMessage instead would repeat the full tag+param walk and string
+	// allocation N times on this single upstream OnAny goroutine — the dominant
+	// per-message cost when several clients are attached.
+	baseLine, err := base.Serialize()
+	if err != nil {
+		log.Printf("server: fanout serialize (netid=%d): %v", netid, err)
+		return
+	}
+
 	for _, sess := range sessions {
-		s.fanoutToSession(sess, base, ev)
+		s.fanoutToSession(sess, base, baseLine, ev)
 	}
 }
 
@@ -294,8 +306,12 @@ func (s *Server) fanout(netid int, ev *client.Event, storeMsgID string) {
 // the per-client cursor if the message is a PRIVMSG or NOTICE that was
 // actually queued for delivery (a message dropped because the session's
 // outbound queue is full must not move the read position).
-func (s *Server) fanoutToSession(sess *session, base *irc.Message, ev *client.Event) {
+func (s *Server) fanoutToSession(sess *session, base *irc.Message, baseLine string, ev *client.Event) {
 	msg := base
+	// labeled reports whether a per-session @label was attached, forcing a
+	// per-session re-serialization. The common path leaves it false and reuses
+	// baseLine (serialized once by the caller) verbatim.
+	labeled := false
 
 	// Check if this echo matches the head of the session's pending-label FIFO.
 	// Only PRIVMSG and NOTICE carry labeled-response echoes in practice.
@@ -322,21 +338,32 @@ func (s *Server) fanoutToSession(sess *session, base *irc.Message, ev *client.Ev
 					Command: base.Command,
 					Params:  base.Params,
 				}
+				labeled = true
 				sess.pendingLabels = sess.pendingLabels[1:]
 			}
 		}
 		sess.labelMu.Unlock()
 	}
 
-	// Use non-blocking TryWriteMessage so a slow or stuck attached client
-	// cannot stall the upstream OnAny goroutine (and thus block fanout for
-	// every other session on this netid). When the outbound queue is full the
-	// message is dropped for this session only; the session is not torn down
-	// (transient slowness is acceptable). If the session is persistently
-	// overloaded its TCP send buffer will eventually fill, the kernel will
-	// close the connection, and the session's run loop will exit naturally.
+	// Use non-blocking enqueue so a slow or stuck attached client cannot stall
+	// the upstream OnAny goroutine (and thus block fanout for every other
+	// session on this netid). When the outbound queue is full the message is
+	// dropped for this session only; the session is not torn down (transient
+	// slowness is acceptable). If the session is persistently overloaded its TCP
+	// send buffer will eventually fill, the kernel will close the connection,
+	// and the session's run loop will exit naturally.
+	//
+	// In the common (unlabeled) case we send the pre-serialized baseLine via
+	// TrySend, avoiding a redundant per-session Serialize. Only the rare labeled
+	// match re-serializes, since attaching @label mutates the tag set.
 	delivered := false
-	if ok, err := sess.conn.TryWriteMessage(msg); err != nil {
+	tryEnqueue := func() (bool, error) {
+		if labeled {
+			return sess.conn.TryWriteMessage(msg)
+		}
+		return sess.conn.TrySend(baseLine)
+	}
+	if ok, err := tryEnqueue(); err != nil {
 		// Serialization failure or conn already closed — harmless.
 		log.Printf("server: fanout to session (netid=%d): %v", sess.netid, err)
 	} else if !ok {

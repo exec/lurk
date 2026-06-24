@@ -15,9 +15,17 @@
 //
 // # JSONL scan policy
 //
-// All boundary queries (Before/After/Around/Between) scan the on-disk JSONL
-// data rather than the in-memory ring. The ring is only a fast path for Latest
-// (newest-N without a reference) and Targets (newest-entry time per target).
+// Boundary queries (Before/After/Around/Between) prefer the in-memory ring and
+// fall back to an on-disk JSONL scan only when the ring no longer holds the
+// target's complete history. Specifically, while a target's ring has not
+// reached capacity it contains every entry ever stored for that target (entries
+// are appended to ring and disk in lock-step and the ring drops its oldest only
+// once full), so it is returned directly — byte-for-byte equivalent to the
+// merged disk read but with no file I/O or JSON parsing. See entriesForQuery.
+// Once the ring is full, older entries may live only on disk and the on-disk
+// scan is used. The ring remains the sole fast path for Latest (newest-N) and
+// Targets (newest-entry time per target).
+//
 // JSONL files are bounded by DefaultRingSize entries per target (drop-oldest
 // during Ingest), so a full scan is O(ring-cap) lines — small by design. A
 // per-call hard cap (maxScanLines, applied per file) guards against
@@ -120,7 +128,7 @@ func (s *Store) Before(netid int, target string, ref Ref, limit int) []Entry {
 	if limit <= 0 {
 		return nil
 	}
-	entries := s.readJSONL(netid, target)
+	entries := s.entriesForQuery(netid, target)
 	if len(entries) == 0 {
 		return nil
 	}
@@ -152,7 +160,7 @@ func (s *Store) After(netid int, target string, ref Ref, limit int) []Entry {
 	if limit <= 0 {
 		return nil
 	}
-	entries := s.readJSONL(netid, target)
+	entries := s.entriesForQuery(netid, target)
 	if len(entries) == 0 {
 		return nil
 	}
@@ -184,7 +192,7 @@ func (s *Store) Around(netid int, target string, ref Ref, limit int) []Entry {
 	if limit <= 0 {
 		return nil
 	}
-	entries := s.readJSONL(netid, target)
+	entries := s.entriesForQuery(netid, target)
 	if len(entries) == 0 {
 		return nil
 	}
@@ -230,7 +238,7 @@ func (s *Store) Between(netid int, target string, fromRef, toRef Ref, limit int)
 	if limit <= 0 {
 		return nil
 	}
-	entries := s.readJSONL(netid, target)
+	entries := s.entriesForQuery(netid, target)
 	if len(entries) == 0 {
 		return nil
 	}
@@ -341,6 +349,42 @@ func (s *Store) Targets(netid int, fromTime, toTime time.Time, limit int) []Targ
 }
 
 // ─── internal query helpers ──────────────────────────────────────────────────
+
+// entriesForQuery returns the entry slice a boundary query (Before/After/
+// Around/Between) should operate on, preferring the in-memory ring over disk
+// whenever the ring is known to hold the target's complete history.
+//
+// Invariant: a ring that has not reached capacity contains every entry ever
+// stored for the target. Entries are only ever appended (to both ring and disk
+// in lock-step) and the ring drops its oldest only once full; rehydration loads
+// the newest ≤ringSize entries, so a non-full ring after restart likewise means
+// disk held no more than that. Therefore, when 0 < ringLen < ringSize, the ring
+// is byte-for-byte equivalent to the merged on-disk read — same entries, same
+// chronological order, no duplicates — and every pivot/slice computation below
+// yields an identical result, with no file open and no JSON parsing.
+//
+// Once the ring is full (ringLen == ringSize) older entries may live only on
+// disk, so the proven on-disk merge path is used unchanged. The result is that
+// CHATHISTORY for any target that has not exceeded ringSize messages — most PMs
+// and low-traffic channels, and the common case of a client paging recent
+// history — is served entirely from memory, while busy channels fall back to
+// the same disk scan as before.
+func (s *Store) entriesForQuery(netid int, target string) []Entry {
+	safe := safeName(target)
+	s.mu.Lock()
+	b := s.buffers[bufferKey{netid: netid, target: safe}]
+	s.mu.Unlock()
+	if b != nil {
+		b.mu.Lock()
+		if b.ringLen > 0 && b.ringLen < s.ringSize {
+			entries := ringReadLatest(b, b.ringLen)
+			b.mu.Unlock()
+			return entries
+		}
+		b.mu.Unlock()
+	}
+	return s.readJSONL(netid, target)
+}
 
 // readJSONL reads the on-disk JSONL data for (netid, target) — the rotation
 // file <target>.jsonl.1 first (older entries), if present, followed by the

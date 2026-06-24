@@ -184,7 +184,7 @@ func (b *Buffer) refresh() {
 		return
 	}
 	stick := b.vp.AtBottom()
-	b.vp.SetContent(b.wrapped())
+	b.vp.SetContentLines(b.contentLines())
 	if stick {
 		b.vp.GotoBottom()
 	}
@@ -202,23 +202,37 @@ func (b *Buffer) refreshIfDirty() {
 	}
 }
 
-// wrapped joins the scrollback into the viewport's content, inserting a "new
-// messages" divider at the read marker when there is unread content below it. An
-// empty buffer renders as the empty string so the pane is blank rather than
-// showing a stray newline. (The viewport soft-wraps each joined row to the width
-// set in layout(); joining here preserves explicit row boundaries.)
-func (b *Buffer) wrapped() string {
+// contentLines returns the scrollback rows to push into the viewport, inserting
+// a "new messages" divider at the read marker when there is unread content below
+// it. The returned slice is freshly allocated and owned by the caller:
+// viewport.SetContentLines takes ownership of (and may mutate) the slice it is
+// given, so it must never be handed the buffer's own b.lines backing array.
+//
+// Returning rows directly lets refresh call SetContentLines, which skips the
+// strings.Join + re-Split round-trip SetContent(wrapped()) incurred over the
+// whole scrollback on every event. The viewport still soft-wraps each row to the
+// width set in layout().
+func (b *Buffer) contentLines() []string {
 	if len(b.lines) == 0 {
-		return ""
+		return nil
 	}
 	if b.readMarker > 0 && b.readMarker < len(b.lines) {
 		rows := make([]string, 0, len(b.lines)+1)
 		rows = append(rows, b.lines[:b.readMarker]...)
 		rows = append(rows, markerLine(b.contentWidth))
 		rows = append(rows, b.lines[b.readMarker:]...)
-		return strings.Join(rows, "\n")
+		return rows
 	}
-	return strings.Join(b.lines, "\n")
+	rows := make([]string, len(b.lines))
+	copy(rows, b.lines)
+	return rows
+}
+
+// wrapped is contentLines rendered as a single newline-joined string. It backs
+// the read-marker/sweep tests, which assert on the composed scrollback text; the
+// live render path uses contentLines via SetContentLines.
+func (b *Buffer) wrapped() string {
+	return strings.Join(b.contentLines(), "\n")
 }
 
 // markerLine renders the "new messages" divider sized to the content width.

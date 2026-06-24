@@ -176,6 +176,7 @@ type bufferEntry struct {
 	ringHead int      // index of the oldest entry
 	ringLen  int      // number of valid entries currently stored
 	f        *os.File // nil until first write (or nil after Close)
+	fSize    int64    // bytes in f, tracked in-memory to avoid a Stat per write
 }
 
 // bufferKey identifies one (netid, safe-target-name) pair.
@@ -593,6 +594,14 @@ func (s *Store) appendLineLocked(b *bufferEntry, netid int, safeTarget string, e
 			return false, err
 		}
 		b.f = f
+		// Initialise the in-memory size from the file's current length (the file
+		// may pre-exist with content after a restart, since it is O_APPEND). This
+		// one Stat per file-open lets maybeRotateLocked avoid a Stat per write.
+		if info, statErr := f.Stat(); statErr == nil {
+			b.fSize = info.Size()
+		} else {
+			b.fSize = 0
+		}
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -615,6 +624,7 @@ func (s *Store) appendLineLocked(b *bufferEntry, netid int, safeTarget string, e
 	if _, err = b.f.Write(data); err != nil {
 		return false, err
 	}
+	b.fSize += int64(len(data))
 
 	// Check size and rotate if over the cap. Errors here are non-fatal: the
 	// write already succeeded, so we log and continue rather than disrupting
@@ -642,12 +652,8 @@ func (s *Store) appendLineLocked(b *bufferEntry, netid int, safeTarget string, e
 // reopens (and appends to the .jsonl file, which may have been recreated by
 // another process). In practice this should not happen on a healthy filesystem.
 func (s *Store) maybeRotateLocked(b *bufferEntry, netid int, safeTarget string) error {
-	info, err := b.f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat: %w", err)
-	}
-	if info.Size() <= s.maxFileSize {
-		return nil // still within cap
+	if b.fSize <= s.maxFileSize {
+		return nil // still within cap (size tracked in-memory; no per-write Stat)
 	}
 
 	// Close the current file before renaming so Windows does not refuse the
@@ -673,6 +679,7 @@ func (s *Store) maybeRotateLocked(b *bufferEntry, netid int, safeTarget string) 
 		return fmt.Errorf("open fresh after rotate: %w", err)
 	}
 	b.f = f
+	b.fSize = 0 // fresh, empty file
 	return nil
 }
 

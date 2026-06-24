@@ -83,14 +83,19 @@ func (c *Client) handle(m *irc.Message) {
 	// QUIT and NICK name no channel of their own, yet must be shown in every
 	// channel the subject was in. Capture those channels now, before track()
 	// removes/renames the member, so the dispatched event can carry them.
+	//
+	// For these two commands the capture and the tracking are done together under
+	// a single state-lock acquisition (trackSubject), folding the subject nick
+	// once for both — rather than locking and folding in CommonChannels and then
+	// again in track. This halves the lock traffic on a netsplit's QUIT storm.
 	var affected []string
 	switch m.Command {
 	case irc.QUIT, irc.NICK:
-		affected = c.CommonChannels(m.Nick())
+		affected = c.trackSubject(m)
+	default:
+		// State tracking for membership-affecting messages.
+		c.track(m)
 	}
-
-	// State tracking for membership-affecting messages.
-	c.track(m)
 
 	// Auto-answer CTCP queries (VERSION/PING/TIME/CLIENTINFO) directed at us.
 	if m.Command == irc.PRIVMSG {
@@ -313,6 +318,27 @@ func (c *Client) track(m *irc.Message) {
 	case irc.RPL_MONOFFLINE:
 		c.trackMonitorStatus(m, false)
 	}
+}
+
+// trackSubject handles QUIT and NICK: under a single state-lock acquisition it
+// captures the channels the subject currently shares (for Event.Channels) and
+// then applies the removal/rename. The subject nick is folded once and the
+// resulting key reused for both steps, avoiding the double lock + repeated fold
+// of the previous CommonChannels-then-track sequence. It returns the affected
+// channel names (sorted), which the caller threads into the dispatched event.
+func (c *Client) trackSubject(m *irc.Message) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := c.st.foldKey(m.Nick())
+	affected := c.st.channelsWithKey(key)
+	switch m.Command {
+	case irc.QUIT:
+		c.st.removeEverywhere(key)
+	case irc.NICK:
+		newNick := m.Param(0)
+		c.st.renameEverywhere(key, c.st.foldKey(newNick), newNick)
+	}
+	return affected
 }
 
 // trackMonitorStatus applies a RPL_MONONLINE (730) or RPL_MONOFFLINE (731)

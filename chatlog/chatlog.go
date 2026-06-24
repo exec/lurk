@@ -5,7 +5,6 @@
 package chatlog
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +20,16 @@ type Logger struct {
 	mu    sync.Mutex
 	files map[string]*os.File
 	now   func() time.Time // injectable clock for tests
+
+	// date caching: the date prefix only changes once per day, so the formatted
+	// string is cached and reformatted only when the calendar day rolls over,
+	// avoiding a time.Format allocation on every logged line.
+	cacheY, cacheD int
+	cacheM         time.Month
+	cacheDate      string
+	// buf is a reusable line-assembly buffer (guarded by mu) so Log makes no
+	// per-line allocation in steady state.
+	buf []byte
 }
 
 // New returns a Logger writing under dir (created on first write). A nil Logger
@@ -45,7 +54,19 @@ func (l *Logger) Log(scope, target, line string) {
 	if err != nil {
 		return
 	}
-	_, _ = fmt.Fprintf(f, "%s %s\n", l.now().Format("2006-01-02"), line)
+
+	// Reformat the date prefix only when the day changes.
+	t := l.now()
+	if y, mo, d := t.Date(); l.cacheDate == "" || y != l.cacheY || mo != l.cacheM || d != l.cacheD {
+		l.cacheY, l.cacheM, l.cacheD = y, mo, d
+		l.cacheDate = t.Format("2006-01-02")
+	}
+
+	l.buf = append(l.buf[:0], l.cacheDate...)
+	l.buf = append(l.buf, ' ')
+	l.buf = append(l.buf, line...)
+	l.buf = append(l.buf, '\n')
+	_, _ = f.Write(l.buf)
 }
 
 // fileLocked returns the (cached) file for scope/target, opening it (and its

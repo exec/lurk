@@ -295,11 +295,24 @@ func (s *Server) broadcastNetworkNotify(origin *session, msg *irc.Message) {
 	}
 	s.controlMu.RUnlock()
 
+	// Serialize once and deliver the same line to every control session with a
+	// non-blocking enqueue. A slow or stuck control client must not be able to
+	// stall the goroutine of the session that issued the network change (the
+	// live fanout path uses the same drop-on-full policy for the same reason);
+	// blocking sess.send here would let one wedged notify recipient wedge an
+	// unrelated client's ADDNETWORK/CHANGENETWORK/DELNETWORK handler.
+	line, err := msg.Serialize()
+	if err != nil {
+		log.Printf("server: broadcast notify serialize: %v", err)
+		return
+	}
 	for _, sess := range sessions {
-		if err := sess.send(msg); err != nil {
+		if ok, err := sess.conn.TrySend(line); err != nil {
 			// The session may have disconnected between snapshot and send.
 			// Log only; do not tear down the broadcasting session.
 			log.Printf("server: broadcast notify to session: %v", err)
+		} else if !ok {
+			log.Printf("server: broadcast notify drop: control session queue full")
 		}
 	}
 }

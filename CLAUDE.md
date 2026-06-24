@@ -14,6 +14,12 @@ before changing anything.
   `client/integration_test.go` (scripted `mockServer` + `ConnectConn`); the TUI
   tests drive `Update`/`View` with synthetic events. Every new behavior gets a
   hermetic test.
+  - **Optional live harness (loopback, never required for "done"):** the gated
+    tests in `client/{live,live2,lurkd_live}_test.go` skip by default. To run
+    them, `scripts/live-test.sh` provisions a throwaway Ergo + lurkd on
+    loopback, runs the suite (single client, two clients, and the
+    lurkd-in-the-middle fan-out), and tears it all down. Hermetic tests remain
+    the source of truth; this is an extra end-to-end smoke check.
 - **Dependency rule:** only `tui/` and `cmd/lurk` may import the charm libraries
   (`charm.land/{bubbletea,bubbles,lipgloss}/v2`). The protocol packages (`irc`,
   `conn`, `cap`, `sasl`, `isupport`, `client`) and the `config`/`chatlog`

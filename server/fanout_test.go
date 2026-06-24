@@ -1265,7 +1265,8 @@ func TestFanoutCursorAdvanceOnlyOnDelivery(t *testing.T) {
 	// Case 1: deliverable session (queue has room) — the cursor must advance.
 	okSess := newSess()
 	msg1, ev1 := mkMsgEv("msgid-delivered", "hello")
-	srv.fanoutToSession(okSess, msg1, ev1)
+	line1, _ := msg1.Serialize()
+	srv.fanoutToSession(okSess, msg1, line1, ev1)
 	got, ok := cs.Get(key)
 	if !ok || got.MsgID != "msgid-delivered" {
 		t.Fatalf("cursor after delivered message = (%+v, %v), want msgid-delivered", got, ok)
@@ -1294,7 +1295,8 @@ func TestFanoutCursorAdvanceOnlyOnDelivery(t *testing.T) {
 	}
 
 	msg2, ev2 := mkMsgEv("msgid-dropped", "lost")
-	srv.fanoutToSession(stuck, msg2, ev2)
+	line2, _ := msg2.Serialize()
+	srv.fanoutToSession(stuck, msg2, line2, ev2)
 	got, ok = cs.Get(key)
 	if !ok || got.MsgID != "msgid-delivered" {
 		t.Fatalf("cursor after dropped message = (%+v, %v), want unchanged msgid-delivered (cursor moved past an undelivered message)", got, ok)
