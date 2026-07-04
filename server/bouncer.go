@@ -603,11 +603,12 @@ func applyAttrsToNetwork(attrs map[string]string, nw *Network) {
 	_, hasHost := attrs["host"]
 	_, hasPort := attrs["port"]
 	if hasHost || hasPort {
-		// Parse existing Addr to get current host/port.
+		// Parse existing Addr to get current host/port. Use net.SplitHostPort
+		// so bracketed IPv6 literals (e.g. "[::1]:6697") split correctly;
+		// strings.LastIndex(":") would misbehave on unbracketed IPv6.
 		curHost, curPort := nw.Addr, ""
-		if i := strings.LastIndex(nw.Addr, ":"); i >= 0 {
-			curHost = nw.Addr[:i]
-			curPort = nw.Addr[i+1:]
+		if h, p, err := net.SplitHostPort(nw.Addr); err == nil {
+			curHost, curPort = h, p
 		}
 		if hasHost {
 			curHost = attrs["host"]

@@ -183,9 +183,10 @@ func Save(f *File, path string) error {
 // validSASLMechanisms is the set of mechanism names the client actually
 // implements. An empty string means "no SASL" and is always valid.
 var validSASLMechanisms = map[string]bool{
-	"":         true,
-	"PLAIN":    true,
-	"EXTERNAL": true,
+	"":              true,
+	"PLAIN":         true,
+	"EXTERNAL":      true,
+	"SCRAM-SHA-256": true,
 }
 
 // ValidationError is one problem found by Validate. It identifies the network
@@ -252,7 +253,7 @@ func Validate(f *File) []error {
 
 		mech := strings.ToUpper(n.SASL.Mechanism)
 		if !validSASLMechanisms[mech] {
-			addf("sasl.mechanism", fmt.Sprintf("unknown mechanism %q (want PLAIN, EXTERNAL, or empty)", n.SASL.Mechanism))
+			addf("sasl.mechanism", fmt.Sprintf("unknown mechanism %q (want PLAIN, EXTERNAL, SCRAM-SHA-256, or empty)", n.SASL.Mechanism))
 		}
 
 		// When a bounce network ID is set, the bouncer address is required.

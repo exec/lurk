@@ -25,7 +25,7 @@ The bouncer ([`docs/LURKD.md`](docs/LURKD.md)) is feature-complete. Remaining:
       `docs/PACKAGING.md`).
 - [ ] Optional encrypted credential storage (today the config is 0600 cleartext,
       matching irssi/WeeChat).
-- [ ] SASL SCRAM mechanisms (PLAIN/EXTERNAL are implemented today).
+- [x] SASL SCRAM-SHA-256 mechanism (PLAIN/EXTERNAL/SCRAM-SHA-256 are all implemented).
 
 ## Testing
 - Native Go fuzz targets cover the hostile-input sinks (`irc.FuzzParse`,
