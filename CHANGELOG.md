@@ -6,6 +6,31 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-07-05
+
+### Security
+- **Go toolchain moved to 1.26.4.** Go 1.26.0 shipped ten standard-library
+  vulnerabilities on code paths lurk exercises, including certificate
+  verification in `crypto/x509` (used by every TLS connection) and an
+  unauthenticated TLS 1.3 KeyUpdate denial-of-service in `crypto/tls` that
+  affected lurkd's public listener. `go.mod` now requires 1.26.4, so builds
+  pick up the patched toolchain automatically; `govulncheck` is clean.
+
+### Fixed
+- **lurkd: IPv6 `host:port` values survive runtime network attribute updates.**
+  The existing address was split with a naive colon search instead of
+  `net.SplitHostPort`, mangling bracketed IPv6 literals.
+- **`SCRAM-SHA-256` is accepted by the config validator**, matching the
+  mechanism support that shipped in 1.2.6.
+
+### Changed
+- **Performance:** hot-path allocations reduced across the protocol packages;
+  CHATHISTORY boundary queries (BEFORE/AFTER/AROUND/BETWEEN) are served from
+  the in-memory ring when it fully covers the request, skipping disk; the TUI
+  pushes scrollback via `SetContentLines` instead of a join/split round trip.
+- Dependency refresh: charm libraries bumped to their latest patch releases
+  (bubbles v2.1.1, bubbletea v2.0.8, lipgloss v2.0.5) along with indirects.
+
 ## [1.2.6] - 2026-06-09
 
 ### Fixed
@@ -429,7 +454,9 @@ Initial release.
 - Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
   `-version` flag.
 
-[Unreleased]: https://github.com/exec/lurk/compare/v1.2.5...HEAD
+[Unreleased]: https://github.com/exec/lurk/compare/v1.2.7...HEAD
+[1.2.7]: https://github.com/exec/lurk/compare/v1.2.6...v1.2.7
+[1.2.6]: https://github.com/exec/lurk/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/exec/lurk/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/exec/lurk/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/exec/lurk/compare/v1.2.2...v1.2.3
