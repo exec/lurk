@@ -452,13 +452,3 @@ func (m model) View() tea.View {
 	v.AltScreen = true
 	return v
 }
-
-// quitWithError is a small helper for the cmd/lurk entrypoint to format a
-// terminal error consistently. It is here (not in cmd/lurk) so the message
-// wording stays with the lifecycle code.
-func quitWithError(err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("tui: %w", err)
-}
