@@ -1,0 +1,26 @@
+version: 2
+
+# Keep the module's dependencies and the CI actions current. Updates arrive as
+# ordinary pull requests, so they run through the hermetic ci.yml gate (build,
+# vet, gofmt, race tests, govulncheck) before anyone merges them.
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build(deps)
+    groups:
+      # The charm libraries move together; one PR per week beats five.
+      charm:
+        patterns:
+          - "charm.land/*"
+          - "github.com/charmbracelet/*"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci(deps)

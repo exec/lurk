@@ -343,22 +343,11 @@ func (cs *channelState) removeMember(fold func(string) string, nick string) {
 	delete(cs.members, fold(nick))
 }
 
-// renameMember moves a member from oldNick to newNick across one channel,
-// preserving prefixes. It is a no-op if the member is not present.
-func (cs *channelState) renameMember(fold func(string) string, oldNick, newNick string) {
-	oldKey := fold(oldNick)
-	m, ok := cs.members[oldKey]
-	if !ok {
-		return
-	}
-	delete(cs.members, oldKey)
-	m.Nick = newNick
-	cs.members[fold(newNick)] = m
-}
-
-// renameMemberKeyed is the key-already-folded variant of renameMember. It is
-// called from renameEverywhere, which pre-folds old/new keys once and reuses
-// them across every channel — avoiding two redundant Fold calls per channel.
+// renameMemberKeyed moves a member from oldKey to newKey across one channel,
+// preserving prefixes. It is a no-op if the member is not present. Callers pass
+// keys that are already casefolded: renameEverywhere pre-folds old/new once and
+// reuses them across every channel — avoiding two redundant Fold calls per
+// channel.
 func (cs *channelState) renameMemberKeyed(oldKey, newKey, newNick string) {
 	m, ok := cs.members[oldKey]
 	if !ok {
@@ -640,7 +629,7 @@ func (s *state) channelNames() []string {
 // oldKey and newKey must already be folded with s.foldKey (matching the
 // updateMemberEverywhere contract); newNick is the display-case form stored on
 // Member.Nick. Callers fold once and pass the keys through so the per-channel
-// fold inside renameMember is not repeated for every channel in s.channels.
+// fold is not repeated for every channel in s.channels.
 func (s *state) renameEverywhere(oldKey, newKey, newNick string) {
 	for _, cs := range s.channels {
 		cs.renameMemberKeyed(oldKey, newKey, newNick)

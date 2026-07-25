@@ -6,6 +6,31 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Security
+- **Go toolchain moved to 1.26.5.** 1.26.4 is affected by GO-2026-5856
+  (`crypto/tls`, on lurkd's listener path) and GO-2026-4970 (`os`). `go.mod` now
+  requires 1.26.5 so builds pick up the patched toolchain automatically;
+  `govulncheck` is clean.
+
+### Added
+- **CI runs `govulncheck`.** The hermetic gate now scans the module and the
+  standard library it builds against on every PR and push to main, so a stdlib
+  advisory surfaces as a failing check instead of an audit finding.
+- **Dependabot.** Weekly `gomod` and `github-actions` update PRs, with the charm
+  libraries grouped into a single PR. Updates flow through the same ci.yml gate.
+
+### Changed
+- **The dependency guard covers every stdlib-only package.** `server`'s depguard
+  test previously checked only the daemon packages, and only for charm imports.
+  It now walks the transitive import closure of `irc`, `conn`, `cap`, `sasl`,
+  `isupport`, `client`, `config`, `chatlog`, `server`, `bouncer`, `backlog`, and
+  `cmd/lurkd`, and fails on *any* non-standard-library dependency.
+
+### Removed
+- Dead internal helpers `channelState.renameMember` (superseded by
+  `renameMemberKeyed`) and `tui.quitWithError` (never wired up). No public API
+  change.
+
 ## [1.2.7] - 2026-07-05
 
 ### Security
