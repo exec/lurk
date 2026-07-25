@@ -24,3 +24,8 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci(deps)
+    groups:
+      # All action bumps arrive as a single weekly PR.
+      github-actions:
+        patterns:
+          - "*"
