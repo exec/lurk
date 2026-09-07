@@ -127,7 +127,6 @@ func (s *scriptedUpstream) register(nick string) {
 	s.send("CAP * LS :") // no caps offered
 	s.expect("CAP END")
 	s.send(":upstream.local 001 " + nick + " :Welcome to the test network")
-	s.send(":upstream.local 376 " + nick + " :End of /MOTD command.")
 }
 
 // expectJoin reads the next line and asserts it is "JOIN #channel".
