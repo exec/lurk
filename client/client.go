@@ -216,6 +216,16 @@ func (c *Client) Topic(channel string) (text, setBy string, at time.Time) {
 	return cs.topic, cs.topicSetBy, cs.topicAt
 }
 
+// ISupport returns the decoded value of an ISUPPORT (005) token and whether the
+// server advertised it — e.g. ISupport("BOT") yields the user-mode letter for
+// IRCv3 Bot Mode, ISupport("CHANTYPES") the channel prefixes. A valueless token
+// (advertised as a bare word) returns ("", true).
+func (c *Client) ISupport(token string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.st.feat.Get(token)
+}
+
 // Network returns the server's advertised network name, or "" if not yet known.
 func (c *Client) Network() string {
 	c.mu.Lock()

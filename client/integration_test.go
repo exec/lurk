@@ -161,6 +161,15 @@ func TestFullHandshake(t *testing.T) {
 	if !waitFor(func() bool { return c.Network() == "TestNet" }, time.Second) {
 		t.Errorf("Network() = %q, want TestNet", c.Network())
 	}
+	if got, ok := c.ISupport("bot"); !ok || got != "B" {
+		t.Errorf("ISupport(\"bot\") = %q, %v, want B, true", got, ok)
+	}
+	if got, ok := c.ISupport("WHOX"); !ok || got != "" {
+		t.Errorf("ISupport(\"WHOX\") = %q, %v, want empty, true", got, ok)
+	}
+	if _, ok := c.ISupport("MISSING"); ok {
+		t.Error("ISupport(\"MISSING\") reported an unadvertised token")
+	}
 
 	// Drive a JOIN + NAMES exchange and assert membership tracking.
 	if err := c.Join("#lurk"); err != nil {
@@ -258,7 +267,7 @@ func runHandshakeScript(t *testing.T, srv *mockServer) {
 	// accumulation), then end of MOTD.
 	srv.send(
 		":server 001 lurkbot :Welcome to the TestNet IRC Network lurkbot",
-		":server 005 lurkbot NETWORK=TestNet PREFIX=(ov)@+ CHANTYPES=# :are supported by this server",
+		":server 005 lurkbot NETWORK=TestNet PREFIX=(ov)@+ CHANTYPES=# BOT=B WHOX :are supported by this server",
 		":server 005 lurkbot CASEMAPPING=rfc1459 NICKLEN=30 :are supported by this server",
 		":server 376 lurkbot :End of /MOTD command.",
 	)
