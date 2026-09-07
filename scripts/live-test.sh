@@ -79,7 +79,7 @@ else
 	git clone --depth 1 --branch "$ERGO_REF" https://github.com/ergochat/ergo.git "$ERGO_SRC" >/dev/null 2>&1 \
 		|| git clone --depth 1 https://github.com/ergochat/ergo.git "$ERGO_SRC" >/dev/null 2>&1 \
 		|| die "could not clone Ergo (need network access on first run)"
-	( cd "$ERGO_SRC" && go build -o ergo . ) || die "ergo build failed"
+	( cd "$ERGO_SRC" && GOTOOLCHAIN=auto go build -o ergo . ) || die "ergo build failed"
 	ERGO_BIN="$ERGO_SRC/ergo"
 fi
 

@@ -541,11 +541,9 @@ func TestTryWriteMessageDropsWhenFull(t *testing.T) {
 	c := NewConn(staller, Options{})
 	t.Cleanup(func() { c.Close() })
 
-	time.Sleep(5 * time.Millisecond) // let writer goroutine dequeue the first item
-
 	msg := &irc.Message{Command: "PRIVMSG", Params: []string{"#ch", "hello"}}
 	filled := 0
-	for i := 0; i < writeQueueDepth*2; i++ {
+	for i := 0; i < writeQueueDepth*3; i++ {
 		ok, err := c.TryWriteMessage(msg)
 		if err != nil {
 			break

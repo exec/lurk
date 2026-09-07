@@ -7,10 +7,10 @@ semantic versioning.
 ## [Unreleased]
 
 ### Security
-- **Go toolchain moved to 1.26.5.** 1.26.4 is affected by GO-2026-5856
-  (`crypto/tls`, on lurkd's listener path) and GO-2026-4970 (`os`). `go.mod` now
-  requires 1.26.5 so builds pick up the patched toolchain automatically;
-  `govulncheck` is clean.
+- **Go toolchain moved to 1.26.6.** 1.26.5 is affected by GO-2026-6090
+  (`crypto/tls`) and GO-2026-5972 (`encoding/asn1`) on reachable lurk paths.
+  `go.mod` now requires 1.26.6 so builds pick up the patched toolchain
+  automatically; `govulncheck` is clean.
 
 ### Added
 - **CI runs `govulncheck`.** The hermetic gate now scans the module and the
