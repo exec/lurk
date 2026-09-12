@@ -57,7 +57,7 @@ jobs:
         run: bash scripts/package.sh "${{ needs.version.outputs.version }}"
       - name: Drop per-job checksums (release job regenerates a combined file)
         run: rm -f dist/SHA256SUMS
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: unix
           path: dist/*
@@ -108,7 +108,7 @@ jobs:
           bash scripts/build-msi.sh "$V" \
             "dist/lurk_${V}_windows_amd64.exe" \
             "dist/lurkd_${V}_windows_amd64.exe" dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: |
@@ -162,7 +162,7 @@ jobs:
           if (-not $makeappx) { throw "makeappx.exe not found" }
           Write-Host "Using $makeappx"
           & $makeappx pack /d "$layout" /p "dist/lurk_${V}_windows_amd64.msix" /o
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/lurk_*_windows_amd64.msix
@@ -176,7 +176,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Gather artifacts and checksum
