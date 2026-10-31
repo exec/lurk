@@ -20,11 +20,20 @@ const ctcpSupported = "ACTION CLIENTINFO PING TIME VERSION"
 
 // maybeAnswerCTCP inspects an inbound PRIVMSG and, if it is a CTCP query
 // addressed privately to us, sends the conventional NOTICE reply. It is a no-op
-// for channel-directed messages, our own echo, ACTION, and unknown CTCP types.
+// for history replay, channel-directed messages, our own echo, ACTION, and
+// unknown CTCP types.
 func (c *Client) maybeAnswerCTCP(m *irc.Message) {
 	body := m.Param(1)
 	if len(body) < 2 || body[0] != 0x01 {
 		return // not CTCP framed
+	}
+	if ref := m.Tags.Get("batch"); ref != "" {
+		c.mu.Lock()
+		history := c.st.batchTypeFor(ref) == "chathistory"
+		c.mu.Unlock()
+		if history {
+			return
+		}
 	}
 	payload := strings.Trim(body, "\x01")
 	verb, arg, _ := strings.Cut(payload, " ")

@@ -72,6 +72,9 @@ type channelState struct {
 type state struct {
 	// self is the client's own current nickname.
 	self string
+	// selfUser and selfHost are the server-confirmed relay identity, when known.
+	selfUser string
+	selfHost string
 
 	// feat is the accumulated server feature set; its CaseMapping drives folding.
 	feat isupport.ISupport

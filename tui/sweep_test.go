@@ -135,7 +135,8 @@ func TestSearchIndexShiftsWithTrim(t *testing.T) {
 // for a channel that lives on a non-active network must PART that network's
 // server and close that network's buffer, not the focused network's.
 func TestCrossNetworkPartTargetsOwningServer(t *testing.T) {
-	m, net0, netB := twoNetModel(t)
+	m, _, _ := twoNetConnectedModel(t)
+	net0, netB := m.networks[0], m.networks[1]
 	// #dup is open only on netB; focus stays on net0.
 	m.ensureBufferIn(netB, "#dup", BufferChannel)
 	m.switchTo(0) // focus net0's server buffer
@@ -172,7 +173,8 @@ func TestCrossNetworkPartUnknownChannel(t *testing.T) {
 // TestCrossNetworkCloseTargetsOwningServer is the regression for #9 via /close:
 // closing a channel on a non-active network must close that network's buffer.
 func TestCrossNetworkCloseTargetsOwningServer(t *testing.T) {
-	m, _, netB := twoNetModel(t)
+	m, _, _ := twoNetConnectedModel(t)
+	netB := m.networks[1]
 	m.ensureBufferIn(netB, "#dup", BufferChannel)
 	m.switchTo(0)
 

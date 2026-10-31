@@ -35,6 +35,47 @@ import (
 
 // ─── store setup helpers ──────────────────────────────────────────────────────
 
+func TestCHTimestampBoundaries(t *testing.T) {
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	store, _ := makeTestStore(t, 1, "#c", []string{"m0", "m1", "m2", "m3"}, base)
+	// A later-arriving notice shares m1's time and must obey the same boundary.
+	store.Ingest(1, &client.Event{Message: &irc.Message{
+		Source: "bob!u@h", Command: irc.NOTICE, Params: []string{"#c", "tied"},
+		Tags: irc.Tags{"time": base.Add(time.Second).Format(time.RFC3339Nano)},
+	}})
+	c := pipeServerCHBound(t, store, 1)
+	doRegisterWithCaps(t, c, "draft/chathistory", "batch", "server-time", "message-tags")
+	for _, tc := range []struct {
+		sub    string
+		millis int
+		want   []string
+	}{
+		{"AFTER", -1000, []string{"m0", "m1", "m2", "m3", "tied"}},
+		{"AFTER", 500, []string{"m1", "m2", "m3", "tied"}},
+		{"AFTER", 1000, []string{"m2", "m3"}},
+		{"AFTER", 3000, nil},
+		{"BEFORE", 10000, []string{"m0", "m1", "m2", "m3", "tied"}},
+		{"BEFORE", 1000, []string{"m0"}},
+		{"BEFORE", 0, nil},
+		{"LATEST", 500, []string{"m1", "m2", "m3", "tied"}},
+	} {
+		t.Run(fmt.Sprintf("%s_%dms", tc.sub, tc.millis), func(t *testing.T) {
+			ref := base.Add(time.Duration(tc.millis) * time.Millisecond).Format("2006-01-02T15:04:05.000Z")
+			sendLine(t, c, fmt.Sprintf("CHATHISTORY %s #c timestamp=%s 10", tc.sub, ref))
+			batch := recvBatch(t, c)
+			if batch.btype != "chathistory" || batch.target != "#c" || len(batch.entries) != len(tc.want) {
+				t.Fatalf("unexpected timestamp reply: %+v, want %v", batch, tc.want)
+			}
+			for i, want := range tc.want {
+				assertBatchEntry(t, batch.entries[i], batch.ref)
+				if got := batch.entries[i].Param(1); got != want {
+					t.Errorf("message %d = %q, want %q", i, got, want)
+				}
+			}
+		})
+	}
+}
+
 // makeTestStore builds a backlog.Store in t.TempDir() and ingests a list of
 // PRIVMSG entries into (netid, target) at one-second intervals from baseTime.
 // Returns the store and the stored entries (with their assigned MsgIDs).
@@ -398,7 +439,7 @@ func TestCHAround(t *testing.T) {
 
 // ─── CHATHISTORY BETWEEN tests ────────────────────────────────────────────────
 
-// TestCHBetween verifies CHATHISTORY BETWEEN returns [fromRef, toRef).
+// TestCHBetween verifies CHATHISTORY BETWEEN excludes both endpoints.
 func TestCHBetween(t *testing.T) {
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	store, stored := makeTestStore(t, 1, "#between",
@@ -407,34 +448,33 @@ func TestCHBetween(t *testing.T) {
 	c := pipeServerCHBound(t, store, 1)
 	doRegister(t, c)
 
-	// BETWEEN x1 x4 (exclusive end) → x1, x2, x3.
+	// BETWEEN x1 x4 → x2, x3.
 	from := "msgid=" + stored[1].MsgID
 	to := "msgid=" + stored[4].MsgID
 	sendLine(t, c, fmt.Sprintf("CHATHISTORY BETWEEN #between %s %s 10", from, to))
 	batch := recvBatch(t, c)
 
-	if len(batch.entries) != 3 {
-		t.Fatalf("BETWEEN x1 x4: got %d, want 3 (x1,x2,x3)", len(batch.entries))
+	if len(batch.entries) != 2 {
+		t.Fatalf("BETWEEN x1 x4: got %d, want 2 (x2,x3)", len(batch.entries))
 	}
 	for i, e := range batch.entries {
 		assertBatchEntry(t, e, batch.ref)
-		want := fmt.Sprintf("x%d", i+1)
+		want := fmt.Sprintf("x%d", i+2)
 		if e.Param(1) != want {
 			t.Errorf("[%d] = %q, want %q", i, e.Param(1), want)
 		}
 	}
-	// Verify x4 (the exclusive end) is NOT included.
+	// Neither endpoint may appear in the result.
 	for _, e := range batch.entries {
-		if e.Tags["msgid"] == stored[4].MsgID {
-			t.Errorf("BETWEEN: exclusive end x4 must not appear in results")
+		if e.Tags["msgid"] == stored[1].MsgID || e.Tags["msgid"] == stored[4].MsgID {
+			t.Errorf("BETWEEN: endpoint must not appear in results")
 		}
 	}
 }
 
-// TestCHBetweenReversedTimestampBounds verifies that CHATHISTORY BETWEEN rejects
-// reversed (toRef <= fromRef) timestamp bounds with FAIL INVALID_PARAMS rather
-// than silently triggering a full JSONL scan that returns an empty batch.
-func TestCHBetweenReversedTimestampBounds(t *testing.T) {
+// TestCHBetweenEmptyTimestampRanges verifies that reversed and equal timestamp
+// bounds return empty batches when no messages match.
+func TestCHBetweenEmptyTimestampRanges(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := backlog.NewStore(dir)
 	t.Cleanup(store.Close)
@@ -457,10 +497,9 @@ func TestCHBetweenReversedTimestampBounds(t *testing.T) {
 			doRegister(t, c)
 
 			sendLine(t, c, fmt.Sprintf("CHATHISTORY BETWEEN #foo %s %s 5", tc.from, tc.to))
-			msg := recvMsg(t, c)
-			assertMsg(t, msg, irc.FAIL, "CHATHISTORY")
-			if !strings.Contains(msg.Param(1), "INVALID_PARAMS") {
-				t.Errorf("BETWEEN %s: FAIL code = %q, want INVALID_PARAMS", tc.name, msg.Param(1))
+			batch := recvBatch(t, c)
+			if len(batch.entries) != 0 {
+				t.Errorf("BETWEEN %s: got %d messages, want 0", tc.name, len(batch.entries))
 			}
 		})
 	}
@@ -489,11 +528,19 @@ func TestCHBetweenValidTimestampBounds(t *testing.T) {
 	if batch.btype != "chathistory" {
 		t.Errorf("valid BETWEEN: BATCH type = %q, want chathistory", batch.btype)
 	}
+	if len(batch.entries) != 2 {
+		t.Fatalf("timestamp BETWEEN: got %d messages, want 2", len(batch.entries))
+	}
+	for i, e := range batch.entries {
+		assertBatchEntry(t, e, batch.ref)
+		if want := fmt.Sprintf("v%d", i+1); e.Param(1) != want {
+			t.Errorf("[%d] = %q, want %q", i, e.Param(1), want)
+		}
+	}
 }
 
-// TestCHBetweenMsgIDRefsUnaffected verifies that the reversed-bounds guard
-// does not affect msgid= refs (we cannot compare msgids for ordering).
-func TestCHBetweenMsgIDRefsUnaffected(t *testing.T) {
+// TestCHBetweenReversedMsgIDBounds verifies reverse queries return stored order.
+func TestCHBetweenReversedMsgIDBounds(t *testing.T) {
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	store, stored := makeTestStore(t, 1, "#bmsgid",
 		[]string{"m0", "m1", "m2", "m3"}, base)
@@ -501,16 +548,20 @@ func TestCHBetweenMsgIDRefsUnaffected(t *testing.T) {
 	c := pipeServerCHBound(t, store, 1)
 	doRegister(t, c)
 
-	// Supply msgid refs in "reversed" logical order — guard must not fire;
-	// the store handles these by returning an empty result.
+	// Select backwards from m3 to m0, returning m1 and m2 oldest first.
 	from := "msgid=" + stored[3].MsgID
 	to := "msgid=" + stored[0].MsgID
 	sendLine(t, c, fmt.Sprintf("CHATHISTORY BETWEEN #bmsgid %s %s 10", from, to))
 	batch := recvBatch(t, c)
 
-	// No FAIL — the response must be a BATCH (empty result is fine).
-	if batch.btype != "chathistory" {
-		t.Errorf("msgid BETWEEN: expected BATCH response, got BATCH type %q", batch.btype)
+	if len(batch.entries) != 2 {
+		t.Fatalf("reverse BETWEEN: got %d messages, want 2", len(batch.entries))
+	}
+	for i, e := range batch.entries {
+		assertBatchEntry(t, e, batch.ref)
+		if want := fmt.Sprintf("m%d", i+1); e.Param(1) != want {
+			t.Errorf("[%d] = %q, want %q", i, e.Param(1), want)
+		}
 	}
 }
 
@@ -549,8 +600,8 @@ func TestCHTargets(t *testing.T) {
 	sendLine(t, c, fmt.Sprintf("CHATHISTORY TARGETS %s %s 10", from, to))
 	batch := recvBatch(t, c)
 
-	if batch.btype != "chathistory" {
-		t.Errorf("TARGETS BATCH type = %q, want chathistory", batch.btype)
+	if batch.btype != "draft/chathistory-targets" {
+		t.Errorf("TARGETS BATCH type = %q, want draft/chathistory-targets", batch.btype)
 	}
 	if len(batch.entries) != 2 {
 		t.Fatalf("TARGETS: got %d entries, want 2", len(batch.entries))
@@ -563,6 +614,14 @@ func TestCHTargets(t *testing.T) {
 		if e.Tags["time"] == "" {
 			t.Errorf("TARGETS entry: missing @time tag")
 		}
+		if _, err := time.Parse(time.RFC3339Nano, e.Param(2)); err != nil {
+			t.Errorf("TARGETS timestamp is not a bare RFC3339 timestamp: %q", e.Param(2))
+		}
+	}
+	sendLine(t, c, fmt.Sprintf("CHATHISTORY TARGETS %s %s 1", to, from))
+	page := recvBatch(t, c)
+	if len(page.entries) != 1 || page.entries[0].Param(1) != "#beta" {
+		t.Fatal("newest-first TARGETS did not return the latest conversation")
 	}
 }
 
@@ -628,8 +687,8 @@ func TestCHTargetsTimestampRefsAccepted(t *testing.T) {
 	batch := recvBatch(t, c)
 
 	// Empty store → empty batch, but it must be a well-formed BATCH, not a FAIL.
-	if batch.btype != "chathistory" {
-		t.Errorf("TARGETS timestamp refs: BATCH type = %q, want chathistory", batch.btype)
+	if batch.btype != "draft/chathistory-targets" {
+		t.Errorf("TARGETS timestamp refs: BATCH type = %q, want draft/chathistory-targets", batch.btype)
 	}
 }
 

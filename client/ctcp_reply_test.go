@@ -56,6 +56,55 @@ func TestCTCPTimeReplies(t *testing.T) {
 	}
 }
 
+func TestCTCPHistoryDoesNotReply(t *testing.T) {
+	c, rec := ctcpClient(t)
+	var replayed int
+	c.On(irc.PRIVMSG, func(ev *Event) {
+		if ev.BatchType() == "chathistory" {
+			replayed++
+		}
+	})
+	feedHandle(t, c, ":srv BATCH +history chathistory bob")
+	for _, query := range []string{"VERSION", "PING old", "TIME", "CLIENTINFO", "PING old2", "VERSION"} {
+		feedHandle(t, c, "@batch=history :bob!b@h PRIVMSG me :\x01"+query+"\x01")
+	}
+	if len(rec.sent) != 0 {
+		t.Fatalf("history generated replies: %q", rec.sent)
+	}
+	if replayed != 6 {
+		t.Fatalf("dispatched %d history messages, want 6", replayed)
+	}
+	// Live traffic interleaved with history must still get its full reply budget.
+	for range ctcpBurst {
+		feedHandle(t, c, ":bob!b@h PRIVMSG me :\x01PING live\x01")
+	}
+	if len(rec.sent) != ctcpBurst {
+		t.Fatalf("live replies = %q, want %d replies", rec.sent, ctcpBurst)
+	}
+}
+
+func TestCTCPHistoryOverPipe(t *testing.T) {
+	_, srv, cleanup := dialNoSASL(t, []string{"batch", "draft/chathistory", "message-tags"})
+	defer cleanup()
+	srv.send(
+		":srv BATCH +history chathistory bob",
+		"@batch=history :bob!b@h PRIVMSG me :\x01PING old\x01",
+		":srv BATCH -history",
+		"PING :history-done",
+	)
+	// The PONG fences processing: a replay NOTICE would arrive before it.
+	srv.expect("PONG history-done")
+	srv.send(":bob!b@h PRIVMSG me :\x01PING live\x01")
+	srv.expect("NOTICE bob :\x01PING live\x01")
+	// Reusing a closed history reference for a live batch must not mute replies.
+	srv.send(
+		":srv BATCH +history example/live",
+		"@batch=history :bob!b@h PRIVMSG me :\x01PING batched-live\x01",
+	)
+	srv.expect("NOTICE bob :\x01PING batched-live\x01")
+	srv.send(":srv BATCH -history")
+}
+
 func TestCTCPIgnoredCases(t *testing.T) {
 	cases := []struct {
 		name string

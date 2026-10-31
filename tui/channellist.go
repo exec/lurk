@@ -99,11 +99,19 @@ func (m model) handleChannelListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// it selects the highlighted channel and joins it.
 		if m.chanList.FilterState() != list.Filtering {
 			if it, ok := m.chanList.SelectedItem().(channelItem); ok {
-				m = closeChannelList(m)
-				if m.cli != nil {
-					_ = m.cli.Join(it.name)
+				net := m.chanListNet
+				if !m.hasNetwork(net) {
+					m.chanList.Title = "Channels — network disconnected; close this list and retry"
+					return m, nil
 				}
-				_, i := m.ensureBuffer(it.name, BufferChannel)
+				if net.cli != nil {
+					if err := net.cli.Join(it.name); err != nil {
+						m.chanList.Title = "Channels — join failed: " + sanitize(err.Error())
+						return m, nil
+					}
+				}
+				m = closeChannelList(m)
+				_, i := m.ensureBufferIn(net, it.name, BufferChannel)
 				m.switchTo(i)
 				m = layout(m)
 				return m, textinput.Blink

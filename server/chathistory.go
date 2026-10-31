@@ -77,8 +77,8 @@ func (s *session) handleCHATHISTORY(msg *irc.Message) error {
 
 // handleCHLatest implements CHATHISTORY LATEST <target> <ref|*> <limit>.
 // If ref is "*", returns the newest limit entries.
-// If ref is a msgid or timestamp, returns entries newer than that ref (same as
-// AFTER but tolerates "*").
+// If ref is a msgid or timestamp, returns the newest limit entries strictly
+// after that ref.
 func (s *session) handleCHLatest(msg *irc.Message) error {
 	if msg.Param(1) == "" || msg.Param(3) == "" {
 		return s.sendFail("CHATHISTORY", "NEED_MORE_PARAMS", "CHATHISTORY LATEST requires: <target> <ref|*> <limit>")
@@ -106,7 +106,7 @@ func (s *session) handleCHLatest(msg *irc.Message) error {
 		if ref.IsStar {
 			entries = s.srv.store.Latest(s.netid, target, limit)
 		} else {
-			entries = s.srv.store.After(s.netid, target, ref, limit)
+			entries = s.srv.store.LatestAfter(s.netid, target, ref, limit)
 		}
 	}
 
@@ -186,12 +186,8 @@ func (s *session) handleCHBetween(msg *irc.Message) error {
 		return s.sendFail("CHATHISTORY", "INVALID_PARAMS", fmt.Sprintf("CHATHISTORY: invalid toRef: %v", err))
 	}
 
-	// When both refs are timestamps we can validate the window before touching
-	// the store. A toRef that is at or before fromRef produces an empty result
-	// by definition, but still forces a full JSONL scan (up to maxScanLines).
-	// Reject it up-front to close the cheap-request IO/CPU amplifier.
-	if fromRef.IsTime && toRef.IsTime && !fromRef.Time.Before(toRef.Time) {
-		return s.sendFail("CHATHISTORY", "INVALID_PARAMS", "CHATHISTORY BETWEEN: fromRef must be strictly before toRef")
+	if fromRef.IsStar || toRef.IsStar {
+		return s.sendFail("CHATHISTORY", "INVALID_PARAMS", "CHATHISTORY BETWEEN requires timestamp or message-ID references")
 	}
 
 	limit, ok := parseLimit(limitStr)
@@ -211,7 +207,7 @@ func (s *session) handleCHBetween(msg *irc.Message) error {
 }
 
 // handleCHTargets implements CHATHISTORY TARGETS <fromRef> <toRef> <limit>.
-// The BATCH for TARGETS uses "chathistory" with a special target "".
+// TARGETS replies use a draft/chathistory-targets BATCH.
 func (s *session) handleCHTargets(msg *irc.Message) error {
 	// Params: [0]=TARGETS [1]=fromRef [2]=toRef [3]=limit
 	fromStr := msg.Param(1)
@@ -251,6 +247,9 @@ func (s *session) handleCHTargets(msg *irc.Message) error {
 	// Both refs are guaranteed IsTime by the check above.
 	fromTime := fromRef.Time
 	toTime := toRef.Time
+	if fromTime.After(toTime) {
+		fromTime, toTime = toTime, fromTime
+	}
 
 	var targets []backlog.TargetInfo
 	if s.srv.store != nil {
@@ -300,11 +299,11 @@ func (s *session) sendCHBatch(target string, entries []backlog.Entry) error {
 func (s *session) sendTargetsBatch(targets []backlog.TargetInfo) error {
 	batchRef := newBatchRef()
 
-	// BATCH open: :server BATCH +<ref> chathistory
+	// TARGETS uses its own batch type, distinct from a message-history batch.
 	if err := s.send(&irc.Message{
 		Source:  serverName,
 		Command: irc.BATCH,
-		Params:  []string{"+" + batchRef, "chathistory"},
+		Params:  []string{"+" + batchRef, "draft/chathistory-targets"},
 	}); err != nil {
 		return err
 	}
@@ -320,7 +319,7 @@ func (s *session) sendTargetsBatch(targets []backlog.TargetInfo) error {
 			},
 			Source:  serverName,
 			Command: irc.CHATHISTORY,
-			Params:  []string{"TARGETS", ti.Target, "timestamp=" + ts},
+			Params:  []string{"TARGETS", ti.Target, ts},
 		}); err != nil {
 			log.Printf("server: CHATHISTORY TARGETS: error sending target %q: %v", ti.Target, err)
 			break

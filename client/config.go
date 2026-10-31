@@ -115,6 +115,10 @@ type Config struct {
 	// carries them so the UI can read them back via Highlights().
 	Highlights []string
 
+	// Ignores are nicknames whose messages a front-end should hide. Like
+	// Highlights, these are carried for the UI; protocol events are unaffected.
+	Ignores []string
+
 	// AutoReconnect, when true, makes a connection established via Connect
 	// transparently re-dial and re-register (with backoff) after an unexpected
 	// disconnect, re-joining the channels it was in. A user-initiated Quit/Close
@@ -153,6 +157,7 @@ type Config struct {
 var DefaultCaps = []string{
 	"cap-notify",
 	"server-time",
+	"echo-message",
 	"message-tags",
 	"account-notify",
 	"extended-join",

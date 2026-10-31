@@ -255,7 +255,11 @@ func renderSidebar(m model, w, h int) string {
 		if multi && b.net != lastNet {
 			// label() is the server NETWORK token (which can decode \xHH escapes);
 			// sanitize before it reaches the renderer.
-			rows = append(rows, t.nicklistTtl.Width(w).Render(truncate(sanitize(b.net.label()), w)))
+			label := sanitize(b.net.label())
+			if b.net.history.offline {
+				label = "[retry] " + label
+			}
+			rows = append(rows, t.nicklistTtl.Width(w).Render(truncate(label, w)))
 			lastNet = b.net
 		}
 
@@ -275,6 +279,9 @@ func renderSidebar(m model, w, h int) string {
 		label := sanitize(b.Title)
 		if b.Kind == BufferServer {
 			label = "(server)" // the header already names the network
+			if !multi && b.net != nil && b.net.history.offline {
+				label = "(reconnecting)"
+			}
 		}
 		// Show the unread count on an inactive buffer with pending activity, so a
 		// busy session can be triaged at a glance.
@@ -453,10 +460,16 @@ func renderHelp(m model) string {
 func renderStatus(m model) string {
 	network, nick := "", ""
 	if m.cli != nil {
-		network = m.cli.Network()
 		nick = m.cli.Nick()
 	}
 	b := m.activeBuffer()
+	health := ""
+	if b.net != nil {
+		network = b.net.label()
+		if b.net.history.offline {
+			health = "reconnecting"
+		}
+	}
 	scrollNote := ""
 	if b.vpReady && !b.vp.AtBottom() {
 		below := b.vp.TotalLineCount() - b.vp.YOffset() - b.vp.Height()
@@ -466,13 +479,18 @@ func renderStatus(m model) string {
 			scrollNote = fmt.Sprintf("↓ %d more (End)", below)
 		}
 	}
+	if b.net != nil && b.net.history.pending != nil && equalFold(b.net.history.pending.target, b.Title) {
+		scrollNote = "loading history…"
+	} else if b.vpReady && b.vp.AtTop() && len(b.lines) >= scrollbackLimit {
+		scrollNote = "scrollback limit reached"
+	}
 	// The typing lookup is scoped to the active buffer's own network so a typer
 	// in a same-named channel on another network does not bleed into this one.
 	typing := typingNote(m.typingNicks(typingKey{net: b.net, target: asciiLower(b.Title)}))
 	// network and the buffer title are server-controlled; sanitize before they
 	// reach the status bar so an ESC-laden NETWORK token or channel name cannot
 	// inject terminal control sequences.
-	return defaultTheme.statusLine(sanitize(network), nick, sanitize(b.Title), m.searchNote(), scrollNote, typing, m.width)
+	return defaultTheme.statusLine(sanitize(network), nick, sanitize(b.Title), health, m.searchNote(), scrollNote, typing, m.width)
 }
 
 // typingNote renders the "X is typing…" status segment for the given typers, or
@@ -557,13 +575,20 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 	// Self is the nick of the buffer's OWN network, so highlight/own-message
 	// detection is correct even for an event on a background network.
 	self := b.net.nick()
+	var meta historyLine
+	if ev.Command() == "PRIVMSG" || ev.Command() == "NOTICE" {
+		meta = historyLine{id: ev.Message.Tags.Get("msgid"), at: ev.Time()}
+		if meta.id != "" && b.seenIDs[meta.id] {
+			return m
+		}
+	}
 	// Mark the start of a chathistory backlog with a one-time divider so the user
 	// can tell replayed history from live traffic.
 	if ev.BatchType() == "chathistory" {
 		b.markHistory(defaultTheme)
 	}
-	row, highlight := defaultTheme.formatLine(ev, self, m.highlights)
-	drop := b.addLine(row)
+	row, highlight := defaultTheme.formatLine(ev, self, b.net.highlights)
+	drop := b.addLine(row, meta)
 	m.logger.Log(bufferScope(b), b.Title, stripANSI(row))
 
 	active := b == m.activeBuffer()

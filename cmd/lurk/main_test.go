@@ -60,8 +60,9 @@ func TestNetworkToConfig(t *testing.T) {
 		n := config.Network{
 			Name: "Libera", Addr: "irc.libera.chat:6697", TLS: true,
 			Nick: "lurkbot", User: "lb", Realname: "Lurk Bot", Pass: "srv",
-			SASL:     config.SASL{Mechanism: "plain", Username: "lurkbot", Password: "pw"},
-			Channels: []string{"#a", "#b"},
+			SASL:       config.SASL{Mechanism: "plain", Username: "lurkbot", Password: "pw"},
+			Channels:   []string{"#a", "#b"},
+			Highlights: []string{"deploy"}, Ignores: []string{"spammer"},
 		}
 		cfg, channels := networkToConfig(n, def)
 		if cfg.Nick != "lurkbot" || cfg.User != "lb" || cfg.Realname != "Lurk Bot" {
@@ -69,6 +70,9 @@ func TestNetworkToConfig(t *testing.T) {
 		}
 		if cfg.Server != "irc.libera.chat:6697" || !cfg.TLS || cfg.Pass != "srv" {
 			t.Errorf("server mapping wrong: %+v", cfg)
+		}
+		if !reflect.DeepEqual(cfg.Highlights, n.Highlights) || !reflect.DeepEqual(cfg.Ignores, n.Ignores) {
+			t.Errorf("preferences not carried into client config")
 		}
 		if cfg.SASL.Mechanism != "PLAIN" {
 			t.Errorf("SASL mechanism = %q, want uppercased PLAIN", cfg.SASL.Mechanism)

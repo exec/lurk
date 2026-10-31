@@ -1,10 +1,68 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/exec/lurk/client"
 )
+
+func TestMenuSendFailurePreservesDraft(t *testing.T) {
+	for _, entry := range []menuEntry{
+		{label: "Whois", act: miWhois},
+		{label: "Op", act: miSetMode, mode: "+o"},
+		{label: "Kick", act: miKick},
+		{label: "Ban", act: miBan},
+	} {
+		t.Run(entry.label, func(t *testing.T) {
+			m := newModel(client.New(client.Config{Nick: "me"}), nil)
+			b, i := m.ensureBuffer("#go", BufferChannel)
+			m.switchTo(i)
+			m.menuOpen, m.menuNick = true, "bob"
+			m.input.SetValue("unfinished draft")
+			m.input.SetCursor(5)
+			updated, _ := m.applyMenu(entry)
+			m = updated.(model)
+			if m.menuOpen || m.focus != focusInput || m.activeBuffer() != b {
+				t.Fatal("failed menu action did not return to the conversation editor")
+			}
+			if m.input.Value() != "unfinished draft" || m.input.Position() != 5 {
+				t.Fatal("failed menu action changed the draft or cursor")
+			}
+			if len(b.lines) != 1 || !strings.Contains(stripANSI(b.lines[0]), "not connected") {
+				t.Fatalf("failed menu action did not report its error: %q", b.lines)
+			}
+		})
+	}
+}
+
+func TestMenuProtocolRequestsSendSuccessfully(t *testing.T) {
+	for _, tc := range []struct {
+		entry menuEntry
+		wire  string
+	}{
+		{menuEntry{label: "Whois", act: miWhois}, "WHOIS bob"},
+		{menuEntry{label: "Op", act: miSetMode, mode: "+o"}, "MODE #go +o bob"},
+		{menuEntry{label: "Kick", act: miKick}, "KICK #go bob"},
+		{menuEntry{label: "Ban", act: miBan}, "MODE #go +b bob!*@*"},
+	} {
+		t.Run(tc.entry.label, func(t *testing.T) {
+			m, srv := historyModel(t)
+			b, i := m.ensureBuffer("#go", BufferChannel)
+			m.switchTo(i)
+			m.menuOpen, m.menuNick = true, "bob"
+			m.input.SetValue("unfinished draft")
+			updated, _ := m.applyMenu(tc.entry)
+			m = updated.(model)
+			historyWire(t, srv, tc.wire)
+			if m.menuOpen || m.focus != focusInput || m.input.Value() != "unfinished draft" || len(b.lines) != 0 {
+				t.Fatal("successful menu action changed the draft, added an error, or left the menu open")
+			}
+		})
+	}
+}
 
 // newServerBuffer-backed model with no client: activeBuffer is the server
 // buffer (not a channel), so menuEntries should offer only the base actions and

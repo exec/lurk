@@ -593,7 +593,7 @@ func (t theme) formatSelfMessage(self, text string) string {
 
 // statusLine renders the bottom status bar: network, current nick, active
 // buffer, and a scroll indicator. width pads it to the full terminal width.
-func (t theme) statusLine(network, nick, buffer, searchNote, scrollNote, typing string, width int) string {
+func (t theme) statusLine(network, nick, buffer, health, searchNote, scrollNote, typing string, width int) string {
 	if network == "" {
 		network = "(connecting)"
 	}
@@ -605,6 +605,9 @@ func (t theme) statusLine(network, nick, buffer, searchNote, scrollNote, typing 
 		seg("nick", nick),
 		seg("buf", buffer),
 	}
+	if health != "" {
+		parts = append([]string{t.notice.Render(health)}, parts...)
+	}
 	if searchNote != "" {
 		parts = append(parts, t.notice.Render(searchNote))
 	}
@@ -615,7 +618,7 @@ func (t theme) statusLine(network, nick, buffer, searchNote, scrollNote, typing 
 		parts = append(parts, t.statusKey.Render(scrollNote))
 	}
 	content := " " + strings.Join(parts, "  ") + " "
-	return t.statusBar.Width(width).Render(content)
+	return t.statusBar.Width(width).Render(truncate(content, width))
 }
 
 // Glyphs and helpers ---------------------------------------------------------

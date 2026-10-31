@@ -316,6 +316,7 @@ func (m model) applyMenu(e menuEntry) (tea.Model, tea.Cmd) {
 	m.menuStatus = false
 	m = m.refocusInput()
 
+	var err error
 	switch e.act {
 	case miMessage:
 		// Open/focus a PM buffer for the nick. No client needed for the buffer
@@ -332,20 +333,23 @@ func (m model) applyMenu(e menuEntry) (tea.Model, tea.Cmd) {
 		m.input.CursorEnd()
 	case miWhois:
 		if m.cli != nil {
-			_ = m.cli.Whois(nick)
+			err = m.cli.Whois(nick)
 		}
 	case miSetMode:
 		if m.cli != nil {
-			_ = m.cli.ChannelMode(ch, e.mode, nick)
+			err = m.cli.ChannelMode(ch, e.mode, nick)
 		}
 	case miKick:
 		if m.cli != nil {
-			_ = m.cli.Kick(ch, nick, "")
+			err = m.cli.Kick(ch, nick, "")
 		}
 	case miBan:
 		if m.cli != nil {
-			_ = m.cli.ChannelMode(ch, "+b", banMask(m, nick))
+			err = m.cli.ChannelMode(ch, "+b", banMask(m, nick))
 		}
+	}
+	if err != nil {
+		m = appendInfo(m, m.activeBuffer(), e.label+" failed: "+err.Error())
 	}
 	return m, nil
 }

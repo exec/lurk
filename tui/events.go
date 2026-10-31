@@ -167,11 +167,20 @@ func routeEventOn(m model, net *network, ev client.Event) model {
 	if ev.Dropped > 0 || ev.Message == nil {
 		return appendInfo(m, m.serverBuffer(net), pluralEvents(ev.Dropped))
 	}
+	if next, handled := m.routeHistory(net, ev); handled {
+		return next
+	}
 	switch ev.Command() {
 	case client.EventReconnecting, client.EventReconnected:
+		if ev.Command() == client.EventReconnected {
+			net.disconnectReason = ""
+		}
 		// Connection-status notices from the reconnect supervisor: show them where
 		// the user is looking (when on this network), else its server buffer.
 		return appendInfo(m, m.targetBuffer(net), ev.Text())
+	case "ERROR":
+		net.disconnectReason = sanitize(ev.Text())
+		return appendLine(m, m.serverBuffer(net), ev)
 	case irc.PRIVMSG, irc.NOTICE:
 		return routeText(m, net, ev)
 	case irc.JOIN, irc.PART, irc.QUIT, irc.NICK, irc.MODE, irc.TOPIC, irc.KICK:
@@ -226,7 +235,7 @@ func routeEventOn(m model, net *network, ev client.Event) model {
 // non-active buffers.
 func routeText(m model, net *network, ev client.Event) model {
 	// Drop messages from an ignored sender entirely (their own echo aside).
-	if m.isIgnored(ev.Nick()) {
+	if net.isIgnored(ev.Nick()) {
 		return m
 	}
 	target := ev.Param(0)

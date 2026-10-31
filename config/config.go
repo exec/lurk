@@ -44,6 +44,7 @@ type Network struct {
 	SASL              SASL     `json:"sasl,omitempty"`
 	Channels          []string `json:"channels,omitempty"`   // autojoin
 	Highlights        []string `json:"highlights,omitempty"` // extra mention words
+	Ignores           []string `json:"ignores,omitempty"`    // nicks hidden by the TUI
 
 	// Bounce, when set (NetID > 0), routes this network through a lurkd bouncer
 	// instead of connecting to Addr directly: the client dials the bouncer,

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -41,7 +42,7 @@ const (
 )
 
 // launcherModel is the launcher's Bubble Tea model. store is a pointer so adds/
-// edits/deletes mutate the shared document that Save persists.
+// edits/deletes update the shared document only after Save succeeds.
 type launcherModel struct {
 	store *config.File
 	path  string
@@ -193,12 +194,15 @@ func (m launcherModel) submitForm() (tea.Model, tea.Cmd) {
 		m.form.err = err.Error()
 		return m, nil
 	}
-	m.store.Upsert(n, m.formOrig)
-	if err := config.Save(m.store, m.path); err != nil {
-		m.status = "save failed: " + err.Error()
-	} else {
-		m.status = "saved " + n.Name
+	next := *m.store
+	next.Networks = slices.Clone(m.store.Networks)
+	next.Upsert(n, m.formOrig)
+	if err := config.Save(&next, m.path); err != nil {
+		m.form.err = "save failed: " + err.Error()
+		return m, nil
 	}
+	*m.store = next
+	m.status = "saved " + n.Name
 	m.mode = modeList
 	m.form = nil
 	if i := indexOfNetwork(m.store.Networks, n.Name); i >= 0 {
@@ -224,12 +228,15 @@ func (m launcherModel) updateConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "y", "Y", "enter":
 		if m.sel < len(m.store.Networks) {
 			name := m.store.Networks[m.sel].Name
-			m.store.Remove(name)
-			if err := config.Save(m.store, m.path); err != nil {
+			next := *m.store
+			next.Networks = slices.Clone(m.store.Networks)
+			next.Remove(name)
+			if err := config.Save(&next, m.path); err != nil {
 				m.status = "save failed: " + err.Error()
-			} else {
-				m.status = "deleted " + name
+				return m, nil
 			}
+			*m.store = next
+			m.status = "deleted " + name
 		}
 		if m.sel > len(m.store.Networks) {
 			m.sel = len(m.store.Networks)

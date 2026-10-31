@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -21,9 +22,15 @@ import (
 // The caller is responsible for dialing and registering the client (Connect)
 // before calling Run; Run drives the client's Run loop implicitly by consuming
 // its event stream.
-func Run(ctx context.Context, cli *client.Client, logDir string, connect ConnectFunc) error {
+// An optional SavedConfig saves ignore/highlight changes to saved profiles.
+// An unexpected last-network disconnect returns its reason as an error.
+func Run(ctx context.Context, cli *client.Client, logDir string, connect ConnectFunc, saved ...SavedConfig) error {
 	m := newModel(cli, cli.Events())
 	m.connect = connect
+	if len(saved) > 0 {
+		m.configPath = saved[0].Path
+		m.networks[0].savedName = saved[0].Network
+	}
 	if logDir != "" {
 		m.logger = chatlog.New(logDir)
 		defer m.logger.Close()
@@ -32,7 +39,12 @@ func Run(ctx context.Context, cli *client.Client, logDir string, connect Connect
 	// rendered tea.View (set in View), not program options, so the program only
 	// needs the cancellation context here.
 	p := tea.NewProgram(m, tea.WithContext(ctx))
-	_, err := p.Run()
+	final, err := p.Run()
+	if err == nil {
+		if m, ok := final.(model); ok && m.exitReason != "" {
+			return errors.New(m.exitReason)
+		}
+	}
 	return err
 }
 
@@ -49,6 +61,8 @@ func (m model) Init() tea.Cmd {
 	// One event pump per connected network.
 	for _, n := range m.networks {
 		cmds = append(cmds, waitForIRC(n))
+		net := n
+		cmds = append(cmds, func() tea.Msg { return historyStartMsg{net: net} })
 	}
 	return tea.Batch(cmds...)
 }
@@ -58,7 +72,24 @@ func (m model) Init() tea.Cmd {
 // presses are delegated to the input layer (tui-input), which returns a
 // control action describing what the core should do.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.update(msg)
+	next, ok := updated.(model)
+	if !ok {
+		return updated, cmd
+	}
+	if tick := next.historyTick(); tick != nil {
+		cmd = tea.Batch(cmd, tick)
+	}
+	return next, cmd
+}
+
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case historyStartMsg:
+		return m.discoverHistory(msg.net), nil
+	case historyTickMsg:
+		m.historyTicking = false
+		return m.expireHistory(), nil
 	case tea.WindowSizeMsg:
 		return m.handleResize(msg)
 
@@ -113,18 +144,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.batchMode = false
 		m.activeBuffer().refreshIfDirty()
 		if msg.closed {
-			// Stream ended mid-drain: the drained events are applied above; now
-			// drop the network (mirrors the ircClosedMsg path), quitting if last.
-			m = m.removeNetwork(msg.net)
-			if len(m.networks) == 0 {
-				m.quitting = true
-				return m, tea.Quit
-			}
-			// Focus may have been re-homed onto a buffer that has never been
-			// displayed (vpReady false); layout sizes and fills its viewport so
-			// the message pane is not blank until the next resize or switch.
-			m = layout(m)
-			return m, nil
+			return m.networkClosed(msg.net)
 		}
 		cmds := []tea.Cmd{waitForIRC(msg.net)}
 		if m.bell {
@@ -162,17 +182,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ircClosedMsg:
-		// One network's connection ended for good: drop it. Quit only when no
-		// networks remain. layout() sizes/refreshes the re-homed focus buffer,
-		// which may never have been displayed (vpReady false) — without it the
-		// message pane stays blank until a resize or buffer switch.
-		m = m.removeNetwork(msg.net)
-		if len(m.networks) == 0 {
-			m.quitting = true
-			return m, tea.Quit
-		}
-		m = layout(m)
-		return m, nil
+		return m.networkClosed(msg.net)
 
 	default:
 		// While the channel-list modal is open it owns ancillary messages (its
@@ -324,6 +334,9 @@ func (m model) scrollActive(msg tea.KeyPressMsg) bool {
 	case key_matches(m.keys.ScrollDown, msg):
 		b.vp.ScrollDown(scrollLines)
 	case key_matches(m.keys.PageUp, msg):
+		if b.vp.AtTop() {
+			m.requestOlder(b)
+		}
 		b.vp.PageUp()
 	case key_matches(m.keys.PageDown, msg):
 		b.vp.PageDown()
@@ -380,11 +393,16 @@ func applyAction(m model, act action) model {
 			target = m.activeBuffer().Title
 		}
 		if m.cli != nil && target != "" {
-			_ = m.cli.Privmsg(target, act.text)
+			if err := m.cli.Privmsg(target, act.text); err != nil {
+				return sendFailed(m, act.input, fmt.Sprintf("send to %s failed: %v", target, err))
+			}
 			if !m.cli.CapEnabled("echo-message") {
 				m = echoSelf(m, target, act.text)
 			}
 		}
+
+	case actionSendError:
+		return sendFailed(m, act.input, act.text)
 
 	case actionSwitch:
 		if act.target != "" {
@@ -431,10 +449,22 @@ func applyAction(m model, act action) model {
 	return m
 }
 
+// sendFailed displays an immediate send error and restores the submitted line.
+func sendFailed(m model, line, text string) model {
+	m.input.SetValue(line)
+	m.input.CursorEnd()
+	return appendInfo(m, m.activeBuffer(), text)
+}
+
 // View renders the current frame. The whole-frame composition lives in the
 // view layer (render); app.go only wraps it as a tea.View, places the cursor,
 // and keeps the program on the alternate screen.
 func (m model) View() tea.View {
+	if len(m.buffers) == 0 {
+		v := tea.NewView(m.exitReason)
+		v.AltScreen = true
+		return v
+	}
 	if !m.ready {
 		// Before the first WindowSizeMsg we have no dimensions; show a minimal
 		// placeholder so the alt-screen is not blank-then-flicker.

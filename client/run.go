@@ -417,6 +417,9 @@ func (c *Client) trackJoin(m *irc.Message) {
 	joiner := m.Nick()
 	user, host := m.User(), m.Host()
 	self := c.st.foldKey(joiner) == c.st.foldKey(c.st.self)
+	if self {
+		c.st.selfUser, c.st.selfHost = user, host
+	}
 	// extended-join: ":nick!user@host JOIN <channel> <account> :<realname>".
 	// Param(0) is the channel; Param(1), when present, is the account.
 	account := normalizeAccount(m.Param(1))
@@ -519,6 +522,14 @@ func (c *Client) trackAway(m *irc.Message) {
 // message, updating the nick's User/Host in every channel it shares.
 func (c *Client) trackChghost(m *irc.Message) {
 	newUser, newHost := m.Param(0), m.Param(1)
+	if c.st.foldKey(m.Nick()) == c.st.foldKey(c.st.self) {
+		if newUser != "" {
+			c.st.selfUser = newUser
+		}
+		if newHost != "" {
+			c.st.selfHost = newHost
+		}
+	}
 	c.st.updateMemberEverywhere(c.st.foldKey(m.Nick()), func(mem *Member) {
 		if newUser != "" {
 			mem.User = newUser

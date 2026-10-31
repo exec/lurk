@@ -171,7 +171,8 @@ func (s *Server) unregisterBoundSession(sess *session) {
 // server-assigned msgid and stamp the live fan-out copy with that same id,
 // overriding any @msgid the upstream may have sent. This ensures that a
 // client can use a live-delivery msgid in a CHATHISTORY AFTER/BEFORE query
-// and receive the correct result.
+// and receive the correct result. An already-stored upstream ID is neither
+// written again nor relayed again.
 func (s *Server) Ingest(netid int, ev *client.Event) {
 	// Store in the backlog store first (before fan-out, so the store is updated
 	// before any client receives the live copy, keeping CHATHISTORY consistent).
@@ -179,7 +180,9 @@ func (s *Server) Ingest(netid int, ev *client.Event) {
 	if s.store != nil {
 		var stored bool
 		storeMsgID, stored = s.store.Ingest(netid, ev)
-		_ = stored // stored is informational; we use storeMsgID below
+		if !stored && storeMsgID != "" {
+			return // Already stored and relayed under this canonical message ID.
+		}
 	}
 	s.fanout(netid, ev, storeMsgID)
 }

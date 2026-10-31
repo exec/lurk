@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -48,6 +50,112 @@ func newLauncher(t *testing.T, store *config.File) launcherModel {
 	t.Helper()
 	path := t.TempDir() + "/config.json"
 	return launcherModel{store: store, path: path, mode: modeList}
+}
+
+func TestLauncherFailedFormSavePreservesStoreAndInput(t *testing.T) {
+	for _, operation := range []string{"edit", "add"} {
+		t.Run(operation, func(t *testing.T) {
+			original := config.File{
+				Defaults: config.Identity{Nick: "me"},
+				Networks: []config.Network{{Name: "Work", Addr: "irc.example:6697", TLS: true}},
+			}
+			store := original
+			store.Networks = slices.Clone(original.Networks)
+			m := newLauncher(t, &store)
+			path := m.path
+			if err := config.Save(&original, path); err != nil {
+				t.Fatal(err)
+			}
+			key := "e"
+			if operation == "add" {
+				key = "a"
+			}
+			m = press(t, m, key)
+			m.form.fields[fName].input.SetValue("Changed")
+			m.form.fields[fAddr].input.SetValue("irc.other:6697")
+			m.form.fields[fPass].input.SetValue(" secret with spaces ")
+			m.form.idx = fPass
+			form := m.form
+			want, err := form.toNetwork()
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.path = t.TempDir() // rename over a directory fails, even as root
+			m = press(t, m, "enter")
+			if !reflect.DeepEqual(store, original) {
+				t.Fatal("failed save changed the shared network store")
+			}
+			if m.mode != modeForm || m.form != form || m.form.idx != fPass ||
+				m.form.fields[fPass].input.Value() != " secret with spaces " {
+				t.Fatal("failed save discarded the form or changed its input/focus")
+			}
+			if !strings.Contains(stripANSI(m.View().Content), "save failed:") {
+				t.Fatal("save error was not visible in the retained form")
+			}
+			if got, err := config.LoadFrom(path); err != nil || !reflect.DeepEqual(got, &original) {
+				t.Fatal("failed save changed the existing config file")
+			}
+			cancelled := press(t, m, "esc")
+			if cancelled.mode != modeList || !reflect.DeepEqual(store, original) {
+				t.Fatal("cancelling a failed save changed the store")
+			}
+			// The same form can be retried after fixing the storage problem.
+			m.path = path
+			m = press(t, m, "enter")
+			expected := original
+			expected.Networks = slices.Clone(original.Networks)
+			expected.Upsert(want, m.formOrig)
+			if m.mode != modeList || m.form != nil || !reflect.DeepEqual(store, expected) {
+				t.Fatal("retry did not commit the retained form to the shared store")
+			}
+			if got, err := config.LoadFrom(path); err != nil || !reflect.DeepEqual(got, &expected) {
+				t.Fatal("retry did not persist the retained form")
+			}
+		})
+	}
+}
+
+func TestLauncherFailedDeletePreservesOrderAndCanRetry(t *testing.T) {
+	for index := range 3 {
+		t.Run([]string{"first", "middle", "last"}[index], func(t *testing.T) {
+			original := config.File{Networks: []config.Network{
+				{Name: "First", Addr: "first:6697"},
+				{Name: "Middle", Addr: "middle:6697"},
+				{Name: "Last", Addr: "last:6697"},
+			}}
+			store := original
+			store.Networks = slices.Clone(original.Networks)
+			m := newLauncher(t, &store)
+			path := m.path
+			if err := config.Save(&original, path); err != nil {
+				t.Fatal(err)
+			}
+			m.sel = index
+			m = press(t, m, "d")
+			m.path = t.TempDir()
+			m = press(t, m, "enter")
+			if !reflect.DeepEqual(store, original) || m.sel != index || m.mode != modeConfirm {
+				t.Fatal("failed delete changed the store, selection, or confirmation")
+			}
+			if !strings.Contains(stripANSI(m.View().Content), "save failed:") {
+				t.Fatal("delete error was not visible")
+			}
+			if got, err := config.LoadFrom(path); err != nil || !reflect.DeepEqual(got, &original) {
+				t.Fatal("failed delete changed the existing config file")
+			}
+			m.path = path
+			m = press(t, m, "enter")
+			expected := original
+			expected.Networks = slices.Clone(original.Networks)
+			expected.Remove(original.Networks[index].Name)
+			if m.mode != modeList || !reflect.DeepEqual(store, expected) {
+				t.Fatal("retried delete did not remove only the selected network")
+			}
+			if got, err := config.LoadFrom(path); err != nil || !reflect.DeepEqual(got, &expected) {
+				t.Fatal("retried delete did not persist")
+			}
+		})
+	}
 }
 
 // TestLauncherSelectReturnsNetwork: Enter on a saved network selects it.
@@ -101,6 +209,76 @@ func TestLauncherAddCreatesNetwork(t *testing.T) {
 	}
 	if len(reloaded.Networks) != 1 || reloaded.Networks[0].Name != "Libera" {
 		t.Errorf("persisted config = %+v", reloaded.Networks)
+	}
+}
+
+func TestLauncherEditPreservesSettings(t *testing.T) {
+	for _, mech := range []string{"PLAIN", "EXTERNAL", "SCRAM-SHA-256"} {
+		t.Run(mech, func(t *testing.T) {
+			orig := config.Network{
+				Name: "Original", Addr: "irc.example:6697", TLS: true,
+				Insecure: true, AllowInsecureAuth: true,
+				Nick: "alice", User: "user", Realname: "Alice", Pass: " server secret ",
+				SASL:     config.SASL{Mechanism: mech, Username: "account", Password: " sasl secret "},
+				Channels: []string{"#lurk", "#go"}, Highlights: []string{"deploy", "release"},
+				Ignores: []string{"spammer"},
+				Bounce:  config.BounceConfig{Addr: "localhost:6697", NetID: 2, ClientID: "laptop"},
+			}
+			m := newLauncher(t, &config.File{Networks: []config.Network{orig}})
+			m = press(t, m, "e")
+			m.form.fields[fName].input.SetValue("Renamed")
+			m = press(t, m, "enter")
+
+			want := orig
+			want.Name = "Renamed"
+			if !reflect.DeepEqual(m.store.Networks, []config.Network{want}) {
+				t.Errorf("editing a network changed settings beyond its name")
+			}
+			reloaded, err := config.LoadFrom(m.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(reloaded.Networks, []config.Network{want}) {
+				t.Error("saved network did not preserve its settings")
+			}
+		})
+	}
+}
+
+func TestLauncherEditDisablesSASLAndBounce(t *testing.T) {
+	orig := config.Network{
+		Name: "Saved", Addr: "irc.example:6697", TLS: true,
+		SASL:   config.SASL{Mechanism: "PLAIN", Username: "alice", Password: "secret"},
+		Bounce: config.BounceConfig{Addr: "localhost:6697", NetID: 2, ClientID: "laptop"},
+	}
+	m := newLauncher(t, &config.File{Networks: []config.Network{orig}})
+	m = press(t, m, "e")
+	m.form.fields[fMech].mech = 0
+	m.form.fields[fBounceAddr].input.SetValue("")
+	m = press(t, m, "enter")
+
+	reloaded, err := config.LoadFrom(m.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := orig
+	want.SASL = config.SASL{}
+	want.Bounce = config.BounceConfig{}
+	if !reflect.DeepEqual(reloaded.Networks, []config.Network{want}) {
+		t.Error("disabled SASL or bouncer settings were retained")
+	}
+}
+
+func TestLauncherSASLCycle(t *testing.T) {
+	m := newLauncher(t, &config.File{})
+	m = press(t, m, "a")
+	m.form.idx = fMech
+	for _, want := range []string{"PLAIN", "EXTERNAL", "SCRAM-SHA-256", "none"} {
+		tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+		m = tm.(launcherModel)
+		if got := mechLabel(m.form.fields[fMech].mech); got != want {
+			t.Fatalf("SASL cycle = %q, want %q", got, want)
+		}
 	}
 }
 

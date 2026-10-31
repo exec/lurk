@@ -1,5 +1,5 @@
 // query.go extends the backlog Store with the CHATHISTORY read API:
-// Before, After, Around, Between, and Targets. These methods serve the
+// Before, After, LatestAfter, Around, Between, and Targets. These methods serve the
 // CHATHISTORY subcommands defined in the IRCv3 draft/chathistory spec.
 //
 // # Reference format
@@ -9,9 +9,8 @@
 //   - "timestamp=<RFC3339>" — identifies an entry by its Time field
 //   - "*"                  — a sentinel meaning "no reference" (for LATEST)
 //
-// A ref that does not resolve to any stored entry yields an empty result (not
-// an error), per the spec: the server MUST return an empty BATCH rather than
-// an error when the ref is valid but not found.
+// An unknown message-ID ref yields an empty result, not an error. Timestamp
+// refs select time boundaries and need not match a stored entry.
 //
 // # JSONL scan policy
 //
@@ -53,6 +52,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -118,10 +118,9 @@ type TargetInfo struct {
 	Latest time.Time
 }
 
-// Before returns up to limit entries strictly OLDER than the entry identified
-// by ref, in chronological order (oldest first). If the ref resolves to the
-// first entry in the target, the result is empty. If ref does not resolve, the
-// result is empty.
+// Before returns up to limit entries strictly older than ref, in stored order
+// (oldest first). Timestamp refs need not match an entry; unknown message IDs
+// yield no entries.
 //
 // The cutoff is exclusive: the referenced entry itself is NOT included.
 func (s *Store) Before(netid int, target string, ref Ref, limit int) []Entry {
@@ -132,14 +131,14 @@ func (s *Store) Before(netid int, target string, ref Ref, limit int) []Entry {
 	if len(entries) == 0 {
 		return nil
 	}
-	// Find the index of the pivot entry.
-	pivot := findPivot(entries, ref)
-	if pivot < 0 {
-		return nil // ref not found
+	end := len(entries)
+	if ref.IsTime {
+		entries = slices.DeleteFunc(entries, func(e Entry) bool { return !e.Time.Before(ref.Time) })
+		end = len(entries)
+	} else {
+		end = findPivot(entries, ref)
 	}
-	// Return up to limit entries strictly before the pivot.
-	end := pivot // exclusive
-	if end == 0 {
+	if end <= 0 {
 		return nil
 	}
 	start := end - limit
@@ -151,35 +150,28 @@ func (s *Store) Before(netid int, target string, ref Ref, limit int) []Entry {
 	return out
 }
 
-// After returns up to limit entries strictly NEWER than the entry identified
-// by ref, in chronological order (oldest first). If ref does not resolve, the
-// result is empty.
+// After returns up to limit entries strictly newer than ref, in stored order
+// (oldest first). Timestamp refs need not match an entry; unknown message IDs
+// yield no entries.
 //
 // The cutoff is exclusive: the referenced entry itself is NOT included.
 func (s *Store) After(netid int, target string, ref Ref, limit int) []Entry {
 	if limit <= 0 {
 		return nil
 	}
-	entries := s.entriesForQuery(netid, target)
-	if len(entries) == 0 {
+	entries := s.entriesAfter(netid, target, ref)
+	return slices.Clone(entries[:min(limit, len(entries))])
+}
+
+// LatestAfter returns up to limit of the newest entries strictly after ref,
+// in stored order (oldest first). It uses the same exclusive boundary as After,
+// but selects the tail of the matching history rather than the head.
+func (s *Store) LatestAfter(netid int, target string, ref Ref, limit int) []Entry {
+	if limit <= 0 {
 		return nil
 	}
-	pivot := findPivot(entries, ref)
-	if pivot < 0 {
-		return nil
-	}
-	// Entries strictly after pivot.
-	start := pivot + 1
-	if start >= len(entries) {
-		return nil
-	}
-	end := start + limit
-	if end > len(entries) {
-		end = len(entries)
-	}
-	out := make([]Entry, end-start)
-	copy(out, entries[start:end])
-	return out
+	entries := s.entriesAfter(netid, target, ref)
+	return slices.Clone(entries[max(0, len(entries)-limit):])
 }
 
 // Around returns up to limit entries centered on the entry identified by ref:
@@ -224,46 +216,61 @@ func (s *Store) Around(netid int, target string, ref Ref, limit int) []Entry {
 	return out
 }
 
-// Between returns up to limit entries in the range [fromRef, toRef).
-// The fromRef entry IS included (inclusive start); the toRef entry is NOT
-// included (exclusive end). Entries are returned in chronological order.
-//
-// If fromRef does not resolve, the result is empty. If toRef does not resolve,
-// all entries from fromRef to the end of the log (up to limit) are returned.
-//
-// The spec leaves the inclusive/exclusive boundary choice to the server; we
-// choose inclusive-start/exclusive-end so clients can chain requests using
-// the last-received msgid as the next fromRef without duplication.
+// Between returns up to limit entries strictly between the refs, selecting
+// from fromRef toward toRef in either direction. Results retain stored order
+// (oldest first), even when selecting backwards. Timestamp refs need not match
+// an entry; either unknown message ID yields no entries.
 func (s *Store) Between(netid int, target string, fromRef, toRef Ref, limit int) []Entry {
-	if limit <= 0 {
+	if limit <= 0 || (!fromRef.IsMsgID && !fromRef.IsTime) || (!toRef.IsMsgID && !toRef.IsTime) {
+		return nil
+	}
+	if fromRef.IsTime && toRef.IsTime && fromRef.Time.Equal(toRef.Time) {
 		return nil
 	}
 	entries := s.entriesForQuery(netid, target)
-	if len(entries) == 0 {
+	from, to := -1, -1
+	fromTime, toTime := fromRef.Time, toRef.Time
+	if fromRef.IsMsgID {
+		from = findPivot(entries, fromRef)
+		if from < 0 {
+			return nil
+		}
+		fromTime = entries[from].Time
+	}
+	if toRef.IsMsgID {
+		to = findPivot(entries, toRef)
+		if to < 0 {
+			return nil
+		}
+		toTime = entries[to].Time
+	}
+	backwards := fromTime.After(toTime)
+	if fromRef.IsMsgID && toRef.IsMsgID {
+		backwards = from > to // Message IDs follow stored order despite clock skew.
+	}
+	if backwards {
+		fromRef, toRef = toRef, fromRef
+		from, to = to, from
+	}
+	start, end := 0, len(entries)
+	if fromRef.IsMsgID {
+		start = from + 1
+	}
+	if toRef.IsMsgID {
+		end = to
+	}
+	if start >= end {
 		return nil
 	}
-	from := findPivot(entries, fromRef)
-	if from < 0 {
-		return nil
+	entries = entries[start:end]
+	entries = slices.DeleteFunc(entries, func(e Entry) bool {
+		return (fromRef.IsTime && !e.Time.After(fromRef.Time)) ||
+			(toRef.IsTime && !e.Time.Before(toRef.Time))
+	})
+	if backwards {
+		return slices.Clone(entries[max(0, len(entries)-limit):])
 	}
-	// Determine end: exclusive index of toRef, or end of slice.
-	to := findPivot(entries, toRef)
-	var end int
-	if to < 0 {
-		end = len(entries) // toRef not found → include everything from fromRef
-	} else {
-		end = to // exclusive: do not include toRef itself
-	}
-	if from >= end {
-		return nil
-	}
-	count := end - from
-	if count > limit {
-		count = limit
-	}
-	out := make([]Entry, count)
-	copy(out, entries[from:from+count])
-	return out
+	return slices.Clone(entries[:min(limit, len(entries))])
 }
 
 // Targets returns up to limit targets for netid whose most recent message falls
@@ -349,6 +356,23 @@ func (s *Store) Targets(netid int, fromTime, toTime time.Time, limit int) []Targ
 }
 
 // ─── internal query helpers ──────────────────────────────────────────────────
+
+func (s *Store) entriesAfter(netid int, target string, ref Ref) []Entry {
+	entries := s.entriesForQuery(netid, target)
+	if ref.IsTime {
+		entries = slices.DeleteFunc(entries, func(e Entry) bool { return !e.Time.After(ref.Time) })
+	} else {
+		pivot := findPivot(entries, ref)
+		if pivot < 0 {
+			return nil
+		}
+		entries = entries[pivot+1:]
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return entries
+}
 
 // entriesForQuery returns the entry slice a boundary query (Before/After/
 // Around/Between) should operate on, preferring the in-memory ring over disk
@@ -496,8 +520,7 @@ func findPivot(entries []Entry, ref Ref) int {
 		return -1
 	}
 	if ref.IsTime {
-		// For timestamp refs: find the first entry whose time is at or after
-		// ref.Time. This is the natural boundary for BEFORE/AFTER queries.
+		// AROUND needs an approximate pivot; boundary queries filter by time.
 		for i, e := range entries {
 			if !e.Time.Before(ref.Time) {
 				return i

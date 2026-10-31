@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/exec/lurk/irc"
 )
 
 // command.go is the slash-command parser. It turns one editor line into an
@@ -56,7 +58,9 @@ func init() {
 			desc:  "join a channel",
 			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
 				if m.cli != nil {
-					_ = m.cli.Join(args[0])
+					if err := m.cli.WriteMessage(&irc.Message{Command: irc.JOIN, Params: args}); err != nil {
+						return action{kind: actionSendError, text: fmt.Sprintf("join %s failed: %v", args[0], err)}, nil
+					}
 				}
 				// Open and focus the channel buffer optimistically; the JOIN
 				// echo / NAMES will populate it.
@@ -92,7 +96,9 @@ func init() {
 					return usageError("NICK", commands["NICK"]), nil
 				}
 				if m.cli != nil {
-					_ = m.cli.SetNick(args[0])
+					if err := m.cli.SetNick(args[0]); err != nil {
+						return action{kind: actionSendError, text: fmt.Sprintf("nick failed: %v", err)}, nil
+					}
 				}
 				return action{kind: actionNone}, nil
 			},
@@ -221,7 +227,9 @@ func init() {
 			desc:  "send a notice to a target",
 			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
 				if m.cli != nil {
-					_ = m.cli.Notice(args[0], args[1])
+					if err := m.cli.Notice(args[0], args[1]); err != nil {
+						return action{kind: actionSendError, text: fmt.Sprintf("notice to %s failed: %v", args[0], err)}, nil
+					}
 				}
 				return action{kind: actionNone}, nil
 			},
@@ -314,7 +322,7 @@ func init() {
 			handle: func(m model, args []string, rest string) (action, tea.Cmd) {
 				if m.cli != nil {
 					if err := m.cli.SendRaw(rest); err != nil {
-						return infoAction(fmt.Sprintf("raw: %v", err)), nil
+						return action{kind: actionSendError, text: fmt.Sprintf("raw failed: %v", err)}, nil
 					}
 				}
 				return action{kind: actionNone}, nil
@@ -450,17 +458,17 @@ func splitArgs(s string, max int) []string {
 
 // cmdPart leaves a channel. With no channel argument it parts the active buffer
 // (if it is a channel); a leading channel argument overrides, and the remainder
-// is the part reason. Closing the buffer is left to the JOIN/PART echo + the
-// core's routing; here we only emit the protocol and a close request.
+// is the part reason. The core closes the buffer after PART is queued successfully.
 func cmdPart(m model, args []string, rest string) (action, tea.Cmd) {
 	channel := m.activeBuffer().Title
 	named := false
 	reason := ""
 	if len(args) > 0 {
-		if isChannel(args[0]) {
-			channel = args[0]
+		first, remainder, _ := strings.Cut(rest, " ")
+		if isChannel(first) {
+			channel = first
 			named = true
-			reason = strings.TrimSpace(strings.TrimPrefix(rest, args[0]))
+			reason = strings.TrimSpace(remainder)
 		} else {
 			reason = rest
 		}
@@ -484,10 +492,14 @@ func cmdPart(m model, args []string, rest string) (action, tea.Cmd) {
 		}
 	}
 	if cli != nil {
+		var err error
 		if reason != "" {
-			_ = cli.PartReason(reason, channel)
+			err = cli.PartReason(reason, channel)
 		} else {
-			_ = cli.Part(channel)
+			err = cli.Part(channel)
+		}
+		if err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("part %s failed: %v", channel, err)}, nil
 		}
 	}
 	return action{kind: actionClose, target: channel}, nil
@@ -502,7 +514,9 @@ func cmdQuery(m model, args []string, rest string) (action, tea.Cmd) {
 		return infoAction("cannot /query a channel — use /join"), nil
 	}
 	if len(args) > 1 && m.cli != nil {
-		_ = m.cli.Privmsg(target, args[1])
+		if err := m.cli.Privmsg(target, args[1]); err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("send to %s failed: %v", target, err)}, nil
+		}
 	}
 	return action{kind: actionOpen, target: target, bufferKind: BufferPM}, nil
 }
@@ -518,12 +532,16 @@ func cmdTopic(m model, args []string, rest string) (action, tea.Cmd) {
 	if m.cli == nil {
 		return action{kind: actionNone}, nil
 	}
+	var err error
 	if len(args) == 0 {
-		_ = m.cli.RequestTopic(channel)
-		return action{kind: actionNone}, nil
+		err = m.cli.RequestTopic(channel)
+	} else {
+		// Set: the rest of the line is the new topic (spaces preserved).
+		err = m.cli.SetTopic(channel, rest)
 	}
-	// Set: the rest of the line is the new topic (spaces preserved).
-	_ = m.cli.SetTopic(channel, rest)
+	if err != nil {
+		return action{kind: actionSendError, text: fmt.Sprintf("topic failed: %v", err)}, nil
+	}
 	return action{kind: actionNone}, nil
 }
 
@@ -545,7 +563,9 @@ func cmdWhois(m model, args []string, rest string) (action, tea.Cmd) {
 		return infoAction("usage: /whois <nick>"), nil
 	}
 	if m.cli != nil {
-		_ = m.cli.Whois(nick)
+		if err := m.cli.Whois(nick); err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("whois failed: %v", err)}, nil
+		}
 	}
 	return action{kind: actionNone}, nil
 }
@@ -556,10 +576,8 @@ func cmdWhois(m model, args []string, rest string) (action, tea.Cmd) {
 // RPL_LIST replies are collected by the event bridge and populate the modal.
 func cmdList(m model, args []string, rest string) (action, tea.Cmd) {
 	if m.cli != nil {
-		if len(args) > 0 {
-			_ = m.cli.List(args[0])
-		} else {
-			_ = m.cli.List()
+		if err := m.cli.List(args...); err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("list failed: %v", err)}, nil
 		}
 	}
 	return action{kind: actionListOpen}, nil
@@ -571,7 +589,9 @@ func cmdList(m model, args []string, rest string) (action, tea.Cmd) {
 // buffer).
 func cmdAway(m model, args []string, rest string) (action, tea.Cmd) {
 	if m.cli != nil {
-		_ = m.cli.Away(rest)
+		if err := m.cli.Away(rest); err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("away failed: %v", err)}, nil
+		}
 	}
 	if rest == "" {
 		return infoAction("marked back"), nil
@@ -587,17 +607,19 @@ func cmdNames(m model, args []string, rest string) (action, tea.Cmd) {
 		return infoAction("not a channel; switch to a channel buffer first"), nil
 	}
 	if m.cli != nil {
-		_ = m.cli.Names(channel)
+		if err := m.cli.Names(channel); err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("names failed: %v", err)}, nil
+		}
 	}
 	return action{kind: actionNone}, nil
 }
 
-// rawCmd sends a raw protocol line and returns no action. It is the shared body
-// for the thin command wrappers (/whowas, /motd) that have no local UI effect.
+// rawCmd sends a raw protocol line and reports send failures for retry. It is
+// the shared body for the thin command wrappers (/whowas, /motd, /mode).
 func rawCmd(m model, line string) (action, tea.Cmd) {
 	if m.cli != nil {
 		if err := m.cli.SendRaw(line); err != nil {
-			return infoAction(fmt.Sprintf("%s: %v", strings.ToLower(strings.Fields(line)[0]), err)), nil
+			return action{kind: actionSendError, text: fmt.Sprintf("%s failed: %v", strings.ToLower(strings.Fields(line)[0]), err)}, nil
 		}
 	}
 	return action{kind: actionNone}, nil
@@ -614,7 +636,9 @@ func cmdKick(m model, args []string, rest string) (action, tea.Cmd) {
 		reason = args[1]
 	}
 	if m.cli != nil {
-		_ = m.cli.Kick(ch, args[0], reason)
+		if err := m.cli.Kick(ch, args[0], reason); err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("kick failed: %v", err)}, nil
+		}
 	}
 	return action{kind: actionNone}, nil
 }
@@ -631,7 +655,9 @@ func applyChanMode(m model, sign, letter string, targets []string) (action, tea.
 	}
 	if m.cli != nil {
 		modes := sign + strings.Repeat(letter, len(targets))
-		_ = m.cli.ChannelMode(ch, modes, targets...)
+		if err := m.cli.ChannelMode(ch, modes, targets...); err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("mode failed: %v", err)}, nil
+		}
 	}
 	return action{kind: actionNone}, nil
 }
@@ -661,7 +687,9 @@ func cmdInvite(m model, args []string, rest string) (action, tea.Cmd) {
 		return infoAction("usage: /invite <nick> <channel>"), nil
 	}
 	if m.cli != nil {
-		_ = m.cli.Invite(args[0], channel)
+		if err := m.cli.Invite(args[0], channel); err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("invite failed: %v", err)}, nil
+		}
 	}
 	return action{kind: actionNone}, nil
 }
@@ -674,46 +702,57 @@ func cmdCTCP(m model, args []string, rest string) (action, tea.Cmd) {
 		payload += " " + args[2]
 	}
 	if m.cli != nil {
-		_ = m.cli.Privmsg(args[0], "\x01"+payload+"\x01")
+		if err := m.cli.Privmsg(args[0], "\x01"+payload+"\x01"); err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("CTCP to %s failed: %v", args[0], err)}, nil
+		}
 	}
 	return action{kind: actionNone}, nil
 }
 
 // cmdIgnore hides messages from a nick. With no argument it lists the current
-// ignores. The ignore set is session-only (a reference-type map shared with the
-// model, so this mutation sticks).
+// ignores on the active network.
 func cmdIgnore(m model, args []string, rest string) (action, tea.Cmd) {
+	ignored := m.activeNet().ignored
 	if len(args) == 0 {
-		if len(m.ignored) == 0 {
+		if len(ignored) == 0 {
 			return infoAction("not ignoring anyone"), nil
 		}
-		return infoAction("ignoring: " + strings.Join(sortedSetKeys(m.ignored), " ")), nil
+		return infoAction("ignoring: " + strings.Join(sortedSetKeys(ignored), " ")), nil
 	}
-	m.ignored[asciiLower(args[0])] = true
+	if err := m.setPreference("ignore", args[0], true); err != nil {
+		return infoAction(fmt.Sprintf("ignore unchanged: %v", err)), nil
+	}
 	return infoAction("ignoring " + args[0]), nil
 }
 
 // cmdUnignore stops ignoring a nick.
 func cmdUnignore(m model, args []string, rest string) (action, tea.Cmd) {
-	delete(m.ignored, asciiLower(args[0]))
+	if err := m.setPreference("ignore", args[0], false); err != nil {
+		return infoAction(fmt.Sprintf("ignore unchanged: %v", err)), nil
+	}
 	return infoAction("no longer ignoring " + args[0]), nil
 }
 
 // cmdHighlight adds an extra mention word. With no argument it lists the words.
 func cmdHighlight(m model, args []string, rest string) (action, tea.Cmd) {
+	highlights := m.activeNet().highlights
 	if len(args) == 0 {
-		if len(m.highlights) == 0 {
+		if len(highlights) == 0 {
 			return infoAction("no extra highlight words"), nil
 		}
-		return infoAction("highlight words: " + strings.Join(sortedSetKeys(m.highlights), " ")), nil
+		return infoAction("highlight words: " + strings.Join(sortedSetKeys(highlights), " ")), nil
 	}
-	m.highlights[asciiLower(args[0])] = true
+	if err := m.setPreference("highlight", args[0], true); err != nil {
+		return infoAction(fmt.Sprintf("highlight unchanged: %v", err)), nil
+	}
 	return infoAction("highlighting " + args[0]), nil
 }
 
 // cmdUnhighlight removes an extra mention word.
 func cmdUnhighlight(m model, args []string, rest string) (action, tea.Cmd) {
-	delete(m.highlights, asciiLower(args[0]))
+	if err := m.setPreference("highlight", args[0], false); err != nil {
+		return infoAction(fmt.Sprintf("highlight unchanged: %v", err)), nil
+	}
 	return infoAction("no longer highlighting " + args[0]), nil
 }
 
@@ -750,6 +789,7 @@ func cmdDisconnect(m model, args []string, rest string) (action, tea.Cmd) {
 	if net == nil || net.cli == nil {
 		return infoAction("no active connection"), nil
 	}
+	net.disconnecting = true
 	_ = net.cli.Quit(rest)
 	_ = net.cli.Close()
 	return infoAction("disconnecting " + net.label() + "…"), nil
@@ -759,7 +799,14 @@ func cmdDisconnect(m model, args []string, rest string) (action, tea.Cmd) {
 // protocol is sent).
 func cmdClear(m model, args []string, rest string) (action, tea.Cmd) {
 	b := m.activeBuffer()
+	m.cancelHistory(b)
 	b.lines = nil
+	b.lineMeta = nil
+	b.seenIDs = nil
+	b.historyBefore = historyLine{}
+	b.historyLoaded = false
+	b.historyEnded = false
+	b.catchupRef = ""
 	b.gotHistory = false
 	b.refresh()
 	return action{kind: actionNone}, nil
@@ -773,20 +820,17 @@ func cmdClose(m model, args []string, rest string) (action, tea.Cmd) {
 	if len(args) > 0 {
 		target = args[0]
 	}
-	channel := target
-	cli := m.cli
-	if channel == "" {
-		channel = m.activeBuffer().Title
-	} else {
-		// A named target may belong to a non-active network; PART its OWN server
-		// (resolving the client through the buffer's owning network), not whichever
-		// network is currently focused.
-		if b, _ := m.findBuffer(target); b != nil && b.net != nil {
-			cli = b.net.cli
+	b := m.activeBuffer()
+	if target != "" {
+		b, _ = m.findBuffer(target)
+		if b == nil {
+			return infoAction("no such buffer: " + target), nil
 		}
 	}
-	if isChannel(channel) && cli != nil {
-		_ = cli.Part(channel)
+	if b.Kind == BufferChannel && b.net != nil && b.net.cli != nil {
+		if err := b.net.cli.Part(b.Title); err != nil {
+			return action{kind: actionSendError, text: fmt.Sprintf("close %s failed: %v", b.Title, err)}, nil
+		}
 	}
 	return action{kind: actionClose, target: target}, nil
 }

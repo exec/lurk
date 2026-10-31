@@ -309,20 +309,20 @@ func TestAroundNotFound(t *testing.T) {
 
 // ─── Between tests ────────────────────────────────────────────────────────
 
-func TestBetweenInclusive(t *testing.T) {
+func TestBetweenExclusive(t *testing.T) {
 	s := newTestStore(t)
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	entries := seedEntries(t, s, 1, "#between", 6, base)
-	// msg0..msg5; between msg1 and msg4 (exclusive) → msg1, msg2, msg3.
+	// Both endpoints are excluded: between msg1 and msg4 → msg2, msg3.
 
 	from := Ref{IsMsgID: true, MsgID: entries[1].MsgID}
 	to := Ref{IsMsgID: true, MsgID: entries[4].MsgID}
 	got := s.Between(1, "#between", from, to, 10)
-	if len(got) != 3 {
-		t.Fatalf("Between(msg1, msg4): got %d, want 3 (msg1,msg2,msg3)", len(got))
+	if len(got) != 2 {
+		t.Fatalf("Between(msg1, msg4): got %d, want 2 (msg2,msg3)", len(got))
 	}
 	for i, e := range got {
-		want := fmt.Sprintf("msg%d", i+1)
+		want := fmt.Sprintf("msg%d", i+2)
 		if e.Params[1] != want {
 			t.Errorf("[%d] = %q, want %q", i, e.Params[1], want)
 		}
@@ -333,13 +333,13 @@ func TestBetweenToRefNotFound(t *testing.T) {
 	s := newTestStore(t)
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	entries := seedEntries(t, s, 1, "#btnf", 4, base)
-	// toRef not found → all entries from fromRef to end.
+	// An unknown endpoint must not widen the query to the end of history.
 
 	from := Ref{IsMsgID: true, MsgID: entries[1].MsgID}
 	to := Ref{IsMsgID: true, MsgID: "notexist"}
 	got := s.Between(1, "#btnf", from, to, 10)
-	if len(got) != 3 { // msg1, msg2, msg3
-		t.Fatalf("Between(toRef=notfound): got %d, want 3", len(got))
+	if len(got) != 0 {
+		t.Fatalf("Between(toRef=notfound): got %d, want 0", len(got))
 	}
 }
 
@@ -364,13 +364,13 @@ func TestBetweenLimit(t *testing.T) {
 
 	from := Ref{IsMsgID: true, MsgID: entries[0].MsgID}
 	to := Ref{IsMsgID: true, MsgID: entries[5].MsgID}
-	// range is msg0..msg4 (5 entries), limit=3 → msg0,msg1,msg2.
+	// Range is msg1..msg4, limit=3 → msg1,msg2,msg3.
 	got := s.Between(1, "#blim", from, to, 3)
 	if len(got) != 3 {
 		t.Fatalf("Between limit=3: got %d, want 3", len(got))
 	}
 	for i, e := range got {
-		want := fmt.Sprintf("msg%d", i)
+		want := fmt.Sprintf("msg%d", i+1)
 		if e.Params[1] != want {
 			t.Errorf("[%d] = %q, want %q", i, e.Params[1], want)
 		}
@@ -689,15 +689,15 @@ func TestBoundaryQueriesSeeRotatedEntries(t *testing.T) {
 		t.Errorf("Around(lastRot): pivot msgid %q not in result", lastRot.MsgID)
 	}
 
-	// BETWEEN spanning the rotation boundary (inclusive start, exclusive end).
+	// BETWEEN spanning the rotation boundary, excluding both endpoints.
 	between := s.Between(netid, target,
 		Ref{IsMsgID: true, MsgID: firstRot.MsgID},
 		Ref{IsMsgID: true, MsgID: lastCur.MsgID}, total)
-	if len(between) != total-1 {
-		t.Fatalf("Between(firstRot, lastCur): got %d entries, want %d", len(between), total-1)
+	if len(between) != total-2 {
+		t.Fatalf("Between(firstRot, lastCur): got %d entries, want %d", len(between), total-2)
 	}
-	if between[0].MsgID != firstRot.MsgID {
-		t.Errorf("Between: first entry msgid = %q, want %q", between[0].MsgID, firstRot.MsgID)
+	if len(between) > 0 && between[0].MsgID != before[1].MsgID {
+		t.Errorf("Between: first entry msgid = %q, want %q", between[0].MsgID, before[1].MsgID)
 	}
 
 	// Every merged result must be in chronological order with no duplicates.

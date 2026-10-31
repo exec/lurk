@@ -57,6 +57,14 @@ type Buffer struct {
 	// Kind is the window type (server/channel/PM).
 	Kind BufferKind
 
+	// Drafts and history recall belong to the conversation, including cursor positions.
+	draft              string
+	draftCursor        int
+	historyBrowsing    bool
+	historyIndex       int
+	historyDraft       string
+	historyDraftCursor int
+
 	// Unread counts messages received while the buffer was not focused; the
 	// sidebar shows it as an activity marker and switchTo clears it.
 	Unread int
@@ -69,7 +77,13 @@ type Buffer struct {
 	// ready-to-render row (ANSI included), produced by theme.formatLine. Stored
 	// pre-format because formatting needs the event and the user's nick at
 	// receive time, not at render time.
-	lines []string
+	lines         []string
+	lineMeta      []historyLine
+	seenIDs       map[string]bool
+	catchupRef    string
+	historyBefore historyLine // oldest fetched message, including filtered rows
+	historyLoaded bool
+	historyEnded  bool
 
 	// vp is the scrollback viewport. It is sized in layout() and re-filled from
 	// lines whenever content changes or the pane resizes.
@@ -157,14 +171,30 @@ func (b *Buffer) markHistory(t theme) {
 // addLine returns the number of lines dropped off the front by the scrollback
 // trim (0 when nothing was dropped), so callers holding absolute indices into
 // lines — the model's scrollback-search matches — can shift them to stay valid.
-func (b *Buffer) addLine(s string) int {
+func (b *Buffer) addLine(s string, meta ...historyLine) int {
+	b.alignHistory()
+	var info historyLine
+	if len(meta) > 0 {
+		info = meta[0]
+	}
 	b.lines = append(b.lines, s)
+	b.lineMeta = append(b.lineMeta, info)
+	if info.id != "" {
+		if b.seenIDs == nil {
+			b.seenIDs = make(map[string]bool)
+		}
+		b.seenIDs[info.id] = true
+	}
 	if len(b.lines) > scrollbackLimit {
 		// Drop the oldest lines. Re-slice onto a fresh backing array
 		// periodically would be tidier, but the simple re-slice keeps amortized
 		// cost low and the excess is bounded by one line per append.
 		drop := len(b.lines) - scrollbackLimit
+		for _, line := range b.lineMeta[:drop] {
+			delete(b.seenIDs, line.id)
+		}
 		b.lines = b.lines[drop:]
+		b.lineMeta = b.lineMeta[drop:]
 		// Keep the read marker pointing at the same logical line.
 		if b.readMarker -= drop; b.readMarker < 0 {
 			b.readMarker = 0

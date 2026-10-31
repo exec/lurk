@@ -116,9 +116,9 @@ func TestHistoryNavigation(t *testing.T) {
 	m := newTestModel()
 	m = pushHistory(m, "first")
 	m = pushHistory(m, "second")
-	// pushHistory leaves the cursor just past the end.
-	if m.histIndex != len(m.history) {
-		t.Fatalf("after push, histIndex = %d, want %d", m.histIndex, len(m.history))
+	// pushHistory leaves the editor outside history recall.
+	if m.activeBuffer().historyBrowsing {
+		t.Fatal("pushHistory left history recall active")
 	}
 
 	// Up recalls the most recent line.

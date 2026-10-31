@@ -62,6 +62,7 @@ func main() {
 	// With no -server, open the launcher: pick (or create) a saved network and
 	// build the connection config from it. The launcher is a self-contained TUI
 	// that runs to completion before we connect.
+	savedName := ""
 	if cfg.Server == "" {
 		net, defaults, err := resolveNetwork(ctx, store, storePath)
 		if err != nil {
@@ -71,6 +72,7 @@ func main() {
 			return // user quit the launcher without choosing
 		}
 		var channels []string
+		savedName = net.Name
 		cfg, channels = networkToConfig(*net, defaults)
 		channel = strings.Join(channels, ",")
 	}
@@ -91,14 +93,15 @@ func main() {
 		runPlain(ctx, cancel, regCtx, c, channel)
 		return
 	}
-	runTUI(ctx, regCtx, c, channel, logDir, makeConnectFunc(ctx, store))
+	runTUI(ctx, regCtx, c, channel, logDir, makeConnectFunc(ctx, storePath), tui.SavedConfig{Path: storePath, Network: savedName})
 }
 
 // runTUI connects the client and hands control to the Bubble Tea interface. The
 // TUI consumes the client's event stream (no print handlers are registered);
 // tui.Run owns the program lifecycle and returns when the user quits or the
 // connection ends, after which we tear the client down cleanly.
-func runTUI(ctx, regCtx context.Context, c *client.Client, channel, logDir string, connect tui.ConnectFunc) {
+func runTUI(ctx, regCtx context.Context, c *client.Client, channel, logDir string, connect tui.ConnectFunc, saved tui.SavedConfig) {
+	c.Events() // Subscribe before registration and autojoin history can arrive.
 	if err := c.Connect(regCtx); err != nil {
 		log.Fatalf("lurk: connect: %v", err)
 	}
@@ -110,7 +113,7 @@ func runTUI(ctx, regCtx context.Context, c *client.Client, channel, logDir strin
 		}
 	}
 
-	err := tui.Run(ctx, c, logDir, connect)
+	err := tui.Run(ctx, c, logDir, connect, saved)
 
 	// tui.Run has restored the primary screen by now; tear down the connection.
 	_ = c.Quit("lurk signing off")
@@ -449,6 +452,7 @@ func networkToConfig(n config.Network, def config.Identity) (client.Config, []st
 		AutoReconnect:      true,
 		Version:            "lurk " + version,
 		Highlights:         n.Highlights,
+		Ignores:            n.Ignores,
 		SASL: client.SASLConfig{
 			Mechanism: strings.ToUpper(n.SASL.Mechanism),
 			Username:  n.SASL.Username,
@@ -503,16 +507,21 @@ func loadStore(configPath string) (*config.File, string, error) {
 }
 
 // makeConnectFunc returns the callback the TUI's /connect command uses to dial an
-// additional saved network at runtime. It resolves the name against store, dials
+// additional saved network at runtime. It reads the current config, dials
 // (with a fresh registration timeout derived from ctx), and requests autojoins.
-func makeConnectFunc(ctx context.Context, store *config.File) tui.ConnectFunc {
+func makeConnectFunc(ctx context.Context, path string) tui.ConnectFunc {
 	return func(name string) (*client.Client, error) {
+		store, err := config.LoadFrom(path)
+		if err != nil {
+			return nil, err
+		}
 		n, ok := store.Get(name)
 		if !ok {
 			return nil, fmt.Errorf("no saved network named %q", name)
 		}
 		cfg, channels := networkToConfig(n, store.Defaults)
 		c := client.New(cfg)
+		c.Events()
 		rc, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		if err := c.Connect(rc); err != nil {

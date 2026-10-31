@@ -139,6 +139,10 @@ type Entry struct {
 	// 24-char string). Stable across restarts because it is persisted in JSONL.
 	MsgID string `json:"msgid"`
 
+	// UpstreamMsgID identifies the original message on the upstream network.
+	// It is optional so records written before replay deduplication still load.
+	UpstreamMsgID string `json:"upstream_msgid,omitempty"`
+
 	// Target is the normalised routing target: a channel name, or (for PMs)
 	// the other party's nick.
 	Target string `json:"target"`
@@ -299,7 +303,11 @@ func (s *Store) Close() {
 // stored is false when:
 //   - the event is synthetic or filtered (not PRIVMSG/NOTICE),
 //   - the target is unroutable, or
-//   - the per-netid target cap is exceeded (drop-oldest).
+//   - the per-netid target cap is exceeded (drop-oldest), or
+//   - the upstream message ID is already stored for this network and target.
+//
+// A duplicate returns its existing msgid with stored=false; other failures
+// return an empty msgid. Messages without upstream IDs are always distinct.
 //
 // When stored is true, msgid is the canonical identifier for the stored entry —
 // the same value that CHATHISTORY will return for this message. Callers (e.g.
@@ -348,6 +356,33 @@ func (s *Store) Ingest(netid int, ev *client.Event) (msgid string, stored bool) 
 		return "", false
 	}
 
+	safe := safeName(target)
+	b, ok := s.getOrCreate(netid, safe)
+	if !ok {
+		// Target cap exceeded; drop silently (already logged in getOrCreate).
+		return "", false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	upstreamID := ev.Message.Tags.Get("msgid")
+	if upstreamID != "" {
+		for _, previous := range b.ring {
+			if previous.UpstreamMsgID == upstreamID {
+				return previous.MsgID, false
+			}
+		}
+		// Replays can reach beyond the ring, including into the rotation file.
+		if ev.BatchType() == "chathistory" && b.ringLen == s.ringSize {
+			path := jsonlPath(s.dir, netid, safe)
+			for _, file := range []string{path, path + ".1"} {
+				if id := findUpstreamMessageID(file, upstreamID); id != "" {
+					return id, false
+				}
+			}
+		}
+	}
+
 	// Sanitize all params with SanitizeForRelay: strips terminal-hijacking
 	// escapes (ESC/C1/DEL/Trojan-Source bidi controls) while PRESERVING the
 	// inline IRC formatting codes (bold \x02, colour \x03, italic \x1d, etc.).
@@ -363,23 +398,14 @@ func (s *Store) Ingest(netid int, ev *client.Event) (msgid string, stored bool) 
 	// fabricated timestamps from corrupting CHATHISTORY ordering.
 	now := time.Now()
 	entry := Entry{
-		Time:    clampIngestTime(ev.Time(), now),
-		MsgID:   newMsgID(),
-		Target:  client.SanitizeForRelay(target),
-		Source:  client.SanitizeForRelay(ev.Source()),
-		Command: cmd,
-		Params:  sanitizedParams,
+		Time:          clampIngestTime(ev.Time(), now),
+		MsgID:         newMsgID(),
+		UpstreamMsgID: upstreamID,
+		Target:        client.SanitizeForRelay(target),
+		Source:        client.SanitizeForRelay(ev.Source()),
+		Command:       cmd,
+		Params:        sanitizedParams,
 	}
-
-	safe := safeName(target)
-	b, ok := s.getOrCreate(netid, safe)
-	if !ok {
-		// Target cap exceeded; drop silently (already logged in getOrCreate).
-		return "", false
-	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
 
 	written, err := s.appendLineLocked(b, netid, safe, entry)
 	if err != nil {
@@ -394,6 +420,31 @@ func (s *Store) Ingest(netid int, ev *client.Event) (msgid string, stored bool) 
 	}
 	pushRing(b, entry, s.ringSize)
 	return entry.MsgID, true
+}
+
+// findUpstreamMessageID scans without retaining entries, keeping replay lookup
+// memory bounded even when an unrotated log has outgrown the ring.
+func findUpstreamMessageID(path, upstreamID string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("backlog: replay lookup: %v", err)
+		}
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, maxJSONLLineBytes), maxJSONLLineBytes)
+	for sc.Scan() {
+		var e Entry
+		if json.Unmarshal(sc.Bytes(), &e) == nil && e.UpstreamMsgID == upstreamID && e.MsgID != "" {
+			return e.MsgID
+		}
+	}
+	if err := sc.Err(); err != nil {
+		log.Printf("backlog: replay lookup %s: %v", path, err)
+	}
+	return ""
 }
 
 // Latest returns the most recent limit entries for the given (netid, target) in

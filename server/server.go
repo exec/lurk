@@ -1195,6 +1195,8 @@ func (s *session) sendWelcome() error {
 		"CHANTYPES=#",
 		"PREFIX=(qaohv)~&@%+",
 		"NETWORK=lurkd",
+		fmt.Sprintf("CHATHISTORY=%d", maxCHATHISTORYLimit),
+		"MSGREFTYPES=msgid,timestamp",
 		bounceNetIDToken,
 		"are supported by this server",
 	}

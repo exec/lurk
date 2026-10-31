@@ -51,5 +51,35 @@ func (m model) addConnected(name string, cli *client.Client) (model, tea.Cmd) {
 		m.switchTo(len(m.buffers) - 1)
 	}
 	m = layout(m)
-	return m, waitForIRC(net)
+	return m, tea.Batch(waitForIRC(net), func() tea.Msg { return historyStartMsg{net: net} })
+}
+
+// networkClosed reports the terminal disconnect before its buffers disappear.
+func (m model) networkClosed(net *network) (model, tea.Cmd) {
+	if !m.hasNetwork(net) {
+		return m, nil
+	}
+	note := "disconnected from " + sanitize(net.label())
+	if !net.disconnecting {
+		reason := net.disconnectReason
+		if reason == "" && net.cli != nil {
+			if err := net.cli.Err(); err != nil {
+				reason = sanitize(err.Error())
+			}
+		}
+		if reason != "" {
+			note += ": " + reason
+		}
+	}
+	m = m.removeNetwork(net)
+	if len(m.networks) == 0 {
+		m.quitting = true
+		if !net.disconnecting {
+			m.exitReason = note
+		}
+		return m, tea.Quit
+	}
+	// The new focus may never have been displayed; size and fill its viewport.
+	m = layout(m)
+	return appendInfo(m, m.activeBuffer(), note), nil
 }

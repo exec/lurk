@@ -190,6 +190,11 @@ func (c *Client) Highlights() []string {
 	return append([]string(nil), c.cfg.Highlights...)
 }
 
+// Ignores returns a copy of the configured ignored nicknames.
+func (c *Client) Ignores() []string {
+	return append([]string(nil), c.cfg.Ignores...)
+}
+
 // CommonChannels returns the channels the client currently shares with nick —
 // channels we are in where nick is a member — sorted. It is most useful read
 // just before a QUIT/NICK removes or renames the member everywhere, to fan the
@@ -441,6 +446,7 @@ func (c *Client) resetRegistration() {
 	c.regOnce = sync.Once{}
 	c.regErr = nil
 	c.conv = nil
+	c.st.selfUser, c.st.selfHost = "", ""
 	c.mu.Unlock()
 	// Reset the nick-collision counter. This is safe without c.mu because
 	// resetRegistration is called before the run goroutine starts; the goroutine

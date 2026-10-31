@@ -16,7 +16,7 @@ import (
 // conversion back to a config.Network on save.
 
 // saslMechs is the SASL option cycle shown in the form; index 0 ("") disables it.
-var saslMechs = []string{"", "PLAIN", "EXTERNAL"}
+var saslMechs = []string{"", "PLAIN", "EXTERNAL", "SCRAM-SHA-256"}
 
 type fieldKind int
 
@@ -38,10 +38,11 @@ type formField struct {
 
 // netForm is the add/edit form's state.
 type netForm struct {
-	fields []formField
-	idx    int    // focused field
-	err    string // validation error to display
-	title  string // "Add network" or "Edit <name>"
+	original config.Network // preserve settings without form fields
+	fields   []formField
+	idx      int    // focused field
+	err      string // validation error to display
+	title    string // "Add network" or "Edit <name>"
 }
 
 // Field indices — must stay in sync with the order built in newNetForm.
@@ -95,7 +96,7 @@ func newNetForm(n config.Network, def config.Identity) *netForm {
 		title = "Edit " + n.Name
 	}
 
-	f := &netForm{title: title}
+	f := &netForm{original: n, title: title}
 	f.fields = []formField{
 		fName:         withLabel("Name", mk(n.Name, false)),
 		fAddr:         withLabel("Address", mk(n.Addr, false)),
@@ -174,16 +175,16 @@ func (f *netForm) toNetwork() (config.Network, error) {
 		return config.Network{}, errors.New("Name and Address are required")
 	}
 
-	n := config.Network{
-		Name:     name,
-		Addr:     addr,
-		TLS:      f.fields[fTLS].on,
-		Nick:     val(fNick),
-		User:     val(fUser),
-		Realname: val(fReal),
-		Pass:     f.fields[fPass].input.Value(),
-		Channels: splitChannels(val(fChannels)),
-	}
+	n := f.original
+	n.Name = name
+	n.Addr = addr
+	n.TLS = f.fields[fTLS].on
+	n.Nick = val(fNick)
+	n.User = val(fUser)
+	n.Realname = val(fReal)
+	n.Pass = f.fields[fPass].input.Value()
+	n.Channels = splitChannels(val(fChannels))
+	n.SASL = config.SASL{}
 	if mech := saslMechs[f.fields[fMech].mech]; mech != "" {
 		n.SASL = config.SASL{
 			Mechanism: mech,
@@ -191,6 +192,7 @@ func (f *netForm) toNetwork() (config.Network, error) {
 			Password:  f.fields[fSaslPass].input.Value(),
 		}
 	}
+	n.Bounce = config.BounceConfig{}
 	if baddr := val(fBounceAddr); baddr != "" {
 		raw := val(fBounceNetID)
 		if raw == "" {

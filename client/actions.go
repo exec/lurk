@@ -3,6 +3,7 @@ package client
 import (
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/exec/lurk/irc"
@@ -66,20 +67,25 @@ func (c *Client) List(args ...string) error {
 	return c.write(irc.LIST, strings.Join(args, ","))
 }
 
-// messageBudget returns the maximum text-parameter byte length for one command
-// line to target so the full wire line "<command> <target> :<text>\r\n" stays
-// within IRC's 512-byte limit. It is target-aware because a long STATUSMSG +
-// large-CHANNELLEN target eats into the budget: a fixed cap that ignored the
-// target could serialize past 512 and be truncated (or rejected with 417).
-//
-// We count only OUR sent line; the server's own "<nick>!<user>@<host>" source
-// prefix it adds when relaying is not part of what we transmit, so it is not
-// counted here.
-func messageBudget(command, target string) int {
+// messageBudget reserves the server-added sender prefix as well as the command
+// and target, so the relayed line fits IRC's 512-byte limit.
+func (c *Client) messageBudget(command, target string) int {
 	const wireLimit = 512
 	const crlf = 2
-	// "<command> <target> :" + CRLF: command, one space, target, " :", CRLF.
-	overhead := len(command) + 1 + len(target) + len(" :") + crlf
+	c.mu.Lock()
+	nickLen, userLen, hostLen := len(c.st.self), len(c.st.selfUser), len(c.st.selfHost)
+	c.mu.Unlock()
+	if nickLen == 0 {
+		nickLen = len(c.cfg.Nick)
+	}
+	if userLen == 0 {
+		userLen = max(10, len(c.cfg.User)+1) // Allow an ident '~' before learning our mask.
+	}
+	if hostLen == 0 {
+		hostLen = 253 // Allow a full DNS hostname before our first self-prefixed event.
+	}
+	// ":nick!user@host <command> <target> :<text>\r\n".
+	overhead := nickLen + userLen + hostLen + len(":!@ ") + len(command) + 1 + len(target) + len(" :") + crlf
 	budget := wireLimit - overhead
 	if budget < 1 {
 		budget = 1 // pathological (huge target): still emit minimal chunks
@@ -90,10 +96,10 @@ func messageBudget(command, target string) int {
 // Privmsg sends text to target (a channel or nick) as a PRIVMSG, splitting a
 // message longer than a single wire line into multiple PRIVMSGs (on word
 // boundaries where possible) so it is delivered in full rather than truncated.
-// The split budget is target-aware (see messageBudget) so even a long target
-// keeps every line within the 512-byte wire limit.
+// The split budget accounts for the target and our server-confirmed sender
+// prefix, keeping relayed lines within the 512-byte wire limit.
 func (c *Client) Privmsg(target, text string) error {
-	for _, chunk := range splitMessage(text, messageBudget(irc.PRIVMSG, target)) {
+	for _, chunk := range splitMessage(text, c.messageBudget(irc.PRIVMSG, target)) {
 		if err := c.write(irc.PRIVMSG, target, chunk); err != nil {
 			return err
 		}
@@ -103,7 +109,7 @@ func (c *Client) Privmsg(target, text string) error {
 
 // Notice sends a NOTICE to target, split the same way as Privmsg.
 func (c *Client) Notice(target, text string) error {
-	for _, chunk := range splitMessage(text, messageBudget(irc.NOTICE, target)) {
+	for _, chunk := range splitMessage(text, c.messageBudget(irc.NOTICE, target)) {
 		if err := c.write(irc.NOTICE, target, chunk); err != nil {
 			return err
 		}
@@ -127,7 +133,7 @@ const (
 // the closing \x01). The split budget is the target-aware PRIVMSG budget minus
 // the framing overhead, so the framed wire line still fits.
 func (c *Client) Action(target, text string) error {
-	budget := messageBudget(irc.PRIVMSG, target) - len(actionPrefix) - len(actionSuffix)
+	budget := c.messageBudget(irc.PRIVMSG, target) - len(actionPrefix) - len(actionSuffix)
 	if budget < 1 {
 		budget = 1 // pathological (huge target): still emit minimal chunks
 	}
@@ -260,12 +266,42 @@ func (c *Client) ChannelMode(channel, modes string, args ...string) error {
 // selector means "from the latest message backwards"; limit caps the number of
 // messages returned. The server answers with a "chathistory" BATCH of past
 // PRIVMSG/NOTICE lines (each carrying an @time tag). A non-positive limit is
-// treated as 1, the protocol minimum.
+// treated as 1, the protocol minimum. Limits are capped by the server's
+// CHATHISTORY ISUPPORT token when advertised.
 func (c *Client) ChatHistoryLatest(target string, limit int) error {
+	return c.write(irc.CHATHISTORY, "LATEST", target, "*", strconv.Itoa(c.historyLimit(limit)))
+}
+
+// ChatHistoryBefore requests a page older than ref (msgid=… or timestamp=…).
+// Replies arrive as a chathistory BATCH on Events.
+func (c *Client) ChatHistoryBefore(target, ref string, limit int) error {
+	return c.write(irc.CHATHISTORY, "BEFORE", target, ref, strconv.Itoa(c.historyLimit(limit)))
+}
+
+// ChatHistoryAfter requests a page newer than ref (msgid=… or timestamp=…).
+// Replies arrive as a chathistory BATCH on Events.
+func (c *Client) ChatHistoryAfter(target, ref string, limit int) error {
+	return c.write(irc.CHATHISTORY, "AFTER", target, ref, strconv.Itoa(c.historyLimit(limit)))
+}
+
+// ChatHistoryTargets discovers conversations whose latest message falls between
+// from and to. Use from > to for newest-first pagination. Replies arrive in a
+// draft/chathistory-targets BATCH on Events.
+func (c *Client) ChatHistoryTargets(from, to time.Time, limit int) error {
+	return c.write(irc.CHATHISTORY, "TARGETS", "timestamp="+from.UTC().Format("2006-01-02T15:04:05.000Z"),
+		"timestamp="+to.UTC().Format("2006-01-02T15:04:05.000Z"), strconv.Itoa(c.historyLimit(limit)))
+}
+
+func (c *Client) historyLimit(limit int) int {
 	if limit < 1 {
 		limit = 1
 	}
-	return c.write(irc.CHATHISTORY, "LATEST", target, "*", strconv.Itoa(limit))
+	if value, ok := c.ISupport("CHATHISTORY"); ok {
+		if max, err := strconv.Atoi(value); err == nil && max > 0 && limit > max {
+			limit = max
+		}
+	}
+	return limit
 }
 
 // SendTagged sends a command with client-only message tags. Tag keys keep their

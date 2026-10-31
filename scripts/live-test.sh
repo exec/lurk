@@ -11,10 +11,11 @@
 #      starts Ergo on a loopback plaintext port.
 #   3. Builds lurkd, points it at that Ergo as one upstream network, and starts
 #      it on a loopback TLS port (self-signed cert auto-generated).
-#   4. Runs the LURK_TEST_SERVER / LURKD_TEST_ADDR-gated tests in ./client:
+#   4. Runs the LURK_TEST_SERVER / LURKD_TEST_ADDR-gated tests in ./client and ./tui:
 #        - TestLiveServer        (single client round-trip)
 #        - TestLiveTwoClients    (two clients exchange messages)
 #        - TestLiveLurkdFanout   (two clients bound via lurkd receive a fan-out)
+#        - TestLiveHistoryPaging (TUI paging, deduplication, PM discovery, reconnect)
 #   5. Stops both daemons and removes the temp workdir (always, via trap).
 #
 # Everything binds to 127.0.0.1 on high ports, so it does not collide with a
@@ -146,7 +147,7 @@ LURKD_TEST_ADDR="127.0.0.1:${LURKD_PORT}" \
 LURKD_TEST_NETID=1 \
 LURKD_TEST_CHANNEL='#fan' \
 LURK_TEST_CHANNEL='#lurk' \
-	go test ./client/ -run 'TestLive' -v -count=1
+	go test ./client/ ./tui/ -run 'TestLive' -v -count=1
 RESULT=$?
 set -e
 

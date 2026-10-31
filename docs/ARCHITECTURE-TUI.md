@@ -43,9 +43,11 @@ folds it into the unified sidebar; `/disconnect` drops the current one.
 | `command.go` | the slash-command parser and handlers (`/join`, `/msg`, `/mode`, `/kick`, …) |
 | `keys.go` | keybindings and the on-screen help footer |
 | `network.go`, `connect.go` | the `network` type and the runtime `/connect` flow |
+| `preferences.go` | per-network ignore/highlight persistence by saved profile name, with atomic config writes |
 | `launcher.go`, `launcher_form.go` | the pre-connect network launcher (a separate Bubble Tea program) |
 | `channellist.go` | the `/list` channel-directory modal (bubbles/list + a Lip Gloss compositor overlay) |
 | `search.go` | scrollback search (`/search`, Ctrl-R to cycle matches) |
+| `history.go` | bounded history request queue, replay merge/deduplication, paging and reconnect/PM recovery |
 | `nickmenu.go` | the per-user context menu (message / whois / op / voice / kick) |
 
 ## The event bridge

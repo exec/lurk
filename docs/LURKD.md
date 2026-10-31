@@ -243,9 +243,14 @@ A short tour; the full design is in [`LURKD-DESIGN.md`](LURKD-DESIGN.md).
 - **Backlog store** (`backlog/`) — a structured JSONL store per `(network, target)`
   with a server-assigned opaque msgid and `server-time` on every line, fronted by
   an in-memory ring. The same msgid is stamped on the live copy, so a message you
-  saw live resolves in a later CHATHISTORY query.
+  saw live resolves in a later CHATHISTORY query. New entries also retain the
+  upstream msgid, preventing repeated upstream history from being stored or
+  relayed again. This survives restarts and covers the ring and retained JSONL,
+  including the rotation file. Messages without upstream IDs and older records
+  written without this metadata cannot be reliably deduplicated.
 - **CHATHISTORY** (`server/chathistory.go`) — serves
-  `LATEST/BEFORE/AFTER/AROUND/BETWEEN/TARGETS` in `draft/chathistory` batches.
+  `LATEST/BEFORE/AFTER/AROUND/BETWEEN` in `chathistory` batches and `TARGETS`
+  in `draft/chathistory-targets` batches.
   Attaching clients receive only a synthetic JOIN/topic/names **state burst** —
   no message replay is pushed; the client pulls history itself.
 - **Cursors** (`server/cursor.go`) — per `(client, network, target)` read
@@ -316,9 +321,10 @@ which hosts can attempt a connection in the first place.
 - **One connection per network on the lurk side.** lurk opens one connection per
   bound network; the single-connection multiplex (gamja/goguma-style) is the
   intended future evolution and the v1 design keeps it an additive, UI-only change.
-- `CHANGENETWORK`/`DELNETWORK` do not roll back the in-memory change if the config
-  save fails (a restart resyncs from disk); `ADDNETWORK` does.
-- No SCRAM yet (PLAIN over TLS for bouncer auth; PLAIN/EXTERNAL upstream).
+- Client-facing authentication supports PLAIN over TLS. Upstream authentication
+  supports PLAIN, EXTERNAL, and SCRAM-SHA-256 through the client library.
+- Capability advertisement and feature coverage differ from a direct IRC
+  connection; see the [IRCv3 support matrix](IRCV3.md).
 
 ---
 

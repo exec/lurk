@@ -56,6 +56,8 @@ const (
 	// actionSend sends a PRIVMSG. An empty target means the active buffer. The
 	// core echoes locally when echo-message is not negotiated.
 	actionSend
+	// actionSendError reports a failed send and restores the submitted input.
+	actionSendError
 	// actionSwitch focuses an existing buffer by target name, or by index when
 	// target is empty.
 	actionSwitch
@@ -85,6 +87,7 @@ type action struct {
 	kind       actionKind
 	target     string
 	text       string
+	input      string // original submitted line, including command and recipient
 	index      int
 	bufferKind BufferKind
 }
@@ -142,7 +145,8 @@ func submit(m model) (model, action, tea.Cmd) {
 	line := m.input.Value()
 	if strings.TrimSpace(line) == "" {
 		m.input.Reset()
-		m.histIndex = len(m.history)
+		m.activeBuffer().historyBrowsing = false
+		m.activeBuffer().historyDraft = ""
 		return m, action{kind: actionNone}, nil
 	}
 
@@ -150,6 +154,7 @@ func submit(m model) (model, action, tea.Cmd) {
 	m.input.Reset()
 
 	act, cmd := runLine(m, line)
+	act.input = line
 	return m, act, cmd
 }
 
@@ -160,42 +165,57 @@ func pushHistory(m model, line string) model {
 	if n := len(m.history); n == 0 || m.history[n-1] != line {
 		m.history = append(m.history, line)
 	}
-	m.histIndex = len(m.history)
+	m.activeBuffer().historyBrowsing = false
+	m.activeBuffer().historyDraft = ""
 	return m
 }
 
-// historyPrev recalls an earlier history entry into the editor. At the oldest
-// entry it stays put. When already typing a fresh line it is lost — matching the
-// simple recall behavior of most line editors (senpai keeps it likewise minimal).
+// historyPrev recalls an earlier history entry, keeping the unfinished draft
+// so historyNext can restore it. At the oldest entry it stays put.
 func historyPrev(m model) model {
 	if len(m.history) == 0 {
 		return m
 	}
-	if m.histIndex > 0 {
-		m.histIndex--
+	b := m.activeBuffer()
+	if !b.historyBrowsing {
+		b.historyDraft = m.input.Value()
+		b.historyDraftCursor = m.input.Position()
+		b.historyIndex = len(m.history)
+		b.historyBrowsing = true
 	}
-	m.input.SetValue(m.history[m.histIndex])
+	if b.historyIndex > 0 {
+		b.historyIndex--
+	}
+	m.input.SetValue(m.history[b.historyIndex])
 	m.input.CursorEnd()
 	return m
 }
 
-// historyNext moves toward more recent history; stepping past the newest entry
-// clears the editor to an empty fresh line (the conventional "back to the
-// prompt" behavior).
+// historyNext moves toward more recent history and restores the unfinished
+// draft and cursor after the newest entry.
 func historyNext(m model) model {
-	if len(m.history) == 0 {
+	b := m.activeBuffer()
+	if !b.historyBrowsing {
 		return m
 	}
-	if m.histIndex < len(m.history) {
-		m.histIndex++
-	}
-	if m.histIndex >= len(m.history) {
-		m.input.SetValue("")
+	b.historyIndex++
+	if b.historyIndex >= len(m.history) {
+		m.input.SetValue(b.historyDraft)
+		m.input.SetCursor(b.historyDraftCursor)
+		b.historyBrowsing = false
+		b.historyDraft = ""
 		return m
 	}
-	m.input.SetValue(m.history[m.histIndex])
+	m.input.SetValue(m.history[b.historyIndex])
 	m.input.CursorEnd()
 	return m
+}
+
+// restoreDraft loads the active buffer's saved input after focus changes.
+func (m *model) restoreDraft() {
+	b := m.activeBuffer()
+	m.input.SetValue(b.draft)
+	m.input.SetCursor(b.draftCursor)
 }
 
 // complete performs tab-completion on the word under the cursor and returns the

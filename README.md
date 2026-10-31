@@ -6,8 +6,8 @@
 
 - **Protocol library** (`irc`, `conn`, `cap`, `sasl`, `isupport`, `client`) —
   message parsing & serialization with full message-tag support, TCP/TLS
-  transport, capability negotiation, SASL (PLAIN/EXTERNAL), `RPL_ISUPPORT` +
-  casemapping, and a high-level client with registration, event dispatch, and
+  transport, capability negotiation, SASL (PLAIN/EXTERNAL/SCRAM-SHA-256),
+  `RPL_ISUPPORT` + casemapping, and a high-level client with registration, event dispatch, and
   channel/user state tracking. Standard library only.
 - **Terminal UI** (`tui`, `cmd/lurk`) — a [Bubble Tea](https://github.com/charmbracelet/bubbletea)
   full-screen client: buffer sidebar, scrollback, nicklist, status bar, input
@@ -21,6 +21,14 @@
   (recent backlog is fetched automatically on join and shown under a history
   divider); `+typing` notifications ("X is typing…" in the status bar, debounced
   outbound); and `standard-replies` (`FAIL`/`WARN`/`NOTE`) rendered readably.
+
+See the [IRCv3 support matrix](docs/IRCV3.md) for default requests, library/TUI
+behavior, and lurkd's client-facing support and limits.
+
+<p align="center">
+  <img src="assets/tui.png" alt="Lurk showing a channel conversation, unread buffers, member list, and typing status" width="1100">
+</p>
+<p align="center"><em>Sample session rendered from Lurk's TUI with scripted demo traffic.</em></p>
 
 ## Install
 
@@ -84,6 +92,33 @@ Slash commands: `/join /part /msg /query /nick /me /away /whois /whowas /list
 list, or `/help <command>` for usage. Alt+1…9 jump to a buffer by position;
 Alt+A jumps to the next active buffer; `/search <text>` finds scrollback (Ctrl-R
 cycles matches).
+
+If a message or server command cannot be queued for sending, Lurk reports the
+error and restores the submitted line for retry. Failed requests from the Users
+menu report the error without changing your draft.
+
+Unsent drafts and cursor positions stay with each buffer for the session.
+After browsing input history with ↑/↓, moving past the newest entry restores
+your unfinished draft.
+
+`/ignore`, `/unignore`, `/highlight`, and `/unhighlight` apply to the current
+network. For saved networks, changes are saved immediately and restored on the
+next connection, including `/connect`. Direct `-server` connections keep these
+settings for the session only. A failed save reports an error and leaves the
+setting unchanged.
+
+While a network reconnects, the status bar keeps a `reconnecting` indicator and
+the sidebar marks that network with `[retry]`. The indicator clears after
+recovery, and drafts stay available while you wait. If a connection ends for
+good, its reason appears in the surviving session, or after the TUI exits when
+it was the last network. `/disconnect` still exits normally.
+
+On servers with `draft/chathistory`, press `PgUp` again at the top of scrollback
+to fetch older messages. Lurk also catches up after reconnecting and discovers
+missed private conversations. Replay is merged in time order and deduplicated by
+message ID, without ringing the mention bell. The existing 2,000-line per-buffer
+limit still applies; history availability depends on the server or bouncer.
+Paging continues past ignored messages, even when an entire page is hidden.
 
 Lurk connects to **multiple networks at once**: `/connect <name>` dials another
 saved network and folds it into a unified sidebar grouped by network;
@@ -193,6 +228,9 @@ cmd/lurkd/ the bouncer daemon (headless, stdlib-only)
 ```
 
 ## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code conventions, hermetic test
+patterns, required checks, and the optional Ergo harness.
 
 ```sh
 go build ./...

@@ -16,7 +16,7 @@ func TestCustomHighlightWord(t *testing.T) {
 	if act, _ := runLine(m, "/highlight deploy"); act.kind != actionInfo {
 		t.Fatalf("/highlight kind = %v", act.kind)
 	}
-	if !m.highlights["deploy"] {
+	if !m.activeNet().highlights["deploy"] {
 		t.Fatal("/highlight did not record the word")
 	}
 
@@ -33,8 +33,8 @@ func TestCustomHighlightWord(t *testing.T) {
 // TestHighlightSeededFromConfig verifies configured highlight words are loaded.
 func TestHighlightSeededFromConfig(t *testing.T) {
 	m := newModel(client.New(client.Config{Nick: "me", Highlights: []string{"Release", "ops"}}), nil)
-	if !m.highlights["release"] || !m.highlights["ops"] {
-		t.Errorf("config highlights not seeded (folded): %v", m.highlights)
+	if !m.activeNet().highlights["release"] || !m.activeNet().highlights["ops"] {
+		t.Errorf("config highlights not seeded (folded): %v", m.activeNet().highlights)
 	}
 }
 
@@ -46,7 +46,7 @@ func TestIgnoreSuppressesMessages(t *testing.T) {
 	m = layout(m)
 
 	runLine(m, "/ignore Spammer")
-	if !m.isIgnored("spammer") {
+	if !m.activeNet().isIgnored("spammer") {
 		t.Fatal("/ignore did not record the nick")
 	}
 
@@ -64,7 +64,7 @@ func TestIgnoreSuppressesMessages(t *testing.T) {
 
 	// Unignore restores delivery.
 	runLine(m, "/unignore Spammer")
-	if m.isIgnored("spammer") {
+	if m.activeNet().isIgnored("spammer") {
 		t.Error("/unignore did not remove the nick")
 	}
 }

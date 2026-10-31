@@ -6,13 +6,82 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-31
+
+### Fixed
+- **Long messages and actions fit the relayed IRC line limit.** Splitting reserves
+  the sender prefix added by the server, preventing Ergo's `417` rejection from
+  dropping chunks of messages, notices, or `/me` actions. The budget follows nick
+  and host changes and resets when reconnecting.
+- **History replay no longer sends automatic CTCP replies.** Replayed `VERSION`,
+  `PING`, `TIME`, and `CLIENTINFO` queries remain available to event consumers
+  without sending fresh notices or consuming the live auto-reply rate limit.
+- **lurkd `BETWEEN` history queries follow both directions.** Both endpoints are
+  excluded; reverse requests select messages nearest the first reference and
+  return them oldest first. Timestamp gaps and mixed references work, and an
+  unknown message ID no longer widens the query to the end of the log.
+- **lurkd returns the newest matching `LATEST` history.** A timestamp or message-ID
+  lower bound now selects the tail of the matching conversation, respecting the
+  requested limit. `AFTER` continues to select the oldest matching messages.
+- **History paging continues past ignored messages.** PageUp advances even when
+  an entire page, including the initial history, is hidden by ignores. Ignored
+  messages stay out of the screen and logs; clearing a buffer resets paging.
+- **lurkd timestamp history boundaries.** `BEFORE` and `AFTER` compare message
+  times directly, including gaps, tied timestamps, and clock skew. Requests
+  before the first or after the last stored time no longer skip a message or
+  return a false empty result. Message-ID queries retain their existing order.
+- **lurkd deduplicates upstream history replay.** Stored messages retain their
+  upstream IDs, so rejoining no longer stores or relays the same message under
+  a new local ID. Replay lookup survives restarts and checks retained JSONL and
+  rotation files when a message has left the in-memory ring.
+- **Server commands and user-menu actions report send failures.** Nick, topic,
+  away, directory, lookup, invite, kick, mode, and raw requests no longer fail
+  silently. Failed slash commands restore the submitted line; a failed `/list`
+  leaves the conversation open and a failed `/away` shows no success notice.
+  User-menu failures preserve the current draft and cursor.
+- **Channel commands report send failures without changing buffers.** `/join`,
+  `/part`, and `/close` restore the submitted command on failure; channel-browser
+  joins keep the selection available to retry and use the list's owning network.
+  `/join` now sends its optional key, and `/part #channel reason` parses correctly.
+- **Launcher save failures preserve networks and form input.** Adds, edits, and
+  deletes update the shared network list only after saving succeeds. Failed form
+  saves keep the entered settings available to retry or cancel; failed deletions
+  keep the original network and selection.
+- **Failed TUI sends report the error and restore the submitted line for retry**,
+  including `/msg`, `/me`, `/query`, `/notice`, and `/ctcp`. Failed messages are
+  no longer shown as ordinary local echoes.
+- **Editing a saved network preserves settings absent from the launcher form**,
+  including highlights and TLS/auth overrides. The SASL selector now includes
+  `SCRAM-SHA-256`, so editing a SCRAM network no longer disables authentication.
+
 ### Security
-- **Go toolchain moved to 1.26.6.** 1.26.5 is affected by GO-2026-6090
-  (`crypto/tls`) and GO-2026-5972 (`encoding/asn1`) on reachable lurk paths.
-  `go.mod` now requires 1.26.6 so builds pick up the patched toolchain
-  automatically; `govulncheck` is clean.
+- **Go toolchain moved to 1.26.10.** Includes fixes for GO-2026-6809
+  (`crypto/x509`) and GO-2026-6607 (`crypto/tls`) on reachable TLS paths.
+  `go.mod` requires the patched toolchain automatically; `govulncheck` is clean.
 
 ### Added
+- **README TUI preview** shows a sample conversation, unread buffers, member
+  list, and typing status, rendered from the actual UI with scripted demo traffic.
+- **Contributor guide** covers setup, code conventions, hermetic test patterns,
+  required checks, optional Ergo testing, and commit/PR conventions.
+- **IRCv3 support matrix** documents default capability requests, library/TUI
+  behavior, and lurkd's client-facing implementation and limits.
+- **Persistent connection status.** Reconnecting networks stay marked in the
+  status bar and sidebar across buffer switches. Terminal disconnect reasons
+  survive network removal and are reported after exit for the last connection.
+  Servers without a `NETWORK` token no longer appear to be perpetually connecting.
+- **Network-specific saved ignores and highlights.** The four preference commands
+  update the active network's saved profile; additional connections load their
+  own settings. Live messages and history use their owning network's preferences.
+  Failed saves report an error and leave the setting unchanged; direct `-server`
+  connections keep session-only settings.
+- **History paging and recovery.** `PgUp` at the top requests older messages;
+  reconnects fill gaps across history pages, and conversation discovery recovers
+  missed PMs. Replay preserves scroll/search positions and suppresses duplicate
+  message IDs in the view and logs. Requests respect server limits and time out.
+- **Per-conversation drafts.** Buffer switches preserve unsent text and cursor
+  positions, including across networks. Input-history navigation restores the
+  unfinished draft after the newest entry. Drafts stay in memory for the session.
 - **CI runs `govulncheck`.** The hermetic gate now scans the module and the
   standard library it builds against on every PR and push to main, so a stdlib
   advisory surfaces as a failing check instead of an audit finding.
@@ -20,6 +89,8 @@ semantic versioning.
   libraries grouped into a single PR. Updates flow through the same ci.yml gate.
 
 ### Changed
+- **Client defaults request `echo-message`.** Server echoes provide stable message
+  IDs for replay deduplication; servers without the capability keep local echoes.
 - **The dependency guard covers every stdlib-only package.** `server`'s depguard
   test previously checked only the daemon packages, and only for charm imports.
   It now walks the transitive import closure of `irc`, `conn`, `cap`, `sasl`,
@@ -479,7 +550,8 @@ Initial release.
 - Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
   `-version` flag.
 
-[Unreleased]: https://github.com/exec/lurk/compare/v1.2.7...HEAD
+[Unreleased]: https://github.com/exec/lurk/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/exec/lurk/compare/v1.2.7...v1.3.0
 [1.2.7]: https://github.com/exec/lurk/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/exec/lurk/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/exec/lurk/compare/v1.2.4...v1.2.5

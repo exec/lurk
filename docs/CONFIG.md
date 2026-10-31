@@ -20,6 +20,10 @@ WeeChat.
 
 The directory is created (`0700`) on first save if it does not exist.
 
+The launcher applies additions, edits, and deletions only after saving succeeds.
+If a save fails, the network list stays unchanged. The edit form or delete
+confirmation remains open so you can retry or cancel.
+
 ### Top-level structure
 
 ```json
@@ -58,15 +62,16 @@ Each entry is a saved server. `name` and `addr` are required.
 | `sasl` | SASL | — | SASL authentication (see below). An empty/absent object disables SASL. |
 | `channels` | []string | — | Channels to auto-join on connect (e.g. `["#lurk", "#go-nuts"]`). |
 | `highlights` | []string | — | Extra words that trigger a mention highlight in the TUI. |
+| `ignores` | []string | — | Nicknames whose messages the TUI hides on this network. |
 | `bounce` | BounceConfig | — | Route through a `lurkd` bouncer instead of connecting to `addr` directly (see below). The zero value disables bouncing. |
 
 #### `sasl` — `SASL`
 
 | Field | Type | Description |
 |---|---|---|
-| `mechanism` | string | SASL mechanism: `"PLAIN"` or `"EXTERNAL"`. An empty string disables SASL. |
-| `username` | string | SASL username (used with `PLAIN`). |
-| `password` | string | SASL password (used with `PLAIN`). |
+| `mechanism` | string | SASL mechanism: `"PLAIN"`, `"EXTERNAL"`, or `"SCRAM-SHA-256"`. An empty string disables SASL. |
+| `username` | string | SASL username (used with `PLAIN` and `SCRAM-SHA-256`). |
+| `password` | string | SASL password (used with `PLAIN` and `SCRAM-SHA-256`). |
 
 #### `bounce` — `BounceConfig`
 

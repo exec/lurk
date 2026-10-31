@@ -21,7 +21,6 @@
 package tui
 
 import (
-	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -75,8 +74,7 @@ type model struct {
 	help help.Model
 
 	// history is the input line history for up/down recall (tui-input).
-	history   []string
-	histIndex int
+	history []string
 
 	// ready becomes true after the first WindowSizeMsg, gating any rendering
 	// that depends on real dimensions.
@@ -84,7 +82,8 @@ type model struct {
 
 	// quitting is set when a quit has been initiated so View can render a
 	// final frame if desired.
-	quitting bool
+	quitting   bool
+	exitReason string // unexpected last-network disconnect, reported after leaving the TUI
 
 	// focus selects which pane receives navigation keys. The default is the
 	// input editor; Ctrl-U moves focus to the nicklist so a user can be picked
@@ -133,7 +132,8 @@ type model struct {
 	// loop so that appendLine/appendInfo skip the per-line refresh() of the
 	// active viewport (which would re-join and SetContent the entire scrollback
 	// for every event). The handler calls refreshIfDirty() once after the loop.
-	batchMode bool
+	batchMode      bool
+	historyTicking bool
 
 	// nicklistSorted caches the result of the most recent sortedMembers call so
 	// the O(N log N) snapshot+sort is not repeated within the same Update+View
@@ -149,12 +149,8 @@ type model struct {
 	nicklistSorted    []client.Member
 	nicklistSortedFor *Buffer // buffer whose member list is in nicklistSorted
 
-	// highlights are extra mention words (besides the nick), and ignored are the
-	// nicks whose messages are suppressed. Both are keyed by ASCII-folded form and
-	// are reference-type maps, so the slash-command handlers (which receive the
-	// model by value) can mutate them in place. Seeded from the client config.
-	highlights map[string]bool
-	ignored    map[string]bool
+	// configPath enables saving preferences for networks with a savedName.
+	configPath string
 
 	// logger, when non-nil, appends each buffer's lines to a per-target log file.
 	// A nil *chatlog.Logger is a safe no-op, so the logging calls need no guard.
@@ -211,35 +207,20 @@ const typingTTL = 6 * time.Second
 // tests; sub is typically cli.Events(). It seeds the always-present server
 // buffer (index 0) and delegates editor/keymap setup to the tui-input helpers.
 func newModel(cli *client.Client, sub <-chan client.Event) model {
-	net := &network{name: serverBufferTitle(cli), cli: cli, sub: sub}
+	net := newNetwork(serverBufferTitle(cli), cli, sub)
 	sb := newServerBuffer(serverBufferTitle(cli))
 	sb.net = net
 	m := model{
-		networks:   []*network{net},
-		cli:        cli,
-		buffers:    []*Buffer{sb},
-		active:     0,
-		keys:       defaultKeymap(),
-		help:       help.New(),
-		input:      newInput(),
-		typing:     make(map[typingKey][]typingEntry),
-		highlights: make(map[string]bool),
-		ignored:    make(map[string]bool),
-	}
-	// Seed extra highlight words from the client config.
-	if cli != nil {
-		for _, w := range cli.Highlights() {
-			if w = strings.TrimSpace(w); w != "" {
-				m.highlights[asciiLower(w)] = true
-			}
-		}
+		networks: []*network{net},
+		cli:      cli,
+		buffers:  []*Buffer{sb},
+		active:   0,
+		keys:     defaultKeymap(),
+		help:     help.New(),
+		input:    newInput(),
+		typing:   make(map[typingKey][]typingEntry),
 	}
 	return m
-}
-
-// isIgnored reports whether messages from nick are suppressed.
-func (m *model) isIgnored(nick string) bool {
-	return m.ignored[asciiLower(nick)]
 }
 
 // noteTyping records that nick is composing in the buffer keyed by key,
@@ -510,6 +491,10 @@ func (m *model) switchTo(i int) {
 		// "new messages" divider appears before anything that arrives while away.
 		old := m.buffers[m.active]
 		old.readMarker = len(old.lines)
+		old.draft = m.input.Value()
+		old.draftCursor = m.input.Position()
+		m.input.SetValue(m.buffers[i].draft)
+		m.input.SetCursor(m.buffers[i].draftCursor)
 	}
 	m.active = i
 	b := m.buffers[i]
@@ -518,6 +503,9 @@ func (m *model) switchTo(i int) {
 	// Keep the active-client convenience pointing at the focused network.
 	if b.net != nil {
 		m.cli = b.net.cli
+	}
+	if b.Kind == BufferPM && !b.historyLoaded {
+		*m = m.queueHistory(b.net, historyQuery{sub: "LATEST", target: b.Title, budget: scrollbackLimit})
 	}
 	// A scrollback search is scoped to the buffer it ran in.
 	m.clearSearch()
@@ -560,6 +548,7 @@ func (m *model) closeBuffer(i int) {
 		return // server buffers are permanent; out-of-range ignored
 	}
 	closingActive := m.active == i
+	m.cancelHistory(m.buffers[i])
 	m.buffers = append(m.buffers[:i], m.buffers[i+1:]...)
 	switch {
 	case m.active > i:
@@ -577,13 +566,15 @@ func (m *model) closeBuffer(i int) {
 	// Ctrl-R would scroll the newly focused buffer to a bogus offset).
 	if closingActive {
 		m.clearSearch()
+		m.restoreDraft()
 	}
 }
 
 // addNetwork registers a new connected network and its server buffer (appended
 // at the end), returning the network so the caller can start its event pump.
 func (m *model) addNetwork(name string, cli *client.Client) *network {
-	net := &network{name: name, cli: cli, sub: cli.Events()}
+	net := newNetwork(name, cli, cli.Events())
+	net.savedName = name
 	sb := newServerBuffer(name)
 	sb.net = net
 	m.networks = append(m.networks, net)
@@ -596,6 +587,8 @@ func (m *model) addNetwork(name string, cli *client.Client) *network {
 // networks remain.
 func (m model) removeNetwork(net *network) model {
 	oldActive := m.activeBuffer()
+	oldActive.draft = m.input.Value()
+	oldActive.draftCursor = m.input.Position()
 	kept := make([]*Buffer, 0, len(m.buffers))
 	for _, b := range m.buffers {
 		if b.net != net {
@@ -628,6 +621,7 @@ func (m model) removeNetwork(net *network) model {
 	// buffer's lines, and Ctrl-R would scroll the survivor to a bogus offset.
 	if m.buffers[m.active] != oldActive {
 		m.clearSearch()
+		m.restoreDraft()
 	}
 	// The re-homed buffer is now the focused one, so clear its activity markers —
 	// otherwise the survivor we're looking at keeps stale unread/highlight pips.

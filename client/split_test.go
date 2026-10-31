@@ -80,8 +80,9 @@ func wireLen(t *testing.T, command, target, chunk string) int {
 }
 
 func TestMessageBudget(t *testing.T) {
-	// The budget plus the framing overhead must exactly fill (never exceed) the
-	// 512-byte line for any command/target.
+	c, _ := newRecordClient()
+	// The budget includes relay overhead, so our outgoing line must also fit
+	// within 512 bytes for any command/target.
 	cases := []struct{ command, target string }{
 		{irc.PRIVMSG, "#chan"},
 		{irc.NOTICE, "nick"},
@@ -89,7 +90,7 @@ func TestMessageBudget(t *testing.T) {
 		{irc.NOTICE, "@+#" + strings.Repeat("x", 250)},
 	}
 	for _, tc := range cases {
-		budget := messageBudget(tc.command, tc.target)
+		budget := c.messageBudget(tc.command, tc.target)
 		if budget < 1 {
 			t.Errorf("%s %q: budget %d < 1", tc.command, tc.target, budget)
 		}
@@ -105,13 +106,14 @@ func TestMessageBudget(t *testing.T) {
 // text, EVERY chunk Privmsg/Notice would send serializes to a line within the
 // 512-byte limit — the regression for the target-blind fixed cap.
 func TestPrivmsgChunksWithinWireLimit(t *testing.T) {
+	c, _ := newRecordClient()
 	// A long STATUSMSG-prefixed channel name (182 bytes) of the kind a server
 	// with a large CHANNELLEN could legitimately have.
 	target := "@#" + strings.Repeat("channel", 26) // 2 + 182 = 184 bytes
 	text := strings.Repeat("the quick brown fox ", 200)
 
 	for _, command := range []string{irc.PRIVMSG, irc.NOTICE} {
-		chunks := splitMessage(text, messageBudget(command, target))
+		chunks := splitMessage(text, c.messageBudget(command, target))
 		if len(chunks) < 2 {
 			t.Fatalf("%s: expected multiple chunks for long text, got %d", command, len(chunks))
 		}
@@ -146,8 +148,9 @@ func equalWords(a, b []string) bool {
 // TestPrivmsgShortMessageUnchanged confirms a normal short message to a normal
 // target is sent as a single, unmodified chunk.
 func TestPrivmsgShortMessageUnchanged(t *testing.T) {
+	c, _ := newRecordClient()
 	const msg = "hello world"
-	chunks := splitMessage(msg, messageBudget(irc.PRIVMSG, "#chan"))
+	chunks := splitMessage(msg, c.messageBudget(irc.PRIVMSG, "#chan"))
 	if len(chunks) != 1 || chunks[0] != msg {
 		t.Errorf("got %q, want single piece [%q]", chunks, msg)
 	}

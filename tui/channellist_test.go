@@ -7,6 +7,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"charm.land/bubbles/v2/list"
+
+	"github.com/exec/lurk/client"
 )
 
 // sizedModel returns a test model with real dimensions so layout/render and the
@@ -85,6 +87,70 @@ func TestChannelListEnterJoins(t *testing.T) {
 	if m.buffer("#go") == nil {
 		t.Errorf("Enter did not open the #go buffer; buffers=%v", bufferTitles(m))
 	}
+}
+
+func TestChannelListFailedJoinKeepsSelectionAndDraft(t *testing.T) {
+	m := newModel(client.New(client.Config{Nick: "me"}), nil)
+	m, _ = renderAt(t, m, 100, 40)
+	m = feedList(t, m, ":srv 322 me #go 120 :Gophers")
+	m.input.SetValue("unfinished message")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(model)
+	if !m.chanListOpen || m.buffer("#go") != nil || m.chanList.SelectedItem().(channelItem).name != "#go" {
+		t.Fatal("failed join dismissed the browser, lost its selection, or opened a phantom buffer")
+	}
+	if m.input.Value() != "unfinished message" || !strings.Contains(stripANSI(m.View().Content), "join failed:") {
+		t.Fatal("failed browser join discarded the draft or hid the error")
+	}
+	// Repair the connection and retry the same selected row.
+	cli, _ := connectedClient(t, "me")
+	t.Cleanup(func() { _ = cli.Close() })
+	m.chanListNet.cli = cli
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(model)
+	if m.chanListOpen || m.activeBuffer().Title != "#go" {
+		t.Fatal("retry did not join and focus the selected channel")
+	}
+	m.switchTo(0)
+	if m.input.Value() != "unfinished message" {
+		t.Fatal("successful browser retry lost the original draft")
+	}
+}
+
+func TestChannelListJoinUsesOwningNetwork(t *testing.T) {
+	m, srv := historyModel(t)
+	net := m.activeNet()
+	m = feedList(t, m, ":srv 322 me #go 120 :Gophers")
+	other := m.addNetwork("other", client.New(client.Config{Nick: "me"}))
+	m.switchTo(m.bufferIndexIn(other, "other"))
+	m.input.SetValue("draft on other network")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(model)
+	historyWire(t, srv, "JOIN #go")
+	if m.chanListOpen || m.activeNet() != net || m.netBuffer(other, "#go") != nil {
+		t.Fatal("browser join used a network other than the list's owner")
+	}
+	m.switchTo(m.bufferIndexIn(other, "other"))
+	if m.input.Value() != "draft on other network" {
+		t.Fatal("browser join lost another network's draft")
+	}
+}
+
+func TestChannelListRejectsRemovedNetwork(t *testing.T) {
+	m, srv := historyModel(t)
+	net := m.activeNet()
+	m = feedList(t, m, ":srv 322 me #go 120 :Gophers")
+	other := m.addNetwork("other", client.New(client.Config{Nick: "me"}))
+	m = m.removeNetwork(net)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(model)
+	if !m.chanListOpen || m.netBuffer(other, "#go") != nil || !strings.Contains(stripANSI(m.View().Content), "network disconnected") {
+		t.Fatal("stale channel list joined the surviving network or hid the error")
+	}
+	if err := net.cli.SendRaw("PING barrier"); err != nil {
+		t.Fatal(err)
+	}
+	historyWire(t, srv, "PING barrier")
 }
 
 // TestChannelListEscCloses verifies Esc dismisses the modal when no filter is
