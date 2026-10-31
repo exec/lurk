@@ -184,7 +184,7 @@ jobs:
           mkdir -p dist
           find artifacts -type f -exec cp -n {} dist/ \;
           rm -f dist/SHA256SUMS
-          ( cd dist && sha256sum lurk_* lurkd_* 2>/dev/null | sort > SHA256SUMS )
+          ( cd dist && sha256sum lurk* | sort > SHA256SUMS )
           echo "Release contents:"; ls -1 dist
       - name: Publish to GitHub release
         env:
