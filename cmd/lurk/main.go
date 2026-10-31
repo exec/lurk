@@ -93,7 +93,9 @@ func main() {
 		runPlain(ctx, cancel, regCtx, c, channel)
 		return
 	}
-	runTUI(ctx, regCtx, c, channel, logDir, makeConnectFunc(ctx, storePath), tui.SavedConfig{Path: storePath, Network: savedName})
+	runTUI(ctx, regCtx, c, channel, logDir, makeConnectFunc(ctx, storePath), tui.SavedConfig{
+		Path: storePath, Network: savedName, DisableFormatting: store.DisableFormatting,
+	})
 }
 
 // runTUI connects the client and hands control to the Bubble Tea interface. The

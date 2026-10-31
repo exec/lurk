@@ -26,7 +26,7 @@ func TestSanitizeStripsControlBytes(t *testing.T) {
 		{"backspace", "ab\x08c", "abc"},
 		{"tab to space", "a\tb", "a b"},
 		{"c1 csi byte", "x2Jy", "x2Jy"},
-		{"irc color codes", "\x03" + "04red\x0f", "04red"},
+		{"irc color codes", "\x03" + "04red\x0f", "red"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

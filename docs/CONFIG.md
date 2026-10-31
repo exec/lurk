@@ -28,10 +28,28 @@ confirmation remains open so you can retry or cancel.
 
 ```json
 {
+  "disable_formatting": false,
   "defaults": { ... },
   "networks": [ ... ]
 }
 ```
+
+#### `disable_formatting` — boolean
+
+IRC formatting is enabled by default in the TUI. Set this top-level field to
+`true` to show content as plain text, removing formatting codes and their color
+arguments. It applies to all networks, including direct `-server` connections;
+restart Lurk after changing it. Existing configs need no changes.
+
+Supported styles are bold, italic, underline, strikethrough, reverse, indexed
+foreground/background colors (0–98 and default 99), and six-digit hex colors.
+Monospace codes are accepted; the terminal already uses a fixed-width font.
+`NO_COLOR` suppresses message colors while retaining text attributes. Visibility
+of attributes such as italic depends on the terminal and font. The `-plain`
+client remains a plain-text interface.
+
+Only IRC formatting is interpreted. Peer-supplied ANSI escapes remain blocked;
+logs and scrollback search use the visible plain text.
 
 #### `defaults` — `Identity`
 

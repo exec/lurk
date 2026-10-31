@@ -78,6 +78,8 @@ type Identity struct {
 type File struct {
 	Defaults Identity  `json:"defaults"`
 	Networks []Network `json:"networks"`
+	// DisableFormatting shows IRC message content as plain text in the TUI.
+	DisableFormatting bool `json:"disable_formatting,omitempty"`
 }
 
 // Path returns the resolved config-file path: $LURK_CONFIG if set, else

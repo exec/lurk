@@ -10,9 +10,12 @@ import (
 // SavedConfig enables preference persistence in Run. Path is the saved-network
 // config file; Network is the initial client's saved profile name (empty for an
 // ad-hoc connection). Networks opened with /connect use their saved names.
+// DisableFormatting applies to the entire TUI, including ad-hoc connections.
 type SavedConfig struct {
 	Path    string
 	Network string
+	// DisableFormatting disables IRC styling while still removing its codes.
+	DisableFormatting bool
 }
 
 // setPreference saves before changing the session, so a failed write leaves the

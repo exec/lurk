@@ -3,6 +3,12 @@
 This matrix describes the current implementation. Capability negotiation,
 library support, and a feature exposed in the TUI are separate things.
 
+Classic IRC text formatting needs no IRCv3 capability. The TUI safely renders
+bold, italic, underline, strikethrough, reverse, indexed colors, and hex colors
+by default; see [`disable_formatting`](CONFIG.md#disable_formatting--boolean)
+to opt out. Monospace is already the terminal's font. Incoming ANSI escape
+sequences are never accepted as formatting.
+
 ## Negotiation
 
 The client starts with `CAP LS 302`, collects multiline advertisements, and

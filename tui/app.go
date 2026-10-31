@@ -29,6 +29,7 @@ func Run(ctx context.Context, cli *client.Client, logDir string, connect Connect
 	m.connect = connect
 	if len(saved) > 0 {
 		m.configPath = saved[0].Path
+		m.disableFormatting = saved[0].DisableFormatting
 		m.networks[0].savedName = saved[0].Network
 	}
 	if logDir != "" {

@@ -39,6 +39,7 @@ folds it into the unified sidebar; `/disconnect` drops the current one.
 | `buffer.go` | a `Buffer` (channel/PM/server): scrollback, unread/highlight counters, the read marker |
 | `view.go` | layout: sidebar + viewport + nicklist + topic/status bars + input |
 | `style.go` | Lip Gloss theme, per-nick colorization, line/numeric formatting, render-layer sanitization |
+| `formatting.go` | IRC formatting parser, sanitized text spans, and trusted display styles |
 | `input.go` | the `textinput` editor: history, tab-completion |
 | `command.go` | the slash-command parser and handlers (`/join`, `/msg`, `/mode`, `/kick`, …) |
 | `keys.go` | keybindings and the on-screen help footer |
@@ -67,7 +68,11 @@ monochrome, attribute-only theme. Every server-controlled string — messages,
 nicks, topics, channel and network names — is passed through the shared
 `client.SanitizeTerminal` at the render layer, so a malicious server cannot
 inject terminal escape sequences through any display path (message body,
-nicklist, sidebar, status bar, or menus).
+nicklist, sidebar, status bar, or menus). Message content is first split into
+IRC formatting spans; each span's text passes through that sanitizer before
+Lip Gloss emits trusted styles. Formatting is on by default, with the global
+`disable_formatting` config option providing a plain-text display. Logs and
+search strip renderer ANSI; identifiers such as nicks remain plain text.
 
 ## Conventions
 

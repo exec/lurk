@@ -421,7 +421,7 @@ func (m model) mergeHistory(b *Buffer, events []client.Event, older bool) model 
 			pos++
 			b.gotHistory = true
 		}
-		row, _ := defaultTheme.formatLine(ev, b.net.nick(), b.net.highlights)
+		row, _ := m.messageTheme().formatLine(ev, b.net.nick(), b.net.highlights)
 		m.insertHistoryLine(b, pos, row, historyLine{id: id, at: at})
 		if pos <= anchor {
 			anchor++

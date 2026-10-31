@@ -42,6 +42,28 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFormattingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	f, err := LoadFrom(path)
+	if err != nil || f.DisableFormatting {
+		t.Fatal("formatting should be enabled in a missing config")
+	}
+	for _, disabled := range []bool{true, false} {
+		f.DisableFormatting = disabled
+		f.Upsert(Network{Name: "Test", Addr: "127.0.0.1:16667"}, "")
+		if err := Save(f, path); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := LoadFrom(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.DisableFormatting != disabled {
+			t.Fatal("formatting preference lost across save")
+		}
+	}
+}
+
 func TestSavePerms0600(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

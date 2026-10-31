@@ -210,7 +210,7 @@ func routeEventOn(m model, net *network, ev client.Event) model {
 		if b == nil {
 			return m
 		}
-		b.addLine(defaultTheme.formatStandardReply(ev))
+		b.addLine(m.messageTheme().formatStandardReply(ev))
 		b.refresh()
 		return m
 	case irc.RPL_AWAY, irc.RPL_WHOISUSER, irc.RPL_WHOISSERVER,

@@ -22,7 +22,7 @@ import (
 // list when RPL_LISTEND arrives; Enter on a row joins that channel.
 
 // channelItem is one row in the channel-directory modal. The fields are already
-// terminal-sanitized when the item is built (routeListReply), since they are
+// rendered safely when the item is built (routeListReply), since they are
 // server-controlled and the list renders them straight to the screen.
 type channelItem struct {
 	name  string
@@ -37,7 +37,7 @@ func (c channelItem) Title() string {
 	return fmt.Sprintf("%s  ·  %d users", c.name, c.users)
 }
 func (c channelItem) Description() string { return c.topic }
-func (c channelItem) FilterValue() string { return c.name + " " + c.topic }
+func (c channelItem) FilterValue() string { return c.name + " " + stripANSI(c.topic) }
 
 // channelListSize returns the inner size (width, height) for the list widget:
 // roughly two-thirds of the terminal, clamped to sensible bounds and never
@@ -141,7 +141,7 @@ func routeListReply(m model, net *network, ev client.Event) model {
 		m.chanListAccum = append(m.chanListAccum, channelItem{
 			name:  sanitize(ev.Param(1)),
 			users: users,
-			topic: sanitize(ev.Text()),
+			topic: m.messageTheme().formatIRCText(ev.Text(), defaultTheme.dim),
 		})
 	case irc.RPL_LISTEND:
 		m.chanListLoading = false

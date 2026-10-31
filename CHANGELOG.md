@@ -6,6 +6,15 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-31
+
+### Added
+- **Safe IRC text formatting, enabled by default.** Chat, notices, actions,
+  topics, and server text render bold, italic, underline, strikethrough, reverse,
+  indexed colors, and hex colors. The top-level `disable_formatting` config
+  option removes formatting and its arguments. History and local echoes use
+  the same policy; terminal escapes remain blocked and logs stay plain text.
+
 ## [1.3.0] - 2026-10-31
 
 ### Fixed
@@ -550,7 +559,8 @@ Initial release.
 - Native packaging: `.deb`, `.rpm`, `.pkg`, and Windows archives, with a
   `-version` flag.
 
-[Unreleased]: https://github.com/exec/lurk/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/exec/lurk/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/exec/lurk/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/exec/lurk/compare/v1.2.7...v1.3.0
 [1.2.7]: https://github.com/exec/lurk/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/exec/lurk/compare/v1.2.5...v1.2.6

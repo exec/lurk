@@ -150,7 +150,8 @@ type model struct {
 	nicklistSortedFor *Buffer // buffer whose member list is in nicklistSorted
 
 	// configPath enables saving preferences for networks with a savedName.
-	configPath string
+	configPath        string
+	disableFormatting bool
 
 	// logger, when non-nil, appends each buffer's lines to a per-target log file.
 	// A nil *chatlog.Logger is a safe no-op, so the logging calls need no guard.

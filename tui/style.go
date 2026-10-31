@@ -30,6 +30,7 @@ import (
 // (newTheme) and carried implicitly by the package-level defaultTheme; styles
 // are immutable values so sharing one theme across renders is safe.
 type theme struct {
+	disableFormatting bool
 	// timestamp prefixes each message line (dim gray "15:04").
 	timestamp lipgloss.Style
 	// text is the default body style.
@@ -324,43 +325,44 @@ func (t theme) formatLine(ev client.Event, self string, highlights map[string]bo
 	// no-op in practice but closes the spoofing vector.
 	nick := sanitize(ev.Nick())
 	isSelf := nick != "" && equalFold(nick, self)
+	chatLine := func(head, raw string, base lipgloss.Style) (string, bool) {
+		body := plainIRCText(raw)
+		if isHighlighted(body, self, isSelf, highlights) {
+			prefix := ev.Time().Local().Format("15:04") + " " + stripANSI(head) + " "
+			return t.highlight.Render(prefix) + t.formatIRCText(raw, t.highlight), true
+		}
+		return fmt.Sprintf("%s %s %s", ts, head, t.formatIRCText(raw, base)), false
+	}
 
 	switch ev.Command() {
 	case "PRIVMSG":
 		// Detect CTCP framing on the raw text (the \x01 markers are control
 		// bytes that sanitize would strip), then sanitize the inner payload.
 		if action, ok := ctcpAction(ev.Text()); ok {
-			action = sanitize(action)
-			line := fmt.Sprintf("%s %s %s", ts, t.action.Render("*"), t.action.Render(nick+" "+action))
-			return t.applyHighlight(line, action, self, isSelf, highlights)
+			return chatLine(t.action.Render("* "+nick), action, t.action)
 		}
-		body := sanitize(ev.Text())
-		head := t.styledNick(nick, isSelf)
-		line := fmt.Sprintf("%s %s %s", ts, head, t.text.Render(body))
-		return t.applyHighlight(line, body, self, isSelf, highlights)
+		return chatLine(t.styledNick(nick, isSelf), ev.Text(), t.text)
 
 	case "NOTICE":
-		body := sanitize(ev.Text())
 		head := lipgloss.NewStyle().Foreground(t.nickColor(nick, isSelf)).Render("-" + nick + "-")
-		line := fmt.Sprintf("%s %s %s", ts, head, t.notice.Render(body))
-		return t.applyHighlight(line, body, self, isSelf, highlights)
+		return chatLine(head, ev.Text(), t.notice)
 
 	case "JOIN":
 		return fmt.Sprintf("%s %s", ts, t.dim.Render(symJoin+" "+nick+" joined "+sanitize(ev.Param(0)))), false
 
 	case "PART":
-		msg := joinReason(sanitize(ev.Text()), sanitize(ev.Param(0)))
-		return fmt.Sprintf("%s %s", ts, t.dim.Render(symPart+" "+nick+" left"+msg)), false
+		msg := joinReason(ev.Text(), ev.Param(0))
+		return fmt.Sprintf("%s %s", ts, t.formatIRCText(symPart+" "+nick+" left"+msg, t.dim)), false
 
 	case "QUIT":
-		msg := joinReason(sanitize(ev.Text()), "")
-		return fmt.Sprintf("%s %s", ts, t.dim.Render(symPart+" "+nick+" quit"+msg)), false
+		msg := joinReason(ev.Text(), "")
+		return fmt.Sprintf("%s %s", ts, t.formatIRCText(symPart+" "+nick+" quit"+msg, t.dim)), false
 
 	case "NICK":
 		return fmt.Sprintf("%s %s", ts, t.dim.Render("~ "+nick+" is now known as "+sanitize(ev.Text()))), false
 
 	case "TOPIC":
-		return fmt.Sprintf("%s %s", ts, t.dim.Render("~ "+nick+" set the topic: "+sanitize(ev.Text()))), false
+		return fmt.Sprintf("%s %s", ts, t.formatIRCText("~ "+nick+" set the topic: "+ev.Text(), t.dim)), false
 
 	case "MODE":
 		return fmt.Sprintf("%s %s", ts, t.dim.Render("~ mode "+sanitize(strings.Join(ev.Message.Params, " ")))), false
@@ -374,7 +376,7 @@ func (t theme) formatLine(ev client.Event, self string, highlights map[string]bo
 		if body == "" {
 			body = strings.Join(ev.Message.Params, " ")
 		}
-		return fmt.Sprintf("%s %s", ts, t.dim.Render(sanitize(body))), false
+		return fmt.Sprintf("%s %s", ts, t.formatIRCText(body, t.dim)), false
 	}
 }
 
@@ -400,7 +402,7 @@ func isNumericCommand(cmd string) bool {
 func (t theme) formatNumeric(ev client.Event) string {
 	ts := t.timestamp.Render(ev.Time().Local().Format("15:04"))
 	subj := sanitize(ev.Param(1)) // the nick a WHOIS line is about
-	text := sanitize(ev.Text())
+	text := t.formatIRCText(ev.Text(), t.dim)
 
 	// WHOIS replies render as a compact block: RPL_WHOISUSER (311) opens with a
 	// header carrying the nick, the detail numerics are shown indented WITHOUT
@@ -437,7 +439,7 @@ func (t theme) formatNumeric(ev client.Event) string {
 		// Any other numeric: show all params after the recipient nick so middle
 		// data is not dropped (e.g. "<nick> No such nick" for an error reply).
 		if p := ev.Message.Params; len(p) >= 2 {
-			body = sanitize(strings.Join(p[1:], " "))
+			body = t.formatIRCText(strings.Join(p[1:], " "), t.dim)
 		} else {
 			body = text
 		}
@@ -499,12 +501,10 @@ func idleSummary(secs, signon string) string {
 	return out
 }
 
-// applyHighlight checks whether body mentions self and, if so, re-renders the
-// whole line over the highlight background and reports the highlight. A nil/own
-// message never highlights (you don't get pinged by yourself).
-func (t theme) applyHighlight(line, body, self string, isSelf bool, highlights map[string]bool) (string, bool) {
+// isHighlighted checks visible text, so formatting inside a nick cannot hide a mention.
+func isHighlighted(body, self string, isSelf bool, highlights map[string]bool) bool {
 	if isSelf {
-		return line, false // you don't get pinged by yourself
+		return false // you don't get pinged by yourself
 	}
 	hit := self != "" && mentions(body, self)
 	if !hit {
@@ -515,12 +515,7 @@ func (t theme) applyHighlight(line, body, self string, isSelf bool, highlights m
 			}
 		}
 	}
-	if !hit {
-		return line, false
-	}
-	// Re-render the visible content (stripped of existing ANSI) over the
-	// highlight style so the mention stands out as a single banner row.
-	return t.highlight.Render(stripANSI(line)), true
+	return hit
 }
 
 // formatStandardReply renders a standard-replies line (FAIL/WARN/NOTE) in a
@@ -561,7 +556,7 @@ func (t theme) formatStandardReply(ev client.Event) string {
 	}
 	// cmd/code/context/desc are all server-supplied; sanitize the assembled body
 	// before rendering so embedded escape sequences cannot reach the terminal.
-	return fmt.Sprintf("%s %s", ts, style.Render(marker+" "+sanitize(body)))
+	return fmt.Sprintf("%s %s", ts, t.formatIRCText(marker+" "+body, style))
 }
 
 // formatInfo renders a local informational line (command output / error). The
@@ -585,10 +580,10 @@ func (t theme) formatSelfMessage(self, text string) string {
 	// Sanitize the echoed text too: a user can paste attacker-crafted content
 	// carrying escape sequences, and the local echo writes straight to the pane.
 	if action, ok := ctcpAction(text); ok {
-		return fmt.Sprintf("%s %s %s", ts, t.action.Render("*"), t.action.Render(self+" "+sanitize(action)))
+		return fmt.Sprintf("%s %s %s", ts, t.action.Render("* "+sanitize(self)), t.formatIRCText(action, t.action))
 	}
 	head := t.styledNick(self, true)
-	return fmt.Sprintf("%s %s %s", ts, head, t.text.Render(sanitize(text)))
+	return fmt.Sprintf("%s %s %s", ts, head, t.formatIRCText(text, t.text))
 }
 
 // statusLine renders the bottom status bar: network, current nick, active
@@ -687,19 +682,15 @@ func isNickChar(b byte) bool {
 
 // sanitize neutralizes terminal control sequences in attacker-controlled display
 // text before it is stored in scrollback and written to the terminal. It is a
-// thin alias for client.SanitizeTerminal, the single shared implementation used
-// by both Lurk front-ends (this TUI and the -plain line client); see that
-// function for the rationale and exact behavior. It must be applied to raw text
-// *before* Lip Gloss styling, never after, or it would strip the renderer's own
-// SGR escapes.
+// plain-text IRC formatting parser. Its text passes through the shared
+// client.SanitizeTerminal boundary. Apply it to raw text before Lip Gloss
+// styling, never after, or it would strip the renderer's own SGR escapes.
 func sanitize(s string) string {
-	return client.SanitizeTerminal(s)
+	return plainIRCText(s)
 }
 
-// stripANSI removes ANSI escape sequences from s. Its primary use is re-rendering
-// a highlighted line over a single background style, where leftover SGR codes
-// from styledNick would otherwise interrupt the banner; it is also used to
-// measure visible width for truncation. Server text is sanitized before it is
+// stripANSI removes ANSI escape sequences for plain-text logs, search, and
+// display measurements. Server text is sanitized before it is
 // styled, so in practice stripANSI only ever sees the renderer's own CSI ... m
 // sequences — but it is written to be a correct, conservative stripper for any
 // input, recognizing the CSI, OSC, and DCS/PM/APC/SOS string forms (not just

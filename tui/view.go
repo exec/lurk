@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/exec/lurk/client"
 )
@@ -430,11 +431,10 @@ func renderTopic(m model, w int) string {
 	if m.cli != nil {
 		topic, _, _ = m.cli.Topic(m.activeBuffer().Title)
 	}
-	topic = sanitize(topic)
 	if topic == "" {
 		topic = "(no topic set)"
 	}
-	content := truncate(" Topic: "+topic+" ", w)
+	content := ansi.Truncate(" Topic: "+m.messageTheme().formatIRCText(topic, defaultTheme.statusBar)+" ", w, "…")
 	return defaultTheme.statusBar.Width(w).Render(content)
 }
 
@@ -587,7 +587,7 @@ func appendLine(m model, b *Buffer, ev client.Event) model {
 	if ev.BatchType() == "chathistory" {
 		b.markHistory(defaultTheme)
 	}
-	row, highlight := defaultTheme.formatLine(ev, self, b.net.highlights)
+	row, highlight := m.messageTheme().formatLine(ev, self, b.net.highlights)
 	drop := b.addLine(row, meta)
 	m.logger.Log(bufferScope(b), b.Title, stripANSI(row))
 
@@ -669,7 +669,7 @@ func echoSelf(m model, target, text string) model {
 		kind = BufferChannel
 	}
 	b, _ := m.ensureBuffer(target, kind)
-	row := defaultTheme.formatSelfMessage(currentNick(m), text)
+	row := m.messageTheme().formatSelfMessage(currentNick(m), text)
 	drop := b.addLine(row)
 	m.logger.Log(bufferScope(b), b.Title, stripANSI(row))
 	if b == m.activeBuffer() {
